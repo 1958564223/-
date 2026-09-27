@@ -63,6 +63,11 @@
     }
   }
 
+  // v0.5.0 P26: 暴露给外部 — video-voice-call.js endVideoCall 时调用,
+  //   真正停止当前段播放 + 清队列 + 重置 isTtsPlaying (避免 TTS 完成回调继续触发 finishVideoCallTurn)
+  //   旧 stopTtsQueue 函数内部已经做了这些事, 直接复用, 改名只是为了语义更明确
+  window.stopCurrentTts = stopTtsQueue;
+
   // 单条语音消息播放状态（用于同一条点两次=暂停/取消，退出聊天=停播）
   let currentTtsMessageKey = '';
   let currentTtsLoading = false;

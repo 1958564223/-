@@ -537,6 +537,96 @@
   let videoCallHasDetectedSpeech = false;
   let videoCallAutoStopReason = 'manual';
 
+  // ── v0.5.0 P26: 视频通话回合状态机 (turnId-based) ─────────────────
+  // 取代原来 isAiResponding / isAiSpeaking / isTtsPlaying 三个布尔锁的隐式串联,
+  // 用单一 activeTurn 对象 + turnId 守卫来拒绝 stale 回调。
+  // 三个布尔锁保留(下面 finishVideoCallTurn 同步更新), 让现有 1537/1543 等
+  // 自动 listen 守卫继续工作 — 它们读 videoCallState.* 而非 videoCallActiveTurn。
+  let videoCallActiveTurn = null;
+  // turnId 不复用 videoCallAiTurnSeq (那是 fetch 文本生成序号), 用独立计数器
+  // 覆盖整个回合(从 AI 进入 fetch 到 onVideoCallTtsQueueFinished 释放为止)。
+  let videoCallTurnSeq = 0;
+  // 用户录音完成时, 如果当前 turn 还在进行, 把 blob 暂存到这里,
+  // 等 finishVideoCallTurn 在 turn done/failed 时再消费。
+  // 单槽位: 只保留最新一段, 旧段被新段覆盖(用户最新说的话才是他想表达的)。
+  let videoCallPendingRecording = null;
+
+  function newVideoCallTurn() {
+    videoCallTurnSeq += 1;
+    const turn = {
+      id: videoCallTurnSeq,
+      phase: 'fetching', // fetching | rendering | tts_playing | done | failed
+      fetchController: (typeof AbortController !== 'undefined') ? new AbortController() : null,
+      startedAt: Date.now(),
+      // 同步给三个布尔锁, 让现有 isAiResponding/isAiSpeaking/isTtsPlaying 检查者继续工作
+      onPhaseChange: function (nextPhase) {
+        this.phase = nextPhase;
+        videoCallState.isAiResponding = (nextPhase === 'fetching' || nextPhase === 'rendering');
+        videoCallState.isAiSpeaking = (nextPhase === 'tts_playing');
+        videoCallState.isTtsPlaying = (nextPhase === 'tts_playing');
+      }
+    };
+    videoCallActiveTurn = turn;
+    // 同步初始布尔
+    videoCallState.isAiResponding = true;
+    videoCallState.isAiSpeaking = false;
+    videoCallState.isTtsPlaying = false;
+    videoCallState.canUserSpeak = false;
+    return turn;
+  }
+
+  function isInVideoCallTurn() {
+    return !!videoCallActiveTurn
+      && videoCallActiveTurn.phase !== 'done'
+      && videoCallActiveTurn.phase !== 'failed';
+  }
+
+  // 统一收口: TTS 队列空 / 错误 / 无 TTS / 异常兜底, 都走这里
+  function finishVideoCallTurn(turn, reason = '') {
+    if (!turn) return;
+    if (!videoCallActiveTurn || videoCallActiveTurn.id !== turn.id) return; // ★ turnId 守卫
+    turn.onPhaseChange('done');
+    videoCallActiveTurn = null;
+    videoCallState.isAiResponding = false;
+    videoCallState.isAiSpeaking = false;
+    videoCallState.isTtsPlaying = false;
+    videoCallState.canUserSpeak = true;
+    setVideoCallStatusText(reason ? '语音播放失败，已跳过本句，可以说话' : 'AI已说完，可以说话');
+    logCallTtsRecoveryDiag('video', reason);
+    console.log('[视频通话] Turn #' + turn.id + ' 完成 (' + (reason || 'ok') + '), 可以说话。');
+    // 消费暂存的录音 (不丢用户输入)
+    if (videoCallPendingRecording && videoCallState.isActive) {
+      const pending = videoCallPendingRecording;
+      videoCallPendingRecording = null;
+      processVideoCallRecording(pending);
+    }
+    startVideoCallAutoListening();
+  }
+
+  // 异常路径专用 finish — 跟 finishVideoCallTurn 区别只在于日志文案
+  function failVideoCallTurn(turn, reason) {
+    if (!turn) return;
+    if (!videoCallActiveTurn || videoCallActiveTurn.id !== turn.id) return;
+    turn.onPhaseChange('failed');
+    videoCallActiveTurn = null;
+    videoCallState.isAiResponding = false;
+    videoCallState.isAiSpeaking = false;
+    videoCallState.isTtsPlaying = false;
+    videoCallState.canUserSpeak = true;
+    setVideoCallStatusText('出错了：' + (reason || '未知错误'));
+    logCallTtsRecoveryDiag('video', reason || 'unknown');
+    // v0.5.0 P27: 【重要】失败路径【不】消费 videoCallPendingRecording。
+    //   原因: 消费会形成无限循环 ——
+    //     pending → ASR → AI 失败 → failVideoCallTurn 消费同一段 pending → ASR → AI 失败 → ...
+    //   当后端持续 5xx / 429 时这个循环永远不会停, 每一轮都发一次 ASR + 一次 AI 请求。
+    //   正确行为: 失败后只清理状态 + 恢复监听, 等用户【下一次主动说话】再重新发起一轮。
+    //   (finishVideoCallTurn 正常完成路径仍然消费 pending, 那是用户"插一句"的正常语义)
+    if (videoCallPendingRecording) {
+      console.warn('[视频通话] 本轮失败, 保留待处理录音等用户下次主动说话 (不自动重试)');
+    }
+    startVideoCallAutoListening();
+  }
+
   const VIDEO_CALL_AUTO_LISTEN_CONFIG = {
     noSpeechTimeoutMs: 8000,
     minRecordingMs: 800,
@@ -1163,6 +1253,31 @@
     videoCallState.startTime = Date.now();
     videoCallState.callHistory = [];
 
+    // v0.5.0 P26: 新通话开始, 旧 turn 状态机清零 (兜底: 防止异常路径漏掉 endVideoCall)
+    videoCallActiveTurn = null;
+    videoCallPendingRecording = null;
+
+    // v0.5.0 P27: 在【用户手势链路内】预创建 + resume AudioContext。
+    //   iOS Safari / WKWebView 要求 AudioContext 必须在 user gesture (点击/触摸) 里创建或 resume,
+    //   否则永远是 'suspended'。startVideoCall 通常由"接听/发起通话"按钮点击触发, 满足手势条件。
+    //   这里预创建后, startVideoCallAutoListening 里走的是"复用"分支, 不再依赖那里的 new+resume。
+    //   失败不影响通话: 整个块 try/catch 吞掉, 交给 startVideoCallAutoListening 兜底再创建一次。
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioContextClass) {
+        // 复用策略: 已有可用实例就不重复创建 (endVideoCall 已负责 close + 清引用)
+        if (!videoCallAudioContext || videoCallAudioContext.state === 'closed') {
+          videoCallAudioContext = new AudioContextClass();
+        }
+        if (videoCallAudioContext.state === 'suspended'
+          && typeof videoCallAudioContext.resume === 'function') {
+          videoCallAudioContext.resume().catch(() => { /* 非手势环境, 静默失败 */ });
+        }
+      }
+    } catch (audioCtxPreCreateError) {
+      console.warn('视频通话 AudioContext 预创建失败, 交由自动监听阶段兜底:', audioCtxPreCreateError);
+    }
+
 
     const preCallHistory = chat.history.slice(-10);
     videoCallState.preCallContext = preCallHistory.map(msg => {
@@ -1307,14 +1422,9 @@
       videoCallAnalyser = null;
     }
 
-    if (videoCallAudioContext) {
-      try {
-        videoCallAudioContext.close();
-      } catch (error) {
-        console.warn('视频通话 AudioContext 关闭失败:', error);
-      }
-      videoCallAudioContext = null;
-    }
+    // v0.5.0 P26: audioContext 不在这里 close, 整个通话期间复用同一个实例,
+    // 在 endVideoCall 才统一关闭。 避免每回合创建一个 AudioContext 导致 Chrome 上限撞车。
+    // 注意: audioContext 仍可能被显式设为 null (例如某次启动失败), 这里不强行 close。
   }
 
   function stopVideoCallMicStream() {
@@ -1346,6 +1456,24 @@
   async function processVideoCallRecording(audioBlob) {
     if (!videoCallState.isActive || !audioBlob || audioBlob.size === 0) return;
 
+    // v0.5.0 P26: turnId 守卫 — 如果当前 turn 还在进行 (fetching / rendering / tts_playing),
+    // 不发起新的 ASR 流程。改为暂存到 videoCallPendingRecording, 等 finishVideoCallTurn 自动消费。
+    // 这样既不丢用户输入, 又保证同一时刻最多一个 AI 回合在进行。
+    if (isInVideoCallTurn()) {
+      console.warn('[视频通话] 当前 turn 仍在进行, 暂存本段录音等回合结束后消费 (turn #' + videoCallActiveTurn.id + ')');
+      videoCallPendingRecording = audioBlob;
+      return;
+    }
+
+    // v0.5.0 P27: ASR 互斥守卫 — 上一次 ASR 还在 in-flight 时不并发第二次,
+    //   改为暂存到 videoCallPendingRecording, 由 ASR 失败/成功后的收口路径消费。
+    //   (ASR 与 AI fetch 是两条独立 HTTP 通道, 免费档并发上限 1, 并发必然被拒)
+    if (videoCallIsRecognizing) {
+      console.warn('[视频通话] ASR 正在识别中, 暂存本段录音 (覆盖上一段待处理录音)');
+      videoCallPendingRecording = audioBlob;
+      return;
+    }
+
     const userAvatar = document.querySelector('.participant-avatar-wrapper[data-participant-id="user"] .participant-avatar');
 
     try {
@@ -1369,11 +1497,22 @@
       triggerAiInCallAction(recognizedText);
     } catch (error) {
       console.error('视频通话 ASR 识别失败:', error);
+      console.error('视频通话 ASR 识别失败:', error);
       setVideoCallStatusText('语音识别失败');
       if (typeof showToast === 'function') {
         showToast('语音识别失败：' + (error && error.message ? error.message : '未知错误'));
       } else if (typeof showCustomAlert === 'function') {
         showCustomAlert('语音识别失败', error && error.message ? error.message : '未知错误');
+      }
+      // v0.5.0 P27: ASR 失败后必须重新进入 listening ——
+      //   MediaRecorder onstop event 里已经 cleanupVideoCallAudioAnalysis + stopVideoCallMicStream,
+      //   若不重启, 用户的下一次说话没人监听 (只能按手动录音键才能恢复)。
+      //   注意: 必须在 finally 清 videoCallIsRecognizing 之前先把标志置 false,
+      //   否则 startVideoCallAutoListening 入口守卫 (1632) 会因 videoCallIsRecognizing=true 直接 return。
+      videoCallIsRecognizing = false;
+      if (videoCallState.isActive) {
+        console.warn('[视频通话] ASR 失败, 重新启动自动监听');
+        startVideoCallAutoListening();
       }
     } finally {
       videoCallIsRecognizing = false;
@@ -1384,7 +1523,8 @@
   }
 
   async function startVideoCallRecording() {
-    if (!videoCallState.isActive || !videoCallState.isUserParticipating || isVideoCallRecording) return;
+    // v0.5.0 P26: 手动录音也不能在 AI 回合进行中启动 (与自动 listen 同等待遇)
+    if (!videoCallState.isActive || !videoCallState.isUserParticipating || isVideoCallRecording || isInVideoCallTurn()) return;
 
     const stream = await ensureVideoCallMicStream();
     const mimeType = getVideoCallRecordingMimeType();
@@ -1550,7 +1690,22 @@
         throw new Error('当前环境不支持 Web Audio 音量检测');
       }
 
-      videoCallAudioContext = new AudioContextClass();
+      // v0.5.0 P26: 复用 audioContext — 通话期间只创建一次, endVideoCall 才关闭。
+      // 避免每轮 AI 回合都 new AudioContext() 在 Chrome 上撞活跃上限 (~6)。
+      if (!videoCallAudioContext || videoCallAudioContext.state === 'closed') {
+        videoCallAudioContext = new AudioContextClass();
+      }
+      // v0.5.0 P27: iOS Safari / WKWebView 上新建的 AudioContext 默认是 'suspended',
+      //   不 resume 的话 analyser 永远读到全 0 → volume 恒低于阈值 →
+      //   hasDetectedSpeech 永远 false → 8 秒 noSpeechTimeoutMs 到点后静默停掉, 用户说话没人听。
+      //   这里 resume 只是尽力而为 (iOS 严格要求 user gesture), 真正可靠的 resume 靠
+      //   startVideoCall 里在用户手势链路内的预创建 (见 D4)。
+      if (videoCallAudioContext.state === 'suspended'
+        && typeof videoCallAudioContext.resume === 'function') {
+        videoCallAudioContext.resume().catch((resumeErr) => {
+          console.warn('视频通话 AudioContext resume 失败 (可能需要用户交互):', resumeErr);
+        });
+      }
       videoCallAudioSource = videoCallAudioContext.createMediaStreamSource(videoCallMicStream);
       videoCallAnalyser = videoCallAudioContext.createAnalyser();
       videoCallAnalyser.fftSize = 2048;
@@ -1579,10 +1734,25 @@
     } catch (error) {
       console.error('视频通话自动聆听启动失败:', error);
       stopVideoCallAutoListening(false, 'start-error');
+      // v0.5.0 P27: 重置无效的 audioContext 引用。
+      //   原实现: catch 后 videoCallAudioContext 仍指向那个"创建失败/半残"的实例,
+      //   下次 startVideoCallAutoListening 的 `!ctx || state === 'closed'` 判断不成立 → 不会重建
+      //   → 每次都拿同一个坏 context 建 source/analyser → 永久失效, 只能重拨。
+      //   修法: 这里 close 掉并清引用, 让下一次正常调用能重新 new。
+      if (videoCallAudioContext && videoCallAudioContext.state !== 'closed') {
+        try { videoCallAudioContext.close(); } catch (closeErr) { /* ignore */ }
+      }
+      videoCallAudioContext = null;
+      videoCallAudioSource = null;
+      videoCallAnalyser = null;
       setVideoCallStatusText('无法开始聆听');
       if (typeof showToast === 'function') {
         showToast('无法开始聆听：' + (error && error.message ? error.message : '未知错误'));
       }
+      // v0.5.0 P27: 【不在这里递归 retry】——
+      //   立即重试会让"环境性问题"(比如 iOS 缺 user gesture)变成死循环刷屏。
+      //   恢复路径: 等下一次 finishVideoCallTurn / failVideoCallTurn 调 startVideoCallAutoListening,
+      //   或用户手动点录音键触发 startVideoCallRecording, 那时 audioContext 已是 null 会重建。
     }
   }
 
@@ -1596,6 +1766,23 @@
     // v0.5.0 P25: 挂断不需要管"启用音频"按钮 — 它 DOM 在呼叫等待页内部, 切屏时自动隐藏。
 
     if (!videoCallState.isActive) return;
+
+    // v0.5.0 P26: 挂断时强制收口 turn 状态机, 避免旧异步任务污染下一轮
+    //   1) abort 当前 fetch (如果有) — fetch 接收到 abort 信号会抛 AbortError, 内层 catch
+    //      + 外层 triggerAiInCallAction 兜底都会处理 (但已无 activeTurn, 不会再写状态)
+    //   2) 清掉 activeTurn, 后续 finishVideoCallTurn 等守卫直接走 stale 路径
+    //   3) 清掉 pendingRecording — 挂断后不需要消费
+    //   4) stopCurrentTts — tts-audio.js 暴露, 真正停止当前段播放 + 清队列 + isTtsPlaying=false
+    //      (原来的 stopTtsQueue 只清队列, 不停当前播放, TTS 完成回调可能继续触发)
+    if (videoCallActiveTurn && videoCallActiveTurn.fetchController) {
+      try { videoCallActiveTurn.fetchController.abort(); } catch (e) { /* ignore */ }
+    }
+    videoCallActiveTurn = null;
+    videoCallPendingRecording = null;
+    if (typeof window.stopCurrentTts === 'function') {
+      try { window.stopCurrentTts(); } catch (e) { console.warn('stopCurrentTts failed', e); }
+    }
+
     // v0.1.30 卸载 Live2D (释放 PIXI GL 资源)
     unmountLive2DForCall();
     stopTtsQueue();
@@ -1690,6 +1877,16 @@
     if (typeof stopCamera === 'function') {
       stopCamera();
     }
+
+    // v0.5.0 P26: 通话结束时统一关闭 audioContext (整个通话期间复用同一个)
+    //   close() 是异步的但我们不 await — 同步发起关闭 + 清引用即可
+    //   浏览器会在 background 完成真实释放, 不会阻塞挂断流程
+    if (videoCallAudioContext && videoCallAudioContext.state !== 'closed') {
+      try { videoCallAudioContext.close(); } catch (e) { /* ignore */ }
+      videoCallAudioContext = null;
+    }
+    if (videoCallAudioSource) { videoCallAudioSource = null; }
+    if (videoCallAnalyser) { videoCallAnalyser = null; }
 
     videoCallState = {
       isActive: false,
@@ -1823,16 +2020,21 @@
 
 
   async function triggerAiInCallActionInner(userInput = null) {
-    if (!videoCallState.isActive || videoCallState.isAiResponding) return;
+    if (!videoCallState.isActive) return;
+    // v0.5.0 P26: 旧守卫 videoCallState.isAiResponding 改成 isInVideoCallTurn (turnId-based)
+    if (isInVideoCallTurn()) return;
 
     stopVideoCallAutoListening(false, 'ai-start');
 
+    // v0.5.0 P26: 建立新 turn — 同时同步三个布尔锁, 保留兼容
     const aiTurnId = ++videoCallAiTurnSeq;
     videoCallState.currentAiTurnId = aiTurnId;
     videoCallState.hasRenderedAiResponse = false;
     videoCallState.renderedAiTurnId = 0;
-    videoCallState.isAiResponding = true;
-    videoCallState.canUserSpeak = false;
+    const turn = newVideoCallTurn();
+    // turn.id 是回合序号 (从 1 开始), aiTurnId 是 AI 文本序号 (从 1 开始, 可能复用因为 inner 不会重置 turn id)
+    // 这里 turn.id 用于本模块内 stale 回调守卫; aiTurnId 用于 markVideoCallAiResponseRendered 旧路径
+    console.log('[视频通话] 新回合 turn #' + turn.id + ' (aiTurn ' + aiTurnId + ')');
     if (userInput) {
       setVideoCallStatusText('AI正在思考…');
     }
@@ -1960,15 +2162,16 @@ ${linkedContents}
       callFeed.scrollTop = callFeed.scrollHeight;
 
       // 构建视觉输入: 真实摄像头帧 / 用户上传的静态图片 (优先级: 摄像头 > 静态图)
-      // 修手机 PWA + 桌面不一致: 之前只判 enableRealCamera, 当用户只上传图片不启摄像头时,
-      // 静态图只进 DOM 显示, 不会进 AI 视觉请求 → AI 看不见这张图.
-      // 现在 enableRealCamera 和 localVideoUrl 任一为真都构造视觉输入, 共用同一条 image_url 链路.
+      // v0.5.0 P26: 改成按需抓帧 (fetch 前一次性抓最新帧), 不再依赖后台 captureInterval
+      //   - video-optimization.js 已暴露 window.captureCameraFrame
+      //   - 不再读 lastCapturedImage, 避免后台定时抓帧在 fetch in-flight 时变化导致
+      //     "请求体里塞着上一秒的图" 这种诡异行为
       let userContent = userInput;
       const vo = chat.videoOptimization;
       if (vo && (vo.enableRealCamera || vo.localVideoUrl)) {
         let visionUrl = '';
-        if (vo.enableRealCamera && window.getLastCameraCapture) {
-          visionUrl = window.getLastCameraCapture() || '';
+        if (vo.enableRealCamera && typeof window.captureCameraFrame === 'function') {
+          visionUrl = window.captureCameraFrame() || '';
         }
         if (!visionUrl && vo.localVideoUrl) {
           // localVideoUrl 是 FileReader.readAsDataURL 生成的 data URL, 直接可喂 image_url
@@ -1981,6 +2184,13 @@ ${linkedContents}
             { type: 'image_url', image_url: { url: visionUrl } }
           ];
         }
+      }
+
+      // v0.5.0 P26: turnId 守卫 — stale fetch 返回时不污染当前 callHistory
+      //   (典型场景: 旧回合 fetch 在 endVideoCall → startVideoCall 后才返回)
+      if (!videoCallActiveTurn || videoCallActiveTurn.id !== turn.id) {
+        console.warn('[视频通话] turn #' + turn.id + ' stale fetch 返回, 跳过 callHistory.push user');
+        return;
       }
 
       videoCallState.callHistory.push({
@@ -2093,8 +2303,13 @@ ${linkedContents}
         && typeof window.fetchViaOpenAICompatibleProxy === 'function'
         && typeof window.isMainApiProxyEnabled === 'function'
         && window.isMainApiProxyEnabled();
+      // v0.5.0 P26: 直接 fetch 路径加 AbortController.signal — endVideoCall 时能立刻取消 in-flight 请求,
+      //   避免旧回合的 fetch 返回时污染新通话 callHistory (turnId 守卫也保底, 但 abort 更及时)。
+      //   Gemini 与 fetchViaOpenAICompatibleProxy 包装路径暂未注入 signal (wrapper 内部不支持参数透传),
+      //   那两条路径只靠 turnId 守卫拒绝 stale fetch。
+      const directFetchOpts = (turn && turn.fetchController ? { signal: turn.fetchController.signal } : {});
       const response = isGemini
-        ? await fetch(geminiConfig.url, geminiConfig.data)
+        ? await fetch(geminiConfig.url, Object.assign({}, geminiConfig.data || {}, directFetchOpts))
         : useMainApiProxy
           ? await window.fetchViaOpenAICompatibleProxy({
             baseUrl: proxyUrl,
@@ -2103,14 +2318,14 @@ ${linkedContents}
             payload: callPayload,
             method: 'POST'
           })
-          : await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, {
+          : await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, Object.assign({
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${apiKey}`
             },
             body: JSON.stringify(callPayload)
-          });
+          }, directFetchOpts));
       if (!response.ok) {
         let errMsg = `HTTP ${response.status}`;
         try { const errData = await response.json(); errMsg = errData?.error?.message || errData?.message || errData?.detail || JSON.stringify(errData); } catch(e) { errMsg += ` (${response.statusText})`; }
@@ -2145,6 +2360,11 @@ ${linkedContents}
           callFeed.appendChild(aiBubble);
           renderedAiContentCount++;
           markVideoCallAiResponseRendered(aiTurnId);
+          // v0.5.0 P26: turnId 守卫 — 旧回合 stale fetch 不污染当前 callHistory
+          if (!videoCallActiveTurn || videoCallActiveTurn.id !== turn.id) {
+            console.warn('[视频通话] turn #' + turn.id + ' stale fetch 群聊返回, 跳过 callHistory.push');
+            return;
+          }
           videoCallState.callHistory.push({
             role: 'assistant',
             content: `${turn.name}: ${turn.speech}`,
@@ -2163,7 +2383,7 @@ ${linkedContents}
         if (renderedAiContentCount === 0) {
           throw new Error('AI返回为空');
         }
-        onVideoCallTtsQueueFinished();
+        finishVideoCallTurn(turn, 'group-no-tts');
       } else {
         // P6: 单人视频通话改为纯对白模式 (跟现有语音通话单聊一致)
         //   - AI 返回纯文本, parseAiResponse 兜底返回 [{ type: 'text', content: originalText }]
@@ -2205,15 +2425,30 @@ ${linkedContents}
           const isReset = isVideoCallExpressionReset(exprName);
           const lastApplied = videoCallState.lastAppliedExpression || '';
           const needResetBefore = !isReset && lastApplied && lastApplied !== '恢复' && lastApplied !== '默认' && lastApplied !== exprName;
+          // v0.5.0 P26.1: 这里【不能】用 turnId 守卫。
+          //   原因: 本 IIFE 是 fire-and-forget, 设计上生命周期【故意长于单个 turn】——
+          //   它写入的 lastAppliedExpression 要等【下一轮】才被 needResetBefore 读走,
+          //   用来实现"表情互斥叠加"的跨轮记忆/恢复。
+          //   P26 曾加 `videoCallActiveTurn.id === thisTurnId` 三道守卫, 结果:
+          //     await applyVideoCallExpressionDirective('恢复', chat) 期间,
+          //     TTS 播完 → onVideoCallTtsQueueFinished → finishVideoCallTurn
+          //     → videoCallActiveTurn = null → 恢复后第二道守卫必然 return
+          //     → 表情永不切换 + lastAppliedExpression 永不写入
+          //     → 表现为"Live2D 表情/自动恢复全失效"(背景切换不受影响, 那条链没加守卫)。
+          //   改用 videoCallState.isActive 判断生命周期:
+          //     isActive 覆盖了真正需要拦截的场景 (挂断 endVideoCall 置 false +
+          //     unmountLive2DForCall 已销毁 model), 且不受 turn 收口时机影响。
           (async () => {
             try {
+              if (!videoCallState.isActive) return;
               if (needResetBefore) {
                 console.log('[视频通话表情] 先卸旧表情 →', lastApplied, '再切 →', exprName);
                 await applyVideoCallExpressionDirective('恢复', chat);
               }
+              if (!videoCallState.isActive) return;
               const ok = await applyVideoCallExpressionDirective(exprName, chat);
+              if (!videoCallState.isActive) return;
               // 记录"本轮实际生效"的表情, 给下一轮兜底用。
-              // 恢复/默认这种"卸妆"指令不要记为 lastApplied, 否则下一轮切新表情时会以为旧表情还在。
               if (ok && !isReset) {
                 videoCallState.lastAppliedExpression = exprName;
               } else if (isReset) {
@@ -2239,6 +2474,11 @@ ${linkedContents}
           addLongPressListener(aiBubble, () => showCallMessageActions(aiTimestamp));
           callFeed.appendChild(aiBubble);
 
+          // v0.5.0 P26: turnId 守卫
+          if (!videoCallActiveTurn || videoCallActiveTurn.id !== turn.id) {
+            console.warn('[视频通话] turn #' + turn.id + ' stale fetch 返回, 跳过单聊 callHistory.push');
+            return;
+          }
           videoCallState.callHistory.push({
             role: 'assistant',
             content: messageContent,
@@ -2251,8 +2491,10 @@ ${linkedContents}
             setVideoCallStatusText('AI正在说话…');
             if (playVideoCallPureTTS(messageContent, voiceId, { source: 'videoCall' })) {
               hasVideoCallTtsPlayback = true;
-              videoCallState.isAiSpeaking = true;
-              videoCallState.isTtsPlaying = true;
+              // v0.5.0 P26: 进入 tts_playing 阶段 — 通过 turn.onPhaseChange 同步三个布尔锁
+              if (videoCallActiveTurn && videoCallActiveTurn.id === turn.id) {
+                turn.onPhaseChange('tts_playing');
+              }
             }
           }
         });
@@ -2270,7 +2512,8 @@ ${linkedContents}
           setTimeout(() => speakingAvatar.classList.remove('speaking'), speakTime);
         }
         if (!hasVideoCallTtsPlayback) {
-          onVideoCallTtsQueueFinished();
+          // v0.5.0 P26: 没 TTS 路径 — 直接 finish turn, 不再依赖 onVideoCallTtsQueueFinished (避免依赖 hasRenderedAiResponse)
+          finishVideoCallTurn(turn, 'no-tts');
         }
       }
 
@@ -2287,14 +2530,18 @@ ${linkedContents}
       // → 用户根本看不到任何错误, 只感觉"AI 突然不说话了"。
       // 这里同步把错误显示到【可见的】状态胶囊上, 让故障一眼可见。
       setVideoCallStatusText('出错了：' + error.message);
-      videoCallState.callHistory.push({
-        role: 'assistant',
-        content: `[ERROR: ${error.message}]`
-      });
+      // v0.5.0 P26: turnId 守卫 — 异常路径也拒绝 stale 写入
+      if (videoCallActiveTurn && videoCallActiveTurn.id === turn.id) {
+        videoCallState.callHistory.push({
+          role: 'assistant',
+          content: `[ERROR: ${error.message}]`
+        });
+      }
       // 错误路径也要停彩铃 (跟语音通话 catch 里 stopVoiceCallWaitingMusic('error') 等价)
       stopVideoCallWaitingMusic('error');
       markVideoCallAiResponseRendered(aiTurnId);
-      onVideoCallTtsQueueFinished();
+      // v0.5.0 P26: 用 failVideoCallTurn 替代 onVideoCallTtsQueueFinished — turnId 守卫拒绝 stale
+      failVideoCallTurn(turn, error.message);
     }
     // ★ 每次发送后修剪历史
     trimCallHistory(videoCallState);
@@ -2312,13 +2559,21 @@ ${linkedContents}
     try {
       return await triggerAiInCallActionInner(userInput);
     } catch (e) {
+      // v0.5.0 P26: 兜底异常 — 强制走 failVideoCallTurn 释放 turn + 同步布尔锁
+      //   (旧实现直接改 videoCallState 三个布尔锁, 但 activeTurn 没清理 — 如果用户很快又说话
+      //    会触发 isInVideoCallTurn 守卫卡死)
       console.error('[视频通话] AI 回合异常, 已强制复位通话状态 (否则会永久卡死):', e);
-      videoCallState.isAiResponding = false;
-      videoCallState.isAiSpeaking = false;
-      videoCallState.isTtsPlaying = false;
-      videoCallState.canUserSpeak = true;
-      const msg = (e && e.message) ? e.message : String(e);
-      setVideoCallStatusText('出错了：' + msg);
+      const turn = videoCallActiveTurn;
+      if (turn) {
+        failVideoCallTurn(turn, (e && e.message) ? e.message : String(e));
+      } else {
+        videoCallState.isAiResponding = false;
+        videoCallState.isAiSpeaking = false;
+        videoCallState.isTtsPlaying = false;
+        videoCallState.canUserSpeak = true;
+        const msg = (e && e.message) ? e.message : String(e);
+        setVideoCallStatusText('出错了：' + msg);
+      }
       return null;
     }
   }
@@ -2353,19 +2608,16 @@ ${linkedContents}
 
   function onVideoCallTtsQueueFinished(reason = '') {
     if (!videoCallState.isActive) return;
-    if (videoCallState.isAiResponding && !videoCallState.hasRenderedAiResponse) {
-      console.warn('[视频通话] 忽略早于本轮 AI 回复渲染的 TTS 完成回调。');
+    // v0.5.0 P26: turnId 守卫 — 不再用 hasRenderedAiResponse 做跨回合身份判断
+    //   (旧实现里这个守卫有缺陷: 旧轮 stale 回调在新轮 hasRenderedAiResponse=true 时会通过,
+    //    错误释放新轮锁 — 见审计报告 A2)
+    //   新规则: 只有当前 activeTurn 存在时才释放, 否则视为 stale 回调直接丢弃
+    const turn = videoCallActiveTurn;
+    if (!turn) {
+      console.warn('[视频通话] TTS 完成回调到达但无活跃 turn, 丢弃 (stale)');
       return;
     }
-
-    videoCallState.isAiResponding = false;
-    videoCallState.isAiSpeaking = false;
-    videoCallState.isTtsPlaying = false;
-    videoCallState.canUserSpeak = true;
-    setVideoCallStatusText(reason ? '语音播放失败，已跳过本句，可以说话' : 'AI已说完，可以说话');
-    logCallTtsRecoveryDiag('video', reason);
-    console.log('[视频通话] AI 多段 TTS 已全部播放完成，可以说话。');
-    startVideoCallAutoListening();
+    finishVideoCallTurn(turn, reason || '');
   }
 
   // ==================== 语音通话功能 ====================

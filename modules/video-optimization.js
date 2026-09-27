@@ -458,7 +458,16 @@ function updateCameraStatus(isActive, message) {
 }
 
 // 截取摄像头画面
-function captureCameraFrame() {
+// v0.5.0 P26.1: 函数改名 doCaptureCameraFrame —— 修 window.captureCameraFrame 无限递归
+//   真凶: 原来叫 `function captureCameraFrame()` (全局函数声明), 文件末尾又写
+//     `window.captureCameraFrame = function () { return captureCameraFrame(); }`。
+//     浏览器全局作用域下, 显式赋值给 window.captureCameraFrame 会覆盖掉同名的全局函数声明,
+//     于是包装函数体内的 `captureCameraFrame()` 解析到的是 window.captureCameraFrame (它自己)
+//     → 无限递归 → RangeError: Maximum call stack size exceeded。
+//   表现: 视频通话里一说话就崩, AI 请求发不出去, 表现成"聆听/识别无限循环"。
+//   修法: 内部实现用独立名字 doCaptureCameraFrame, window 上直接挂这个实现本身,
+//        不再包一层调用同名全局的壳。
+function doCaptureCameraFrame() {
   const videoElement = document.getElementById('local-camera-video');
   if (!videoElement || !cameraStream) return null;
 
@@ -476,26 +485,30 @@ function captureCameraFrame() {
   return imageData;
 }
 
-// 启动定时截图
+// v0.5.0 P26: 删除后台 setInterval 定时抓帧 (旧的 startCameraCapture)
+//   - 旧实现每 5 秒抓一帧, base64 写入 lastCapturedImage, 然后 fetch 时塞进 image_url
+//   - 副作用: 抓帧不暂停 (AI 回合中也在抓), 持续占用 CPU + 内存
+//   - 新实现: 改成按需抓帧, 调用方 (video-voice-call.js) 在 AI fetch 前调一次 window.captureCameraFrame()
+//   - startCameraCapture 函数保留兼容入口但只跑一次, 不创建 setInterval
 function startCameraCapture(intervalSeconds) {
+  // 旧调用方传 intervalSeconds, 现在忽略 — 仅作兼容
   if (captureInterval) {
     clearInterval(captureInterval);
+    captureInterval = null;
   }
-
-  // 立即截取一次
-  captureCameraFrame();
-
-  // 定时截取
-  captureInterval = setInterval(() => {
-    captureCameraFrame();
-    console.log('已截取摄像头画面');
-  }, intervalSeconds * 1000);
+  // 立即截取一次作为初始帧 (UI 展示用)
+  doCaptureCameraFrame();
 }
 
-// 获取最新截图
+// 获取最新截图 — 保留旧 API 给非视频通话模块读
 window.getLastCameraCapture = function () {
   return lastCapturedImage;
 };
+
+// v0.5.0 P26: 按需抓帧入口 — 视频通话 AI fetch 前调用, 同步返回 base64
+//   注意: 直接挂实现函数本身, 不要写成 `function(){ return captureCameraFrame(); }`
+//   —— 那会再次因为全局同名覆盖而无限递归 (见上方 P26.1 注释)。
+window.captureCameraFrame = doCaptureCameraFrame;
 
 // P3-2: 删 DOMContentLoaded 自动 initVideoOptimization() (旧聊天设置页 DOM 已删, 不再需要自动绑)
 //   准备页由 Live2DCallPrep.init() 显式调 initVideoOptimization('prep-')

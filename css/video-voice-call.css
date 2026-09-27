@@ -474,6 +474,10 @@
               用户反馈"光晕太单薄"→ 套一颗【粉色发光小胶囊】:
                 · 靠左贴边: 和 .video-call-controls 的 padding-left(20px) 对齐
                 · 挂在挂断键那排按钮正上方: 底边距屏幕底 124px
+                · v0.5.0 P19 往上挪到花环外面: 124px 落在花环内部, 胶囊会被
+                  #video-call-controls-frame (bottom:0 / height:220 / z-index:50) 的玻璃压住,
+                  也和聊天框 #video-call-main (bottom:140 / z-index:50) 抢同一块位置 → 用户反馈"挡事".
+                  花环上沿在 bottom 220px, 留 10px 间隙 → 230px.
                 · 不加 backdrop-filter (会拖累 Live2D canvas 渲染)
                 · 字仍是粉色发光, 加在胶囊上
               注意: 只作用于视频通话页, 语音通话 (#voice-call-screen) 的样式一个字都没动。 */
@@ -482,7 +486,7 @@
                position: absolute;
                left: 20px;
                right: auto;
-               bottom: 124px;
+               bottom: 230px;
                z-index: 100000;
                width: auto;
                max-width: calc(100% - 40px);
