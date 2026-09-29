@@ -30,7 +30,11 @@
         [PROVIDERS.MINIMAX]: {
           provider: PROVIDERS.MINIMAX,
           apiKey: '',
-          model: 'speech-01-hd',
+          // 2026-09-29: speech-01-hd → speech-2.6-hd。
+          //   01/02 系列是逐语言专训音色, 跨语言切换能力弱; 2.5+ 才支持 40 语种自由切换,
+          //   这是"一个音色同时读中日"能成立的前提。
+          //   注意: deepMerge 会保留用户已存的旧 model, 老配置需在设置页手动切换。
+          model: 'speech-2.6-hd',
           voice: '',
           groupId: '',
           endpoint: MINIMAX_ENDPOINT
@@ -96,7 +100,7 @@
 
     const groupId = apiConfig.minimaxGroupId || localStorage.getItem('minimax-group-id') || '';
     const apiKey = apiConfig.minimaxApiKey || localStorage.getItem('minimax-api-key') || '';
-    const model = apiConfig.minimaxModel || localStorage.getItem('minimax-model') || 'speech-01-hd';
+    const model = apiConfig.minimaxModel || localStorage.getItem('minimax-model') || 'speech-2.6-hd';
     const legacyDomain = apiConfig.minimaxDomain || localStorage.getItem('minimax-domain') || 'https://api.minimax.chat';
     const endpoint = /\/v1\/t2a_v2\/?$/i.test(legacyDomain)
       ? legacyDomain.replace(/\/$/, '')
@@ -182,6 +186,32 @@
     return Boolean(ttsConfig.ttsEnabled);
   }
 
+  // --- 语言识别 (2026-09-29) ---
+  // 背景: MiniMax 系统音色是按语言分前缀的 (Japanese_* / Chinese (Mandarin)_* / English_*)。
+  //   同一音色跨语言朗读**必须**靠 language_boost 显式指定, 不传的话模型只能猜,
+  //   中文音色的表现就是"日语文本被念成中文"。
+  //
+  // ⚠️ 假名必须优先于汉字: 日语大量使用汉字, 若先判汉字会把日文整句误判成中文。
+  //    (注意: modules/message-actions.js 里那个 detectLanguage 是"汉字优先", 那是给
+  //     消息翻译用的源语言判断, 语义不同, 不可直接复用)
+  function detectBoostFromText(text) {
+    const s = String(text == null ? '' : text);
+    if (!s.trim()) return 'auto';
+    // 平假名 / 片假名 → 日语
+    if (/[\u3040-\u309f\u30a0-\u30ff]/.test(s)) return 'Japanese';
+    // 汉字 (CJK 统一表意文字) → 中文
+    if (/[\u4e00-\u9fa5\u3400-\u4dbf]/.test(s)) return 'Chinese';
+    return 'auto';
+  }
+
+  // 优先级: 显式指定的语言 > 文本自动识别。
+  //   传 'auto' / 空 / undefined 都视为"没指定", 交给自动识别。
+  function resolveLanguageBoost(text, languageBoost) {
+    const boost = String(languageBoost == null ? '' : languageBoost).trim();
+    if (boost && boost !== 'auto') return boost;
+    return detectBoostFromText(text);
+  }
+
   async function synthesize({ text, voice, signal, languageBoost } = {}) {
     if (!text || !String(text).trim()) {
       throw new Error('TTS 文本不能为空');
@@ -198,12 +228,15 @@
     }
 
     const finalVoice = voice || active.providerConfig.voice || '';
+    // 三条路径 (聊天 / 视频通话 / 语音通话) 都在这里收口:
+    //   传了具体语言就用用户的, 没传 (或传 auto) 就按文本自动识别。
+    const resolvedLanguageBoost = resolveLanguageBoost(text, languageBoost);
     return adapter.synthesize({
       text,
       voice: finalVoice,
       config: active.providerConfig,
       signal,
-      languageBoost
+      languageBoost: resolvedLanguageBoost
     });
   }
 
@@ -219,6 +252,8 @@
     FISH_AUDIO_ENDPOINT,
     getDefaultTtsConfig,
     normalizeTtsConfig,
+    detectBoostFromText,
+    resolveLanguageBoost,
     synthesize,
     isEnabled,
     persistConfig

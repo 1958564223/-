@@ -2489,7 +2489,10 @@ ${linkedContents}
 
           if (enableTts && voiceId) {
             setVideoCallStatusText('AI正在说话…');
-            if (playVideoCallPureTTS(messageContent, voiceId, { source: 'videoCall' })) {
+            if (playVideoCallPureTTS(messageContent, voiceId, {
+              source: 'videoCall',
+              languageBoost: getActiveCallTtsLanguageBoost()
+            })) {
               hasVideoCallTtsPlayback = true;
               // v0.5.0 P26: 进入 tts_playing 阶段 — 通过 turn.onPhaseChange 同步三个布尔锁
               if (videoCallActiveTurn && videoCallActiveTurn.id === turn.id) {
@@ -3031,6 +3034,20 @@ ${linkedContents}
     }
   }
 
+  // 2026-09-29: 取当前会话设置的 TTS 语种, 空串 = 自动识别。
+  //   通话路径以前完全没把语言参数送到 MiniMax (请求体里没有 language_boost 字段),
+  //   服务端按 null 处理 → 模型自己猜语种 → "日语音色念出中文"就是这么来的。
+  //   做成函数声明 (会提升), 所以 2492 行的视频通话分支也能直接用。
+  function getActiveCallTtsLanguageBoost() {
+    try {
+      const chatId = typeof state !== 'undefined' ? state.activeChatId : null;
+      const chat = chatId && typeof state !== 'undefined' ? state.chats?.[chatId] : null;
+      return chat?.settings?.ttsLanguage || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
   function enqueueVoiceCallDisplayTextTts(displayText, voiceId) {
     const ttsText = String(displayText || '').trim();
     const queueLength = typeof window.getCallTtsQueueLength === 'function' ? window.getCallTtsQueueLength() : 0;
@@ -3053,7 +3070,10 @@ ${linkedContents}
     }
 
     const enqueued = typeof playVideoCallPureTTS === 'function'
-      ? playVideoCallPureTTS(ttsText, voiceId, { source: 'voiceCall' })
+      ? playVideoCallPureTTS(ttsText, voiceId, {
+          source: 'voiceCall',
+          languageBoost: getActiveCallTtsLanguageBoost()
+        })
       : false;
 
     if (enqueued) {

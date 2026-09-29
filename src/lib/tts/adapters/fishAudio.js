@@ -23,8 +23,15 @@
     }
   }
 
-  async function synthesize({ text, voice, config, signal }) {
+  // 2026-09-29: 接住 languageBoost (与 minimax 适配器同签名)。
+  //   Fish Audio 的语种字段名与 MiniMax 不同, 且请求要先过 netlify/functions/fish-audio-tts
+  //   这层自有代理才能到上游, 所以这里**只声明不发送** —— 避免猜错字段名把请求打挂。
+  //   若将来要启用: 在 requestBody 里加字段, 同时改 netlify/functions/fish-audio-tts.js 透传。
+  async function synthesize({ text, voice, config, signal, languageBoost }) {
     if (!config.apiKey) throw new Error('Fish Audio API Key 不能为空');
+    if (languageBoost) {
+      console.debug('[TTS:fishAudio] 收到 languageBoost, 当前适配器不发送:', languageBoost);
+    }
 
     const endpoint =
       config.proxyUrl ||

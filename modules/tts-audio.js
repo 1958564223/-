@@ -39,6 +39,58 @@
     }
     return arrayBuffer;
   }
+
+  // --- 2026-09-29 语言收口 ---
+  // UI 下拉框的 locale code → MiniMax language_boost 取值
+  const TTS_LANGUAGE_MAP = {
+    'zh-CN': 'Chinese',
+    'zh-HK': 'Chinese,Yue',   // 粤语特殊处理
+    'en-US': 'English',
+    'ja-JP': 'Japanese',
+    'ko-KR': 'Korean',
+    'de-DE': 'German',
+    'fr-FR': 'French',
+    'es-ES': 'Spanish',
+    'it-IT': 'Italian',
+    'ru-RU': 'Russian',
+    'pt-BR': 'Portuguese',
+    'nl-NL': 'Dutch',
+    'pl-PL': 'Polish',
+    'sv-SE': 'Swedish',
+    'tr-TR': 'Turkish',
+    'id-ID': 'Indonesian',
+    'ms-MY': 'Malay',
+    'vi-VN': 'Vietnamese',
+    'th-TH': 'Thai',
+    'hi-IN': 'Hindi',
+    'ar-SA': 'Arabic'
+  };
+
+  /**
+   * 把 "UI 语言 / 未指定" 解析成最终要发给 MiniMax 的 language_boost。
+   * - 有具体语言 → 用用户的 (resolveLanguageBoost 会原样返回)
+   * - 空串 / 'auto' / undefined → 按文本自动识别 (假名→Japanese / 汉字→Chinese)
+   * 聊天与通话两条路径都用它, 保证缓存 key 和实际请求用的是同一个判定结果。
+   */
+  function resolveTtsLanguageBoost(text, language) {
+    // 优先用 TTSService 的实现, 保证与真实请求同一套规则
+    if (window.TTSService && typeof window.TTSService.resolveLanguageBoost === 'function') {
+      try {
+        return window.TTSService.resolveLanguageBoost(text, language);
+      } catch (e) {
+        console.warn('[TTS] resolveLanguageBoost 异常, 退回本地检测:', e);
+      }
+    }
+    // 兜底: TTSService 还没就绪时本地判定 (本函数会在算缓存 key 的阶段被调用, 不能抛错)
+    const boost = String(language == null ? '' : language).trim();
+    if (boost && boost !== 'auto') return boost;
+    const s = String(text == null ? '' : text);
+    if (!s.trim()) return 'auto';
+    if (/[\u3040-\u309f\u30a0-\u30ff]/.test(s)) return 'Japanese';
+    if (/[\u4e00-\u9fa5\u3400-\u4dbf]/.test(s)) return 'Chinese';
+    return 'auto';
+  }
+
   // --- TTS 播放队列（修复：前一条没读完就跳到最后一条的问题） ---
   const ttsQueue = [];
   // 2026-09-26: 取消 TTS 硬超时限制
@@ -139,7 +191,10 @@
     return error;
   }
 
-  async function synthesizeCallTtsWithTimeout(text, voiceId, source) {
+  // 2026-09-29: 新增 languageBoost 形参。
+  //   旧版只传 text/voice/signal, 请求体里根本没有 language_boost 字段,
+  //   MiniMax 按 null 处理 → 模型自行猜语种 → 日语音色念中文 (即"日语音色念出中文"的直接原因)。
+  async function synthesizeCallTtsWithTimeout(text, voiceId, source, languageBoost) {
     let requestAbortController = null;
     let requestTimeoutId = null;
     const requestStartedAt = Date.now();
@@ -157,7 +212,8 @@
       const synthesizePromise = window.TTSService.synthesize({
         text,
         voice: voiceId,
-        signal: requestAbortController ? requestAbortController.signal : undefined
+        signal: requestAbortController ? requestAbortController.signal : undefined,
+        languageBoost
       });
 
       const timeoutPromise = new Promise((_, reject) => {
@@ -233,7 +289,7 @@
     }
 
     isTtsPlaying = true;
-    const { text, voiceId, source } = ttsQueue.shift();
+    const { text, voiceId, source, languageBoost } = ttsQueue.shift();
     const isCallTts = isCallTtsSource(source);
     let audioUrl = '';
     let callPlayer = null;
@@ -253,9 +309,9 @@
 
       logCallTtsDiag('CALL_TTS_START', source, text);
 
-      console.log(`[TTS队列] 正在朗读 (剩余${ttsQueue.length}条): ${text}`);
+      console.log(`[TTS队列] 正在朗读 (剩余${ttsQueue.length}条, 语种: ${languageBoost || 'auto'}): ${text}`);
 
-      const result = await synthesizeCallTtsWithTimeout(text, voiceId, source);
+      const result = await synthesizeCallTtsWithTimeout(text, voiceId, source, languageBoost);
       if (!result || !result.blob || result.blob.size === 0) {
         throw new Error('empty_audio');
       }
@@ -441,6 +497,8 @@
   function playVideoCallPureTTS(text, voiceId, options = {}) {
     const source = options && options.source ? options.source : '';
     const isVoiceCallTts = source === 'voiceCall';
+    // 2026-09-29: 新增 languageBoost 透传 (用户选的具体语言, 空/undefined = 自动识别)
+    const requestedLanguageBoost = options && options.languageBoost ? options.languageBoost : '';
 
     let cleanText = '';
     if (isVoiceCallTts) {
@@ -481,7 +539,14 @@
     }
 
     // 3. 推入队列，串行处理
-    ttsQueue.push({ text: cleanText, voiceId, source });
+    //    2026-09-29: 用清洗后的 cleanText 判定语种, 并随任务一起入队,
+    //    这样 processNextTts 才能把它送到 TTSService。
+    ttsQueue.push({
+      text: cleanText,
+      voiceId,
+      source,
+      languageBoost: resolveTtsLanguageBoost(cleanText, requestedLanguageBoost)
+    });
 
     if (isVoiceCallTts) {
       logVoiceCallTtsDiag('VOICE_CALL_TTS_ENQUEUE_SUCCESS', {
@@ -550,16 +615,20 @@
 
     // 1. 获取 Voice ID
     let voiceId = bodyElement.dataset.voiceId;
-    // 新增：初始化语言设置，默认为普通话
-    let ttsLanguage = 'zh-CN';
+    // 2026-09-29: 默认改为空串 (而不是 'zh-CN')。
+    //   空串 = 未指定 = 交给 TTSService 按文本自动识别 (假名→Japanese / 汉字→Chinese)。
+    //   旧值 'zh-CN' 会让"自动识别 (Auto)"这个选项形同虚设 ——
+    //   UI 里 Auto 的 value 是空串, 旧代码用 truthy 判断, 空串被吞掉, ttsLanguage
+    //   永远停在 'zh-CN', 最终 language_boost 恒为 "Chinese", 日语必被念成中文。
+    let ttsLanguage = '';
 
     if (state.activeChatId && state.chats[state.activeChatId]) {
       const chat = state.chats[state.activeChatId];
       if (!chat.isGroup && chat.settings.enableTts !== false) {
         // 优先使用标签上的ID，如果没有则用设置里的
         if (!voiceId) voiceId = chat.settings.minimaxVoiceId;
-        // 【关键修复】获取用户在设置中选择的语言/方言
-        if (chat.settings.ttsLanguage) ttsLanguage = chat.settings.ttsLanguage;
+        // 2026-09-29: 必须判 undefined 而不是 truthy, 否则 "自动识别" (value="") 会被忽略
+        if (chat.settings.ttsLanguage !== undefined) ttsLanguage = chat.settings.ttsLanguage;
       }
 
       // 处理"仅读取对话"功能
@@ -569,6 +638,11 @@
         console.log('TTS仅读取对话模式：', text);
       }
     }
+
+    // 2026-09-29: 统一解析最终 language_boost。
+    //   必须在上面 ttsDialogueOnly 改写 text 之后算, 否则检测的是旧文本。
+    //   空串 / 'auto' → 按文本自动识别; 具体语言 → 尊重用户选择。
+    const boostValue = resolveTtsLanguageBoost(text, TTS_LANGUAGE_MAP[ttsLanguage] || 'auto');
 
     if (!voiceId) {
       alert("错误：无法获取 Voice ID。请检查角色设置。");
@@ -601,7 +675,9 @@
     document.querySelectorAll('.voice-play-btn').forEach(btn => btn.textContent = '▶');
 
     // 2. 检查缓存 (Key加入语言区分，防止切换方言后读到旧缓存)
-    const cacheKey = `tts_v2_${voiceId}_${ttsLanguage}_${text}`;
+    //    2026-09-29: 用最终生效的 boostValue 而不是 ttsLanguage ——
+    //    自动识别模式下 ttsLanguage 是空串, 用它做 key 会让不同语言的同文本互相串味。
+    const cacheKey = `tts_v2_${voiceId}_${boostValue}_${text}`;
     let cachedAudio = state.ttsCache.get(cacheKey);
     if (cachedAudio) {
       console.log("从缓存播放 TTS...");
@@ -615,38 +691,13 @@
     ttsAbortController = new AbortController();
     const signal = ttsAbortController.signal;
 
-    console.log(`请求 TTS... VoiceID: ${voiceId}, Language: ${ttsLanguage}`);
+    console.log(`请求 TTS... VoiceID: ${voiceId}, Language: ${ttsLanguage || 'auto'}, Boost: ${boostValue}`);
     if (button) button.style.display = 'none';
     spinner.style.display = 'block';
 
-    const languageMap = {
-      'zh-CN': 'Chinese',
-      'zh-HK': 'Chinese,Yue',   // 粤语特殊处理
-      'en-US': 'English',
-      'ja-JP': 'Japanese',
-      'ko-KR': 'Korean',
-      'de-DE': 'German',
-      'fr-FR': 'French',
-      'es-ES': 'Spanish',
-      'it-IT': 'Italian',
-      'ru-RU': 'Russian',
-      'pt-BR': 'Portuguese',
-      'nl-NL': 'Dutch',
-      'pl-PL': 'Polish',
-      'sv-SE': 'Swedish',
-      'tr-TR': 'Turkish',
-      'id-ID': 'Indonesian',
-      'ms-MY': 'Malay',
-      'vi-VN': 'Vietnamese',
-      'th-TH': 'Thai',
-      'hi-IN': 'Hindi',
-      'ar-SA': 'Arabic'
-    };
-
-    // 获取对应的 boost 值，如果没有匹配到就默认 'auto'
-    const boostValue = languageMap[ttsLanguage] || 'auto';
-
     // 2. 发送请求；MiniMax 适配器会使用 language_boost，其他平台会自动忽略
+    //    (2026-09-29: boostValue 已在上面统一解析, 这里直接用;
+    //     languageMap 已提到模块级 TTS_LANGUAGE_MAP, 供聊天与通话两条路径共用)
     try {
       if (!window.TTSService || !window.TTSService.isEnabled()) {
         throw new Error('语音播报未启用或 TTS 服务未加载');
