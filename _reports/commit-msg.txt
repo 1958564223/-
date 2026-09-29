@@ -1,4 +1,0 @@
-fix: 准备页副标题图片调大 + Live2D 挂载不藏我方摄像头小屏
-
-- css/live2d-call-prep.css: .live2d-call-prep-subtitle width 38% → 70%, max-width 620px → 900px (手机端图片看着小, 调大)
-- modules/video-voice-call.js: mountLive2DForCall 隐藏段不再藏 #video-display-area 整个容器, 改为只藏 #remote-video-large (对面大屏) + #remote-video-img + #participant-avatars-grid; restoreVideoCallOriginalDisplay 对称恢复. 避免连用户自己的摄像头小屏一起消失.

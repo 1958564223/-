@@ -14,13 +14,6 @@
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
     color: #3a2a30;
 }
-.live2d-call-prep-deco {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    overflow: hidden;
-}
 /* v0.4.5: 蝴蝶结移到角色卡内部右下角 (原页面级 .live2d-call-prep-bow 定位删除)
    - 父 .live2d-call-prep-character position: relative, max-width: 420px
    - bow absolute 不占流, 不影响卡片高度
@@ -39,21 +32,9 @@
     z-index: 0;
     opacity: 0.85;
 }
-/* v0.4.1: 第一轮美术素材 — 蕾丝装饰 (底部, 视频接通按钮上方) */
-.live2d-call-prep-lace {
-    position: absolute;
-    bottom: calc(110px + env(safe-area-inset-bottom, 0px));
-    left: 50%;
-    transform: translateX(-50%);
-    width: calc(100% - 24px);
-    max-width: 412px;
-    height: auto;
-    object-fit: contain;
-    pointer-events: none;
-    user-select: none;
-    z-index: 1;
-    opacity: 0.95;
-}
+/* 2026-09-29: 蕾丝装饰整体移除 (原 .live2d-call-prep-deco 容器 + .live2d-call-prep-lace 规则
+   + assets/live2d-call/prep-lace.png 一并删除, index.html 里对应的 div 也已去掉)。
+   装饰层现在只剩角色卡内的蝴蝶结 (.live2d-call-prep-character-bow)。 */
 .live2d-call-prep-header {
     position: relative;
     z-index: 1;

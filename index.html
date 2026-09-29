@@ -261,7 +261,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 【新增 0.0.37】网易云音乐 App · 粉红+嫩黄主题 -->
   <link rel="stylesheet" href="css/netease-music-app-pink.css?v=0.0.38">
   <!-- v0.4.2 视频通话准备页 (Live2D) 独立 CSS, 从 style.css 末尾迁移 -->
-  <link rel="stylesheet" href="css/live2d-call-prep.css?v=0.0.1">
+  <link rel="stylesheet" href="css/live2d-call-prep.css?v=0.0.2">
   <!-- v0.5.0 Live2D 模型管理页 CSS -->
   <link rel="stylesheet" href="css/live2d-manager.css?v=0.0.2">
   <!-- v0.5.0 P11: 通话舞台背景管理页 CSS -->
@@ -4590,10 +4590,8 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
 
     <!-- 视频通话准备页 (Live2D) — 唯一入口, 旧 #live2d-hub-screen 已废弃删除 -->
     <div id="live2d-call-prep-screen" class="screen live2d-call-prep">
-      <!-- 装饰层 (v0.4.5: 蝴蝶结从页面级移到 character 卡内, 这里只剩蕾丝) -->
-      <div class="live2d-call-prep-deco">
-        <img class="live2d-call-prep-lace" src="assets/live2d-call/prep-lace.png" alt="" aria-hidden="true">
-      </div>
+      <!-- 2026-09-29: 装饰层 (原 .live2d-call-prep-deco 容器 + prep-lace.png) 已整体移除,
+           页面装饰现在只剩角色卡内的蝴蝶结。 -->
 
       <!-- 顶部: 页面标题 + 英文副标题 + 提示语 -->
       <header class="live2d-call-prep-header">
