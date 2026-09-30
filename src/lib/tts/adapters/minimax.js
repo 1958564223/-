@@ -21,7 +21,7 @@
     return saved.replace(/\/$/, '') + '/v1/t2a_v2';
   }
 
-  async function synthesize({ text, voice, config, signal, languageBoost }) {
+  async function synthesize({ text, voice, config, signal, languageBoost, emotion }) {
     if (!config.apiKey) throw new Error('MiniMax API Key 不能为空');
     if (!config.groupId) throw new Error('MiniMax Group ID 不能为空');
     if (!voice) throw new Error('MiniMax Voice ID 不能为空');
@@ -48,6 +48,12 @@
         channel: 1
       }
     };
+
+    // 情绪: 只在有合法值时才写进 voice_setting。
+    //   undefined / 空 / 非法值一律不写 —— 改造前的请求体保持逐字节一致。
+    if (emotion) {
+      requestBody.voice_setting.emotion = emotion;
+    }
 
     if (languageBoost) {
       requestBody.language_boost = languageBoost;

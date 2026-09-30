@@ -152,7 +152,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/chat-interface.js?v=0.0.37" defer></script>
   <script src="modules/chat-input.js?v=0.0.36" defer></script>
   <!-- 第四层：AI 核心 -->
-  <script src="modules/ai-response.js?v=0.0.51" defer></script>
+  <script src="modules/ai-response.js?v=0.0.55" defer></script>
   <script src="modules/ai-group.js?v=0.0.40" defer></script>
   <!-- 第五层：功能模块 -->
   <script src="modules/music-player.js?v=0.0.45" defer></script>
@@ -169,7 +169,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/live2d-loader.js?v=0.3.6" defer></script>
   <!-- v0.5.0 P12/P13: 视频通话 AI 说话口型 + 元音嘴型 (独立模块, 无外部依赖; 必须在 tts-audio.js 之前加载) -->
   <script src="modules/call-lip-sync.js?v=0.0.2" defer></script>
-  <script src="modules/video-voice-call.js?v=0.0.70" defer></script>
+  <script src="modules/video-voice-call.js?v=0.0.74" defer></script>
   <script src="modules/message-actions.js?v=0.0.36" defer></script>
   <script src="modules/nai-imagen.js?v=0.0.36" defer></script>
   <script src="modules/backup-import-export.js?v=0.0.37" defer></script>
@@ -191,12 +191,14 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
 
   <!-- 第七层：其余功能 -->
   <script src="api-config.js?v=0.0.36" defer></script>
-  <script src="src/lib/tts/adapters/minimax.js?v=0.0.36" defer></script>
+  <script src="src/lib/tts/adapters/minimax.js?v=0.0.38" defer></script>
   <script src="src/lib/tts/adapters/fishAudio.js?v=0.0.37" defer></script>
   <script src="src/lib/tts/adapters/openaiCompatible.js?v=0.0.37" defer></script>
-  <script src="src/lib/tts/index.js?v=0.0.37" defer></script>
+  <script src="src/lib/tts/index.js?v=0.0.38" defer></script>
   <script src="src/lib/tts/settings-ui.js?v=0.0.36" defer></script>
-  <script src="modules/tts-audio.js?v=0.0.39" defer></script>
+  <!-- 2026-09-30 TTS 表达层: [[语音:emotion]] 解析 + MiniMax 2.8-HD interjection 白名单 -->
+  <script src="modules/tts-expression.js?v=0.0.2" defer></script>
+  <script src="modules/tts-audio.js?v=0.0.42" defer></script>
   <script src="modules/appearance-theme.js?v=0.0.86" defer></script>
   <script src="modules/hot-news.js?v=0.1.2" defer></script>
   <script src="modules/runtime-diagnostics.js?v=0.0.38" defer></script>

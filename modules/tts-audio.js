@@ -191,10 +191,53 @@
     return error;
   }
 
+  // ============================================================
+  // TTS 表达层接线 (2026-09-30 第一阶段)
+  // ------------------------------------------------------------
+  // 业务规则全部集中在 modules/tts-expression.js, 本文件只负责接线。
+  // 解析器若未加载 (加载顺序/缓存问题), 退回改造前的行为, 绝不阻断 TTS。
+  // ============================================================
+  function parseTtsExpressionSafe(rawText, filterBrackets) {
+    const fallback = {
+      speechText: String(rawText == null ? '' : rawText).trim(),
+      emotion: null,
+      hasTtsDirective: false,
+      strippedTags: []
+    };
+    try {
+      if (window.TTSExpression && typeof window.TTSExpression.parseTtsExpression === 'function') {
+        return window.TTSExpression.parseTtsExpression(rawText, { filterBrackets: !!filterBrackets });
+      }
+    } catch (e) {
+      console.warn('[TTS] 表达层解析失败, 退回原始文本:', e);
+    }
+    return fallback;
+  }
+
+  // ============================================================
+  // TTS 暂停标记的显示层过滤 (第三阶段)
+  // ------------------------------------------------------------
+  // <#x#> 是纯 TTS 控制标记, 显示出来是一堆 "<#0.4#>" 很难看。
+  // 但只影响【显示】: 原文 / data-text / callHistory 一律不动,
+  // TTS 仍拿到带停顿的 speechText。
+  // ⚠️ 与第二阶段的规则不冲突: [[语音:x]] 和 (chuckle) 【照常显示】, 本函数不碰。
+  // ============================================================
+  function stripPauseMarkersSafe(rawText) {
+    const raw = String(rawText == null ? '' : rawText);
+    try {
+      if (window.TTSExpression && typeof window.TTSExpression.stripPauseMarkers === 'function') {
+        return window.TTSExpression.stripPauseMarkers(raw);
+      }
+    } catch (e) {
+      console.warn('[TTS] 暂停标记显示过滤失败, 退回原文:', e);
+    }
+    return raw.trim();
+  }
+
   // 2026-09-29: 新增 languageBoost 形参。
   //   旧版只传 text/voice/signal, 请求体里根本没有 language_boost 字段,
   //   MiniMax 按 null 处理 → 模型自行猜语种 → 日语音色念中文 (即"日语音色念出中文"的直接原因)。
-  async function synthesizeCallTtsWithTimeout(text, voiceId, source, languageBoost) {
+  async function synthesizeCallTtsWithTimeout(text, voiceId, source, languageBoost, emotion) {
     let requestAbortController = null;
     let requestTimeoutId = null;
     const requestStartedAt = Date.now();
@@ -213,7 +256,10 @@
         text,
         voice: voiceId,
         signal: requestAbortController ? requestAbortController.signal : undefined,
-        languageBoost
+        languageBoost,
+        // 2026-09-30: 情绪透传。为空时 index.js 的 normalizeEmotion 返回 undefined,
+        // adapter 不写入请求体 —— 与改造前完全一致。
+        emotion
       });
 
       const timeoutPromise = new Promise((_, reject) => {
@@ -289,7 +335,7 @@
     }
 
     isTtsPlaying = true;
-    const { text, voiceId, source, languageBoost } = ttsQueue.shift();
+    const { text, voiceId, source, languageBoost, emotion } = ttsQueue.shift();
     const isCallTts = isCallTtsSource(source);
     let audioUrl = '';
     let callPlayer = null;
@@ -311,7 +357,7 @@
 
       console.log(`[TTS队列] 正在朗读 (剩余${ttsQueue.length}条, 语种: ${languageBoost || 'auto'}): ${text}`);
 
-      const result = await synthesizeCallTtsWithTimeout(text, voiceId, source, languageBoost);
+      const result = await synthesizeCallTtsWithTimeout(text, voiceId, source, languageBoost, emotion);
       if (!result || !result.blob || result.blob.size === 0) {
         throw new Error('empty_audio');
       }
@@ -500,13 +546,24 @@
     // 2026-09-29: 新增 languageBoost 透传 (用户选的具体语言, 空/undefined = 自动识别)
     const requestedLanguageBoost = options && options.languageBoost ? options.languageBoost : '';
 
-    let cleanText = '';
-    if (isVoiceCallTts) {
-      cleanText = String(text || '').trim();
-    } else {
-      // 视频通话: AI 返回纯对白, 仅做"去除括号及括号内"清洗 (沿用旧清洗逻辑, 防止残留旁白包裹)
-      // P6: 删除 ttsDialogueOnly / extractDialogueOnly 过滤 (旧数据残留也不影响 — 视频通话统一纯对白)
-      cleanText = String(text || '').replace(/(\[.*?\]|\(.*?\)|（.*?）|【.*?】)/g, '').trim();
+    // 2026-09-30: 括号清洗改走 tts-expression.js 的白名单策略。
+    //   改造前 videoCall 用一条 /(\[.*?\]|\(.*?\)|（.*?）|【.*?】)/g 把所有括号连内容一起删光,
+    //   连 MiniMax 2.8-HD 官方的 (laughs)/(chuckle) 等 19 个 interjection 也一起误删,
+    //   标签根本活不到 API。
+    //   现在: 半角括号逐个判定 —— 命中官方白名单原样保留, 其余仍然删除。
+    //   其余三种括号 (方头/全角圆/方头括号) 维持原删除逻辑, 不放宽也不收紧。
+    //   ⚠️ filterBrackets 保持两条链路原有的差异, 本阶段不顺手统一:
+    //     videoCall = true  (原本就删括号)
+    //     voiceCall = false (原本只 trim, 不动括号)
+    const shouldFilterBrackets = !isVoiceCallTts;
+    // ⚠️ 唯一剥离点: 标签保留在 AI 原文 / 气泡 / callHistory 里, 只在这里
+    //   ——真正要把文本发给 MiniMax 的那一刻——临时生成 speechText。
+    const parsed = parseTtsExpressionSafe(text, shouldFilterBrackets);
+    const cleanText = parsed.speechText;
+    const emotion = parsed.emotion || '';
+
+    if (parsed.hasTtsDirective) {
+      console.log('[TTS队列] 解析到语音控制标签:', parsed.strippedTags, '→ emotion:', emotion);
     }
 
     if (!cleanText) {
@@ -545,7 +602,9 @@
       text: cleanText,
       voiceId,
       source,
-      languageBoost: resolveTtsLanguageBoost(cleanText, requestedLanguageBoost)
+      languageBoost: resolveTtsLanguageBoost(cleanText, requestedLanguageBoost),
+      // 2026-09-30: 情绪随任务入队, 空串 = 不传, 保持改造前行为
+      emotion
     });
 
     if (isVoiceCallTts) {
@@ -639,6 +698,17 @@
       }
     }
 
+    // 2026-09-30: 接 TTS 表达层。
+    //   聊天链路原本【没有任何括号清洗】, 所以 filterBrackets=false —— 维持现状,
+    //   本阶段不借机给聊天加清洗 (那属于行为变更, 不是本阶段范围)。
+    //   聊天要拿到的是: 剥掉 [[语音:x]] 标签 + 抽出 emotion。
+    const parsed = parseTtsExpressionSafe(text, false);
+    text = parsed.speechText;
+    const emotion = parsed.emotion || '';
+    if (parsed.hasTtsDirective) {
+      console.log('[聊天TTS] 解析到语音控制标签:', parsed.strippedTags, '→ emotion:', emotion);
+    }
+
     // 2026-09-29: 统一解析最终 language_boost。
     //   必须在上面 ttsDialogueOnly 改写 text 之后算, 否则检测的是旧文本。
     //   空串 / 'auto' → 按文本自动识别; 具体语言 → 尊重用户选择。
@@ -677,7 +747,12 @@
     // 2. 检查缓存 (Key加入语言区分，防止切换方言后读到旧缓存)
     //    2026-09-29: 用最终生效的 boostValue 而不是 ttsLanguage ——
     //    自动识别模式下 ttsLanguage 是空串, 用它做 key 会让不同语言的同文本互相串味。
-    const cacheKey = `tts_v2_${voiceId}_${boostValue}_${text}`;
+    //    2026-09-30: emotion 存在时也进 key ——
+    //    否则"你好+happy"先缓存, 之后"你好+sad"会直接命中 happy 的音频, 情绪参数完全失效。
+    //    emotion 为空时 key 与改造前逐字符一致, 不影响任何既有缓存条目。
+    const cacheKey = emotion
+      ? `tts_v3_${voiceId}_${boostValue}_${emotion}_${text}`
+      : `tts_v2_${voiceId}_${boostValue}_${text}`;
     let cachedAudio = state.ttsCache.get(cacheKey);
     if (cachedAudio) {
       console.log("从缓存播放 TTS...");
@@ -707,7 +782,9 @@
         text,
         voice: voiceId,
         signal,
-        languageBoost: boostValue
+        languageBoost: boostValue,
+        // 2026-09-30: 情绪透传。为空则不进请求体, 与改造前完全一致。
+        emotion
       });
 
       if (!result || !result.blob) {
@@ -788,7 +865,8 @@
     if (!bubble) return;
 
     const transcriptEl = bubble.querySelector('.voice-transcript');
-    const text = decodeURIComponent(bodyElement.dataset.text);
+    // 第三阶段: 显示时去掉 <#x#> 停顿标记 (只影响显示, data-text 原文不动, TTS 照常拿到停顿)
+    const text = stripPauseMarkersSafe(decodeURIComponent(bodyElement.dataset.text));
 
     if (transcriptEl.style.display === 'block') {
 

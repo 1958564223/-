@@ -187,6 +187,145 @@
   window.fetchViaOpenAICompatibleProxy = fetchViaOpenAICompatibleProxy;
   window.isMainApiProxyEnabled = isMainApiProxyEnabled;
 
+  /**
+   * 第二阶段: 聊天链路「语音控制」prompt 段落。
+   *
+   * ⚠️ 为什么硬编码在这里, 而不写进 settings-presets.js 的预设文本:
+   *   getActiveChatPrompt() 允许用户用 customChatPromptSingle 整段顶掉默认预设
+   *   (settings-presets.js:536-559)。写进预设的话, 对已开启自定义 prompt 的用户
+   *   完全无效 —— AI 永远不会知道这个协议。这里拼在预设【之后】, 对所有人一致生效。
+   *
+   * 触发条件与聊天 TTS 的实际触发条件保持一致 (chat-interface.js:1087):
+   *   非群聊 + enableTts !== false + 配了 minimaxVoiceId, 否则返回 ''。
+   */
+  function buildChatTtsExpressionPromptBlock(chat) {
+    try {
+      if (!chat || chat.isGroup) return '';
+      if (chat.settings.enableTts === false) return '';
+      if (!chat.settings.minimaxVoiceId) return '';
+
+      const expr = window.TTSExpression;
+      const emotionSet = (expr && expr.VALID_EMOTIONS)
+        ? expr.VALID_EMOTIONS
+        : new Set(['happy', 'sad', 'angry', 'fearful', 'disgusted', 'surprised', 'calm']);
+      const interjectionSet = (expr && expr.MINIMAX_INTERJECTIONS)
+        ? expr.MINIMAX_INTERJECTIONS
+        : new Set(['laughs', 'chuckle', 'coughs', 'clear-throat', 'groans', 'breath',
+          'pant', 'inhale', 'exhale', 'gasps', 'sniffs', 'sighs', 'snorts', 'burps',
+          'lip-smacking', 'humming', 'hissing', 'emm', 'sneezes']);
+      const emotionList = Array.from(emotionSet).join(' / ');
+      const interjectionList = Array.from(interjectionSet).map(t => `(${t})`).join(' ');
+
+      return `
+
+# 🔊 语音控制 (只有发语音消息时才用得上)
+
+语音消息的内容会被【真实朗读出来】, 所以情绪和语气要由你自己标出来, 不要靠中文旁白。
+像"（轻笑）"这种舞台指示系统不会朗读, 只会删掉, 等于白写。
+你有两个工具, 都只对【语音消息】(type 为 voice_message) 有效:
+
+## 1) 整段情绪 (极克制 —— 拿不准就别标)
+
+[[语音:emotion名]]
+
+emotion 名【只能】从这 ${emotionSet.size} 个里挑, 一个字都不能改, 不能自创:
+${emotionList}
+
+⚠️ 先搞清楚它有多重: emotion 改的是【整句话的演法】, 不是某个词的语气。
+标对了整句更有味道; 标错了【整句都被带跑】—— 一句本来该平平淡淡的晚安,
+标成 happy 之后整句会变得又高又亮, 听起来很别扭, 比不标还糟。
+
+所以:
+- 【只有情绪非常强烈、非常明确时才标】。吵架、崩溃、真心高兴、明确难过 —— 这种才配。
+- 【下面这些一律不要标】:
+    道晚安 / 打招呼 / 平常闲聊 / 讲一件事 / 淡淡的高兴 / 礼貌的关心 /
+    撒娇式的顺口话 / 情绪还没到那一步的普通句子
+- 【拿不准就【不要】标】。不标的时候系统会自己挑最自然的演法, 永远比标错好。
+- calm 是给【平稳 / 温柔 / 安抚 / 道别】用的; 但即便是这种, 也常常【不需要标】。
+- 一条语音【最多一个】, 且必须在【最前面】, 不要标在句子中间。
+- 【只对语音消息有效】。你发普通文字消息 (type 为 text) 时不要加任何标签 —— 文字消息不会被朗读, 加了没有任何作用。
+
+例 (这种才标):
+{"type": "voice_message", "content": "[[语音:angry]]\\\\n你昨晚十二点还在喝咖啡? 不要命了是吧。"}
+
+例 (这些【不要】标):
+{"type": "voice_message", "content": "[[语音:happy]]\\\\n晚安, 早点睡。"}   ← 平稳道别, 不该标成开心
+
+## 2) 句中语气声 (可以放心用)
+
+和 emotion 不一样: 语气声只作用在【它出现的那一个位置】, 不会改变整句话的演法。
+所以它比 emotion 自由得多 —— 想说笑就写 (chuckle), 想叹气就写 (sighs), 不用太纠结。
+
+直接在语音文字里写【官方英文标签】:
+
+${interjectionList}
+
+例: (sighs) 算了, 听你的。
+
+规则:
+- 【绝对不要】写中文的 (轻笑) (叹气) 这类舞台指示 —— 系统不朗读它们, 只会删掉。
+- 一条语音里【最多一两个】, 多了声音会飘、很假。
+- 拼写必须和上面【完全一致】: 括号里多个空格、少个字母、换个说法, 都不认, 只会被删掉。
+
+## 3) 特殊停顿 (只用在有表现意义的地方)
+
+普通标点的停顿【系统会自动处理】, 你不用管, 也不要去补。只有下面这些时刻,
+你才可以自己手写一个停顿标记, 写在语音文字里:
+
+<#0.2#>  极短换气 —— 被噎住、话说到一半改口
+<#0.3#>  轻顿 —— 想一下、犹豫要不要说
+<#0.5#>  普通停顿 —— 情绪转折、说完留一口气
+<#0.6#>  明显沉默 —— 震惊后的空白、压抑、难过到说不下去
+
+(上限就是 0.6 秒。写更大的值没有意义, 系统会压到 0.6。)
+
+只在这些时刻用: 犹豫 / 突然停住 / 情绪转折(吐槽转温柔、强硬转示弱) /
+震惊之后的沉默 / 压抑难过 / 特殊强调。
+
+不同情绪的节奏参考:
+- 温柔安抚: 慢、短句多。"没事。<#0.5#>先别急着吓自己。"
+- 委屈撒娇: 语气软、停顿稍多。"嗯……<#0.3#>你刚刚是不是又不理我。"
+- 别扭傲娇: 前半句嘴硬后半句放软, 中间停一下。"哈。<#0.3#>你还真会折腾我。"
+- 难过压抑: 更慢、省略号多。"……我知道。<#0.6#>只是有点难受。"
+- 紧张犹豫: 断裂感, 短停顿多。"等等。<#0.3#>我好像……<#0.5#>有点不确定。"
+- 吐槽轻松: 别太慢, 轻微停顿即可。"行吧。<#0.2#>人类又发明了新的折磨方式。"
+
+规则:
+- 【绝对不要】给普通标点加停顿。逗号句号的停顿系统已经自动插了, 你再写只会重复。
+- 每 100 字【最多 1–4 个】, 强情绪场景才适当增加。
+- 别整段全是同一个数值 —— 会像坏掉的导航在念稿。
+- 标记必须夹在【能念的字】之间: ✅ 我没事。<#0.5#>真的没事。  ❌ <#0.5#>我没事。
+- 【绝对不要】连续写两个: <#0.5#><#0.3#> 这种一定删一个。
+
+## 4) 这些标记都不要解释
+
+【绝对不要】解释它们的存在。不许写"我换个语气"、"（语音标签已设置）"之类的话。
+你只管在前面加标签、在该停的地方加停顿, 然后正常说话。
+
+标签【不会被朗读】(系统在把文字送去合成语音之前会自动摘掉);
+但它【会留在文字里】, 用户展开语音条看文字时能看到这一行。这是正常的, 不用担心。
+
+✅ 正确示例:
+{"type": "voice_message", "content": "[[语音:happy]]\\\\n你终于来了！(chuckle) 等你好久了。"}
+{"type": "voice_message", "content": "嗯,我看看。"}
+{"type": "voice_message", "content": "[[语音:sad]]\\\\n我其实...有一点失落。"}
+{"type": "voice_message", "content": "(sighs) 算了,听你的。"}
+{"type": "voice_message", "content": "我没事。<#0.5#>真的没事。"}
+
+❌ 错误示例:
+{"type": "voice_message", "content": "[[语音:excited]]\\\\n你终于来了!"}   ← excited 不在白名单
+{"type": "voice_message", "content": "我用开心语气说: 你终于来了!"}     ← 不要解释标签
+{"type": "voice_message", "content": "（轻笑）你终于来了。"}              ← 中文舞台指示不被朗读, 只会被删
+{"type": "voice_message", "content": "我没事。<#0.5#><#0.3#>真的没事。"}  ← 连续两个标记, 会被系统合并
+{"type": "voice_message", "content": "<#0.5#>我没事。"}                  ← 标记必须夹在能念的字之间
+{"type": "text", "content": "[[语音:happy]]你终于来了"}                 ← 普通文字不会被朗读, 加了没用
+`;
+    } catch (e) {
+      console.warn('[聊天TTS] 生成语音控制 prompt 段落失败:', e);
+      return '';
+    }
+  }
+
   function setGlobalAiGenerationFlags(active) {
     window.isGenerating = !!active;
     window.inFlight = !!active;
@@ -4567,6 +4706,9 @@ ${getActiveThoughtsPrompt()}
 
           systemPrompt = processPromptWithSettings(systemPrompt, 'single');
 
+          // 第二阶段: 语音控制协议 (硬编码拼在预设之后, 对自定义 prompt 用户同样生效)
+          systemPrompt += buildChatTtsExpressionPromptBlock(chat);
+
           // 热点日报注入（2026-07-02 新增，替换原豆瓣）：开启时才注入，软提示
           const hotNewsContextSingle = await getHotNewsContextForPrompt(chat);
           if (hotNewsContextSingle) systemPrompt += '\n\n' + hotNewsContextSingle;
@@ -5138,6 +5280,9 @@ ${getActiveThoughtsPrompt()}
           msgData.type = 'voice_message';
           msgData.content = msgData.content.replace('[V]', '').trim();
         }
+        // ⚠️ 这里【不要】剥离 [[语音:x]]。
+        //   标签必须原样存进 msg.content: 语音条展开的"转文字"要能看到它,
+        //   且剥离只允许发生在 tts-audio.js 发 MiniMax 的那一刻。
         if (chat.isGroup && msgData.name && msgData.name === chat.name) {
           console.error(`AI幻觉已被拦截！试图使用群名 ("${chat.name}") 作为角色名。消息内容:`, msgData);
           continue;

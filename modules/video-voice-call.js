@@ -1183,6 +1183,147 @@
   }
 
 
+  /**
+   * 生成 prompt 里的「语音控制」段落 (第二阶段)。
+   *
+   * 结构参考糯米机 utils/CallApp.tsx:464-478 的「让声音有情绪」段:
+   *   把【整段情绪】和【句中语气声】明确拆成两个独立工具、各自立规矩,
+   *   并且都配"反例 + 量化克制 + 后果说明", 而不是只给一份标签表。
+   * 标签清单仍取自 tts-expression.js 的白名单 (单点来源, 避免 prompt 与代码跑偏);
+   * 不用糯米机那份清单 —— 它含 fluent, 那是 speech-2.6 专属, 2.8-hd 不支持。
+   */
+  function buildVideoCallTtsExpressionPromptBlock(chat) {
+    try {
+      if (!chat || chat.settings.enableTts === false) return '';
+      if (!chat.settings.minimaxVoiceId) return '';
+
+      const expr = window.TTSExpression;
+      const emotionSet = (expr && expr.VALID_EMOTIONS)
+        ? expr.VALID_EMOTIONS
+        : new Set(['happy', 'sad', 'angry', 'fearful', 'disgusted', 'surprised', 'calm']);
+      const interjectionSet = (expr && expr.MINIMAX_INTERJECTIONS)
+        ? expr.MINIMAX_INTERJECTIONS
+        : new Set(['laughs', 'chuckle', 'coughs', 'clear-throat', 'groans', 'breath',
+          'pant', 'inhale', 'exhale', 'gasps', 'sniffs', 'sighs', 'snorts', 'burps',
+          'lip-smacking', 'humming', 'hissing', 'emm', 'sneezes']);
+      const emotionList = Array.from(emotionSet).join(' / ');
+      const interjectionList = Array.from(interjectionSet).map(t => `(${t})`).join(' ');
+
+      return `
+        # 语音控制 (系统开关 —— 是上面【输出格式】白名单里的第三种)
+
+        你的话会被真实朗读出来, 所以【情绪和语气要由你自己标出来】, 不要靠中文旁白。
+        像"（轻笑）"这种舞台指示系统不会朗读, 只会删掉, 等于白写。
+        你有两个工具:
+
+        ## 1) 整段情绪 (极克制 —— 拿不准就别标)
+
+        [[语音:emotion名]]
+
+        emotion 名【只能】从这 ${emotionSet.size} 个里挑, 一个字都不能改, 不能自创:
+        ${emotionList}
+
+        ⚠️ 先搞清楚它有多重: emotion 改的是【整句话的演法】, 不是某个词的语气。
+        标对了整句更有味道; 标错了【整句都被带跑】—— 一句本来该平平淡淡的晚安,
+        标成 happy 之后整句会变得又高又亮, 听起来很别扭, 比不标还糟。
+
+        所以:
+        - 【只有情绪非常强烈、非常明确时才标】。吵架、崩溃、真心高兴、明确难过 —— 这种才配。
+        - 【下面这些一律不要标】:
+            道晚安 / 打招呼 / 平常闲聊 / 讲一件事 / 淡淡的高兴 / 礼貌的关心 /
+            撒娇式的顺口话 / 情绪还没到那一步的普通句子
+        - 【拿不准就【不要】标】。不标的时候系统会自己挑最自然的演法, 永远比标错好。
+        - calm 是给【平稳 / 温柔 / 安抚 / 道别】用的; 但即便是这种, 也常常【不需要标】。
+        - 整段回复【最多一个】, 且必须在【最前面】, 不要标在句子中间。
+
+        例 (这种才标):
+        [[语音:angry]]
+        你昨晚十二点还在喝咖啡? 不要命了是吧。
+
+        例 (这些【不要】标):
+        [[语音:happy]]
+        晚安, 早点睡。          ← 平稳道别, 不该标成开心
+
+        ## 2) 句中语气声 (可以放心用)
+
+        和 emotion 不一样: 语气声只作用在【它出现的那一个位置】, 不会改变整句话的演法。
+        所以它比 emotion 自由得多 —— 想说笑就写 (chuckle), 想叹气就写 (sighs), 不用太纠结。
+
+        直接在台词里写【官方英文标签】:
+
+        ${interjectionList}
+
+        例: (sighs) 算了, 听你的。
+
+        规则:
+        - 【绝对不要】写中文的 (轻笑) (叹气) 这类舞台指示 —— 系统不朗读它们, 只会删掉。
+        - 整段回复里【最多一两个】, 多了声音会飘、很假。
+        - 拼写必须和上面【完全一致】: 括号里多个空格、少个字母、换个说法, 都不认, 只会被删掉。
+
+        ## 3) 特殊停顿 (只用在有表现意义的地方)
+
+        普通标点的停顿【系统会自动处理】, 你不用管, 也不要去补。只有下面这些时刻,
+        你才可以自己手写一个停顿标记, 在台词里写:
+
+        <#0.2#>  极短换气 —— 被噎住、话说到一半改口
+        <#0.3#>  轻顿 —— 想一下、犹豫要不要说
+        <#0.5#>  普通停顿 —— 情绪转折、说完留一口气
+        <#0.6#>  明显沉默 —— 震惊后的空白、压抑、难过到说不下去
+
+        (上限就是 0.6 秒。写更大的值没有意义, 系统会压到 0.6。)
+
+        只在这些时刻用: 犹豫 / 突然停住 / 情绪转折(吐槽转温柔、强硬转示弱) /
+        震惊之后的沉默 / 压抑难过 / 特殊强调。
+
+        不同情绪的节奏参考:
+        - 温柔安抚: 慢、短句多。"没事。<#0.5#>先别急着吓自己。"
+        - 委屈撒娇: 语气软、停顿稍多。"嗯……<#0.3#>你刚刚是不是又不理我。"
+        - 别扭傲娇: 前半句嘴硬后半句放软, 中间停一下。"哈。<#0.3#>你还真会折腾我。"
+        - 难过压抑: 更慢、省略号多。"……我知道。<#0.6#>只是有点难受。"
+        - 紧张犹豫: 断裂感, 短停顿多。"等等。<#0.3#>我好像……<#0.5#>有点不确定。"
+        - 吐槽轻松: 别太慢, 轻微停顿即可。"行吧。<#0.2#>人类又发明了新的折磨方式。"
+
+        规则:
+        - 【绝对不要】给普通标点加停顿。逗号句号的停顿系统已经自动插了, 你再写只会重复。
+        - 每 100 字【最多 1–4 个】, 强情绪场景才适当增加。
+        - 别整段全是同一个数值 —— 会像坏掉的导航在念稿。
+        - 标记必须夹在【能念的字】之间: ✅ 我没事。<#0.5#>真的没事。  ❌ <#0.5#>我没事。
+        - 【绝对不要】连续写两个: <#0.5#><#0.4#> 这种一定删一个。
+
+        ## 4) 这些标记都不要解释
+
+        【绝对不要】解释它们的存在。不许写"我现在用开心的语气"、"（语音标签已设置）"之类的话。
+        你只管在前面加标签、在该停的地方加停顿, 然后正常说台词。
+
+        另外: 不要写小说式中文旁白, 如"（我靠在椅背上, 目光看向远方）"—— 会被直接删掉。
+
+        标签【不会被朗读】(系统送去合成语音前会自动摘掉), 而且【通话界面上也不会显示】——
+        对方看不到它。所以你只管按格式写, 不用担心格式本身被看到。
+
+        【示例 - 正确】:
+        [[语音:sad]]
+        我其实...有一点失落。你今天是不是很忙?
+
+        [[语音:happy]]
+        你终于来了！(chuckle) 等你好久了。
+
+        我没事。<#0.5#>真的没事。
+
+        【示例 - 错误】:
+        [[语音:excited]]你终于来了!        ← excited 不在白名单里
+        我用开心的语气跟你说话。[[语音:happy]]   ← 不要解释标签
+        [[语音]]你终于来了。              ← 少了冒号和名字
+        （轻笑）你终于来了。              ← 中文舞台指示不被朗读, 只会被删
+        我没事。<#0.5#><#0.3#>真的没事。   ← 连续两个标记, 会被系统合并
+        <#0.5#>我没事。                  ← 标记必须夹在能念的字之间
+      `;
+    } catch (e) {
+      console.warn('[视频通话TTS] 生成语音控制 prompt 段落失败:', e);
+      return '';
+    }
+  }
+
+
   async function handleInitiateCall() {
     if (!state.activeChatId || videoCallState.isActive || videoCallState.isAwaitingResponse) return;
 
@@ -2236,17 +2377,25 @@ ${linkedContents}
       // v0.5.0 P12: 舞台控制段落 (背景库为空时返回 '', 不给 AI 空口承诺)
       // 只加在单人分支 —— 群聊分支的 prompt 不走这套
       const videoCallStageBlock = await buildVideoCallDirectivesPromptBlock();
+      // 第二阶段: 语音控制段落 (TTS 关闭 / 没配音色时返回 '', 不给 AI 空口承诺)
+      const videoCallTtsBlock = buildVideoCallTtsExpressionPromptBlock(chat);
       inCallPrompt = `
         # 你的任务
         你是 ${chat.name} (${chat.settings.aiPersona})。你正在和用户进行一次视频通话。
         # 核心规则
         1.  **【【输出格式】】】**: 你的回复【必须】是【纯自然语言文本】,【绝对不要】使用:
             - JSON / Markdown / 代码块 / HTML / XML
-            - 任何 narrator / dialogue / speaker / action / emotion 字段或标签
+            - 任何 narrator / dialogue / speaker / action 字段或标签
             - 任何 [旁白]、(动作)、*表情* 之类的描述包装
             - 任何"角色说道: "、"旁白: "、"动作: "前缀
             你的回复【应该】是【你(${chat.name})真正会说出口的话】, 整段内容会被直接朗读给用户听。
-            【唯一例外 · 重要】: 在【每一轮回复的最末尾】另起一行, 由【你自己主动写】舞台/表情开关指令 (写法见文末【舞台控制】/【表情控制】)。这两行是给系统执行的, 不会被朗读、对方也看不到。除了这两行, 别的位置【任何】方括号标记都不许出现。
+            【白名单例外 · 重要】: 你的回复里【只有下面这三种方括号指令】是被允许的:
+                [[舞台:背景名]]   见文末【舞台控制】
+                [[表情:表情名]]   见文末【表情控制】
+                [[语音:emotion]]  见文末【语音控制】
+            这三种都【不会被朗读】(系统在送去合成语音之前会自动摘掉), 而且【通话界面上也不会显示】——
+            对方看不到它们。所以你只管按格式写, 不用担心格式本身被看到。
+            除了这三种, 别的位置【任何】方括号标记都不许出现 —— 不许自创 [[任意:任意]]。
         2.  **【多句发言】**: 你可以一次说多句话, 用正常的中文标点(。?!)分隔, 整段连续输出。
         3.  **【人设保留】**: 严格遵守你的人设 / 语气 / 说话习惯 / 上下文理解能力; 只是【不要生成任何旁白/动作/表情/场景/心理/第三人称叙述】。
         4.  **【示例 - 正确】**:
@@ -2257,6 +2406,7 @@ ${linkedContents}
             ${"```"}
             或: 旁白: 他笑了笑。角色说道: 你今天来得挺早的。
             或: （他笑了笑）你今天来得挺早的。
+            或: [[动作:挥手]] —— 动作一律用纯台词表达, 没有 [[动作:]] 这种开关。
         # 当前情景
         你正在和用户（${userNickname}, 人设: ${chat.settings.myPersona}）进行视频通话。
         ${longTermMemoryContext}${timeContextBlock}
@@ -2265,6 +2415,7 @@ ${linkedContents}
         ${videoCallState.preCallContext}
         现在, 请根据【通话前摘要】和下面的【通话实时记录】, 以${chat.name}的身份继续回复。
         ${videoCallStageBlock}
+        ${videoCallTtsBlock}
         `;
     }
 
@@ -2460,6 +2611,8 @@ ${linkedContents}
           })();
         }
 
+        // ⚠️ [[语音:happy]] 标签【原样保留】在这里: 气泡、callHistory、AI 回看的上下文
+        //   全部拿带标签的原文。剥离只发生在 tts-audio.js 真正发 MiniMax 的那一刻。
         const messagesArray = parseAiResponse(stageExtract.text);
 
         messagesArray.forEach((msg, index) => {
@@ -3578,6 +3731,8 @@ ${worldBookContent}${timeContextBlock}
       let openingContext = voiceCallState.initiator === 'user' ?
         `你刚刚接听了用户的语音通话请求。` :
         `用户刚刚接听了你主动发起的语音通话。`;
+      // 第二阶段: 语音控制段落 (与视频通话共用同一个构建器, 不另写一份)
+      const voiceCallTtsBlock = buildVideoCallTtsExpressionPromptBlock(chat);
       inCallPrompt = `
 # 你的任务
 你现在正在和用户进行语音通话。你扮演 ${chat.name} (${chat.settings.aiPersona})。
@@ -3603,6 +3758,8 @@ ${longTermMemoryContext}${timeContextBlock}
 ${voiceCallState.preCallContext}
 ${worldBookContent}
 现在，请根据【通话前摘要】和下面的【通话实时记录】，继续进行对话。记住：只输出对话内容，不要有任何动作、表情或视觉描写。
+【唯一允许的控制符号】是下面【语音控制】里那一种 [[语音:emotion]] 标签 (不会被朗读, 界面上也不会显示), 除它以外任何方括号标记都不许出现。
+${voiceCallTtsBlock}
 `;
     }
 
@@ -3734,6 +3891,8 @@ ${worldBookContent}
         // 单聊模式：支持多条消息
         const voiceId = chat.settings.minimaxVoiceId;
 
+        // ⚠️ [[语音:happy]] 标签【原样保留】在这里: 气泡、callHistory 全部拿带标签的原文。
+        //   剥离只发生在 tts-audio.js 真正发 MiniMax 的那一刻。
         // 尝试解析为JSON数组（多条消息）
         const messagesArray = parseAiResponse(aiResponse);
 

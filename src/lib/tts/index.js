@@ -212,7 +212,33 @@
     return detectBoostFromText(text);
   }
 
-  async function synthesize({ text, voice, signal, languageBoost } = {}) {
+  // --- 情绪 (2026-09-30) ---
+  // 依据官方 OpenAPI T2AVoiceSetting.emotion.description:
+  //   "Option `fluent`, `whisper` is only available for models:
+  //    `speech-2.6-turbo`, `speech-2.6-hd`."
+  // 故 speech-2.8-hd 实际生效的只有下面 7 个; fluent / whisper 属 2.6 系列, 不纳入。
+  // 校验放在这一层 (三条 TTS 链路的唯一收口), adapter 保持"只做协议转换"。
+  const SUPPORTED_EMOTIONS = new Set([
+    'happy',
+    'sad',
+    'angry',
+    'fearful',
+    'disgusted',
+    'surprised',
+    'calm'
+  ]);
+
+  function normalizeEmotion(emotion) {
+    const key = String(emotion == null ? '' : emotion).trim().toLowerCase();
+    if (!key) return undefined;
+    if (!SUPPORTED_EMOTIONS.has(key)) {
+      console.warn('[TTS] 非法 emotion 已丢弃, 不会传给服务端:', emotion);
+      return undefined;
+    }
+    return key;
+  }
+
+  async function synthesize({ text, voice, signal, languageBoost, emotion } = {}) {
     if (!text || !String(text).trim()) {
       throw new Error('TTS 文本不能为空');
     }
@@ -231,12 +257,15 @@
     // 三条路径 (聊天 / 视频通话 / 语音通话) 都在这里收口:
     //   传了具体语言就用用户的, 没传 (或传 auto) 就按文本自动识别。
     const resolvedLanguageBoost = resolveLanguageBoost(text, languageBoost);
+    // 情绪同理: 空白名单直接丢, 不污染下游请求体 (改造前的行为保持不变)。
+    const resolvedEmotion = normalizeEmotion(emotion);
     return adapter.synthesize({
       text,
       voice: finalVoice,
       config: active.providerConfig,
       signal,
-      languageBoost: resolvedLanguageBoost
+      languageBoost: resolvedLanguageBoost,
+      emotion: resolvedEmotion
     });
   }
 
@@ -254,6 +283,8 @@
     normalizeTtsConfig,
     detectBoostFromText,
     resolveLanguageBoost,
+    normalizeEmotion,
+    SUPPORTED_EMOTIONS,
     synthesize,
     isEnabled,
     persistConfig
