@@ -63,6 +63,9 @@ window.initEventBindingsB = function(state, db) {
               // 语音通话
               enableTts: chat.settings.enableTts,
               minimaxVoiceId: chat.settings.minimaxVoiceId,
+              // 2026-10-01: 日语/英文音色一并带进预设, 否则"复制角色设置"会静默丢掉
+              minimaxVoiceIdJa: chat.settings.minimaxVoiceIdJa,
+              minimaxVoiceIdEn: chat.settings.minimaxVoiceIdEn,
               ttsLanguage: chat.settings.ttsLanguage,
 
               // 预设
@@ -205,6 +208,9 @@ window.initEventBindingsB = function(state, db) {
         chat.settings.enableDiaryMode = savedSettings.enableDiaryMode || false;
         chat.settings.enableTts = savedSettings.enableTts;
         chat.settings.minimaxVoiceId = savedSettings.minimaxVoiceId;
+        // 2026-10-01: 旧预设没有这两个字段 → undefined, resolver 自然回落中文音色
+        chat.settings.minimaxVoiceIdJa = savedSettings.minimaxVoiceIdJa;
+        chat.settings.minimaxVoiceIdEn = savedSettings.minimaxVoiceIdEn;
         chat.settings.ttsLanguage = savedSettings.ttsLanguage;
         chat.settings.linkedWorldBookIds = [...(savedSettings.linkedWorldBookIds || [])];
         chat.settings.offlinePresetId = savedSettings.offlinePresetId;

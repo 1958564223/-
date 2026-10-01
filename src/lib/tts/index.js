@@ -212,6 +212,70 @@
     return detectBoostFromText(text);
   }
 
+  // --- 音色选择 (2026-10-01) ---
+  // 按 speechText 自动选 voice_id, 中文为默认/兜底。
+  // 规则 (本项目明确定义, 不引入第三方语言库):
+  //   有平假名/片假名        → 日语 → voices.ja || voices.zh
+  //   无假名但有汉字          → 中文 → voices.zh
+  //   无假名无汉字但有拉丁字母 → 英文 → voices.en || voices.zh
+  //   其余 (数字/标点/emoji/控制标记/纯 interjection) → 中文 → voices.zh
+  //
+  // ⚠️ 与 detectBoostFromText 的差异是有意的:
+  //   1. 这里多一档英文 (2.6+ 才支持跨语种, 英文音色才有意义);
+  //   2. interjection 不算"拉丁字母证据" —— 整句只有 (chuckle) 时必须回落中文,
+  //      否则一句笑声会被送去英文音色。
+  //   两者共用同一份 speechText, 所以 language_boost 与 voice_id 说的是同一门语言。
+  const JAPANESE_KANA_RE = /[\u3040-\u309f\u30a0-\u30ff]/;
+  const CHINESE_CHARACTER_RE = /[\u3400-\u4dbf\u4e00-\u9fff]/;
+  const LATIN_LETTER_RE = /[A-Za-z]/;
+
+  /**
+   * 判定 TTS 文本的语种, 供音色选择使用。
+   * 契约: 入参必须是 tts-expression.js 产出的 speechText ——
+   *   [[语音:x]] 已在上游剥离, <#x#> 停顿标记是纯 ASCII 不影响判定,
+   *   唯独 interjection 会留在 speechText 里, 必须先剥。
+   * @param {string} text
+   * @returns {'ja'|'zh'|'en'}
+   */
+  function detectVoiceLanguage(text) {
+    let s = String(text == null ? '' : text);
+
+    // interjection 剥离: 白名单直接复用 tts-expression.js, 不在本文件重复实现。
+    //   加载顺序上 TTSExpression 比本文件晚 (index.html), 所以只能调用时再取。
+    const interjections = window.TTSExpression && window.TTSExpression.MINIMAX_INTERJECTIONS;
+    if (interjections && typeof interjections.forEach === 'function') {
+      interjections.forEach(tag => {
+        if (!tag) return;
+        s = s.split('(' + tag + ')').join(' ');
+      });
+    }
+
+    if (JAPANESE_KANA_RE.test(s)) return 'ja';
+    if (CHINESE_CHARACTER_RE.test(s)) return 'zh';
+    if (LATIN_LETTER_RE.test(s)) return 'en';
+    return 'zh';
+  }
+
+  /**
+   * 纯函数: 由 speechText + 本次会话的三个音色配置, 算出这一次请求该用的 voice_id。
+   * 不改 apiConfig / 不改 state / 不改 chat.settings, 每次调用互相独立。
+   * @param {string} text speechText
+   * @param {{zh?: string, ja?: string, en?: string}} voices
+   * @returns {string} 最终 voice_id (可能为空串 = 无可用音色)
+   */
+  function resolveVoiceId(text, voices) {
+    const config = voices || {};
+    const zh = String(config.zh == null ? '' : config.zh).trim();
+    const ja = String(config.ja == null ? '' : config.ja).trim();
+    const en = String(config.en == null ? '' : config.en).trim();
+
+    switch (detectVoiceLanguage(text)) {
+      case 'ja': return ja || zh;
+      case 'en': return en || zh;
+      default: return zh;
+    }
+  }
+
   // --- 情绪 (2026-09-30) ---
   // 依据官方 OpenAPI T2AVoiceSetting.emotion.description:
   //   "Option `fluent`, `whisper` is only available for models:
@@ -283,6 +347,8 @@
     normalizeTtsConfig,
     detectBoostFromText,
     resolveLanguageBoost,
+    detectVoiceLanguage,
+    resolveVoiceId,
     normalizeEmotion,
     SUPPORTED_EMOTIONS,
     synthesize,

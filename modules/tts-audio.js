@@ -91,6 +91,55 @@
     return 'auto';
   }
 
+  // ============================================================
+  // 音色选择收口 (2026-10-01)
+  // ------------------------------------------------------------
+  // 三条链路 (聊天 / 语音通话 / 视频通话) 全部走这里, 保证同一个 speechText
+  // 永远解析出同一个 voice_id。语言判定本体在 src/lib/tts/index.js 的
+  // resolveVoiceId, 本文件只负责"把当前会话的三个音色配置喂进去"。
+  // ============================================================
+
+  /**
+   * 从会话设置里取出本角色的三个音色配置。
+   * zh = 中文/默认音色 (兼容旧配置 chat.settings.minimaxVoiceId)
+   * @param {object} chat
+   * @param {string} [fallbackZh] 气泡 data-voice-id 上的值, 供 settings 为空时兜底
+   */
+  function getChatVoiceConfig(chat, fallbackZh) {
+    const settings = (chat && chat.settings) || {};
+    return {
+      zh: settings.minimaxVoiceId || fallbackZh || '',
+      ja: settings.minimaxVoiceIdJa || '',
+      en: settings.minimaxVoiceIdEn || ''
+    };
+  }
+
+  /**
+   * 解析本次请求要用的 voice_id。纯函数, 不写任何全局/设置。
+   * TTSService 未就绪时退回传入的 zh —— 保持改造前行为, 不阻断 TTS。
+   */
+  function resolveTtsVoiceId(text, voices) {
+    if (window.TTSService && typeof window.TTSService.resolveVoiceId === 'function') {
+      try {
+        return window.TTSService.resolveVoiceId(text, voices);
+      } catch (e) {
+        console.warn('[TTS] resolveVoiceId 异常, 退回中文音色:', e);
+      }
+    }
+    return (voices && voices.zh) || '';
+  }
+
+  /**
+   * TTS 缓存 key。规则与改造前逐字符一致 (v2 无 emotion / v3 带 emotion),
+   * 抽成独立函数只是为了让"中日同文本不能共用缓存"这条能被测试直接覆盖。
+   * 唯一的外部变化: voiceId 由调用方传入【已解析好的】音色, 而不是旧的单一 voice。
+   */
+  function buildTtsCacheKey({ voiceId, boostValue, emotion, text }) {
+    return emotion
+      ? `tts_v3_${voiceId}_${boostValue}_${emotion}_${text}`
+      : `tts_v2_${voiceId}_${boostValue}_${text}`;
+  }
+
   // --- TTS 播放队列（修复：前一条没读完就跳到最后一条的问题） ---
   const ttsQueue = [];
   // 2026-09-26: 取消 TTS 硬超时限制
@@ -543,8 +592,13 @@
   function playVideoCallPureTTS(text, voiceId, options = {}) {
     const source = options && options.source ? options.source : '';
     const isVoiceCallTts = source === 'voiceCall';
-    // 2026-09-29: 新增 languageBoost 透传 (用户选的具体语言, 空/undefined = 自动识别)
-    const requestedLanguageBoost = options && options.languageBoost ? options.languageBoost : '';
+    // 2026-10-01 起通话链路也先过 TTS_LANGUAGE_MAP, 与聊天链路口径一致。
+    //   修正前的行为: video-voice-call.js 传的是 UI 的 locale code ('ja-JP'),
+    //   resolveLanguageBoost 对非空值原样返回, 于是发给 MiniMax 的 language_boost
+    //   就是 "ja-JP" 而不是 "Japanese" —— 用户在设置里选了日语, 通话实际没生效。
+    //   调用方仍然传 locale code, 这里只补映射, 不动聊天侧 (tts-audio.js:715) 的逻辑。
+    const requestedLanguage = options && options.languageBoost ? options.languageBoost : '';
+    const requestedLanguageBoost = TTS_LANGUAGE_MAP[requestedLanguage] || 'auto';
 
     // 2026-09-30: 括号清洗改走 tts-expression.js 的白名单策略。
     //   改造前 videoCall 用一条 /(\[.*?\]|\(.*?\)|（.*?）|【.*?】)/g 把所有括号连内容一起删光,
@@ -578,9 +632,17 @@
       return false;
     }
 
-    // 2. 检查全局 TTS 开关与配置
-    if (!window.TTSService || !window.TTSService.isEnabled() || !voiceId) {
-      const errorType = !voiceId ? 'voice_id_missing' : 'tts_unavailable';
+    // 2. 按 speechText 解析本次请求要用的音色 (2026-10-01)
+    //    日语/英文音色可配, 没配就回落中文。调用方没传 options.voices 时按改造前行为处理:
+    //    只有一个 voice, 三种语言都用它 —— 保证旧配置与未升级的调用方完全不受影响。
+    const voiceConfig = (options && options.voices)
+      ? options.voices
+      : { zh: voiceId, ja: '', en: '' };
+    const resolvedVoiceId = resolveTtsVoiceId(cleanText, voiceConfig) || '';
+
+    // 3. 检查全局 TTS 开关与配置
+    if (!window.TTSService || !window.TTSService.isEnabled() || !resolvedVoiceId) {
+      const errorType = !resolvedVoiceId ? 'voice_id_missing' : 'tts_unavailable';
       logCallTtsDiag('CALL_TTS_START', source, cleanText);
       logCallTtsDiag('CALL_TTS_ERROR', source, cleanText, errorType);
       logCallTtsDiag('CALL_TTS_FALLBACK_SKIP', source, cleanText, errorType);
@@ -589,18 +651,19 @@
           textLength: cleanText.length,
           skipReason: errorType,
           queueLength: ttsQueue.length,
-          hasVoiceId: Boolean(voiceId)
+          hasVoiceId: Boolean(resolvedVoiceId)
         });
       }
       return false;
     }
 
-    // 3. 推入队列，串行处理
+    // 4. 推入队列，串行处理
     //    2026-09-29: 用清洗后的 cleanText 判定语种, 并随任务一起入队,
     //    这样 processNextTts 才能把它送到 TTSService。
     ttsQueue.push({
       text: cleanText,
-      voiceId,
+      // 关键: 入队的是【已按语言解析好的】音色, 队列里不再做任何 voice 决策。
+      voiceId: resolvedVoiceId,
       source,
       languageBoost: resolveTtsLanguageBoost(cleanText, requestedLanguageBoost),
       // 2026-09-30: 情绪随任务入队, 空串 = 不传, 保持改造前行为
@@ -611,7 +674,7 @@
       logVoiceCallTtsDiag('VOICE_CALL_TTS_ENQUEUE_SUCCESS', {
         textLength: cleanText.length,
         queueLength: ttsQueue.length,
-        hasVoiceId: Boolean(voiceId)
+        hasVoiceId: Boolean(resolvedVoiceId)
       });
     }
 
@@ -680,6 +743,8 @@
     //   UI 里 Auto 的 value 是空串, 旧代码用 truthy 判断, 空串被吞掉, ttsLanguage
     //   永远停在 'zh-CN', 最终 language_boost 恒为 "Chinese", 日语必被念成中文。
     let ttsLanguage = '';
+    // 2026-10-01: 本次请求的三个音色配置 (zh = 中文/默认, ja/en 可选)
+    let voiceConfig = { zh: voiceId || '', ja: '', en: '' };
 
     if (state.activeChatId && state.chats[state.activeChatId]) {
       const chat = state.chats[state.activeChatId];
@@ -688,6 +753,7 @@
         if (!voiceId) voiceId = chat.settings.minimaxVoiceId;
         // 2026-09-29: 必须判 undefined 而不是 truthy, 否则 "自动识别" (value="") 会被忽略
         if (chat.settings.ttsLanguage !== undefined) ttsLanguage = chat.settings.ttsLanguage;
+        voiceConfig = getChatVoiceConfig(chat, voiceId);
       }
 
       // 处理"仅读取对话"功能
@@ -714,7 +780,11 @@
     //   空串 / 'auto' → 按文本自动识别; 具体语言 → 尊重用户选择。
     const boostValue = resolveTtsLanguageBoost(text, TTS_LANGUAGE_MAP[ttsLanguage] || 'auto');
 
-    if (!voiceId) {
+    // 2026-10-01: 按 speechText 解析本次请求要用的音色。
+    //   与 boostValue 用的是同一份 text, 所以"念哪种语言"和"用哪个音色"必然一致。
+    const resolvedVoiceId = resolveTtsVoiceId(text, voiceConfig) || '';
+
+    if (!resolvedVoiceId) {
       alert("错误：无法获取 Voice ID。请检查角色设置。");
       return;
     }
@@ -750,14 +820,20 @@
     //    2026-09-30: emotion 存在时也进 key ——
     //    否则"你好+happy"先缓存, 之后"你好+sad"会直接命中 happy 的音频, 情绪参数完全失效。
     //    emotion 为空时 key 与改造前逐字符一致, 不影响任何既有缓存条目。
-    const cacheKey = emotion
-      ? `tts_v3_${voiceId}_${boostValue}_${emotion}_${text}`
-      : `tts_v2_${voiceId}_${boostValue}_${text}`;
+    //    2026-10-01: 音色也进 key, 且用的是【按语言解析后】的 resolvedVoiceId。
+    //    这是中日缓存隔离的唯一保证 —— 若这里仍用旧的单一 voiceId, "こんにちは"
+    //    的日语音色请求会去命中中文音色缓存, 表现为"配了日语音色却还是中文嗓子"。
+    const cacheKey = buildTtsCacheKey({
+      voiceId: resolvedVoiceId,
+      boostValue,
+      emotion,
+      text
+    });
     let cachedAudio = state.ttsCache.get(cacheKey);
     if (cachedAudio) {
       console.log("从缓存播放 TTS...");
       currentTtsMessageKey = messageKey;
-      await playAudioFromData(cachedAudio.url, cachedAudio.type, text, voiceId, bodyElement, messageKey, () => { currentTtsMessageKey = ''; });
+      await playAudioFromData(cachedAudio.url, cachedAudio.type, text, resolvedVoiceId, bodyElement, messageKey, () => { currentTtsMessageKey = ''; });
       return;
     }
 
@@ -766,7 +842,7 @@
     ttsAbortController = new AbortController();
     const signal = ttsAbortController.signal;
 
-    console.log(`请求 TTS... VoiceID: ${voiceId}, Language: ${ttsLanguage || 'auto'}, Boost: ${boostValue}`);
+    console.log(`请求 TTS... VoiceID: ${resolvedVoiceId}, Language: ${ttsLanguage || 'auto'}, Boost: ${boostValue}`);
     if (button) button.style.display = 'none';
     spinner.style.display = 'block';
 
@@ -780,7 +856,8 @@
 
       const result = await window.TTSService.synthesize({
         text,
-        voice: voiceId,
+        // 与 cache key 用的是同一个变量, 不存在"缓存算一套 / 请求发另一套"
+        voice: resolvedVoiceId,
         signal,
         languageBoost: boostValue,
         // 2026-09-30: 情绪透传。为空则不进请求体, 与改造前完全一致。
@@ -795,7 +872,7 @@
       const audioType = result.mimeType || audioBlob.type || 'audio/mpeg';
       const audioUrl = URL.createObjectURL(audioBlob);
 
-      await playAudioFromData(audioUrl, audioType, text, voiceId, bodyElement, messageKey, () => { currentTtsMessageKey = ''; });
+      await playAudioFromData(audioUrl, audioType, text, resolvedVoiceId, bodyElement, messageKey, () => { currentTtsMessageKey = ''; });
 
       // 写入缓存
       const reader = new FileReader();
@@ -1053,3 +1130,7 @@
   window.playSilentAudio = playSilentAudio;
   window.getCallTtsQueueLength = () => ttsQueue.length;
   window.isCallTtsPlaying = () => isTtsPlaying;
+  // 2026-10-01: 暴露纯函数, 供测试直接覆盖"中日同文本不共用缓存"与三链路口径一致。
+  window.buildTtsCacheKey = buildTtsCacheKey;
+  window.getChatVoiceConfig = getChatVoiceConfig;
+  window.resolveTtsVoiceId = resolveTtsVoiceId;

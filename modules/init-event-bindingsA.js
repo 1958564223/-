@@ -3811,6 +3811,9 @@ window.initEventBindingsA = async function(state, db) {
 
         document.getElementById('ai-original-name-input').value = chat.originalName;
         document.getElementById('ai-voice-id-input').value = chat.settings.minimaxVoiceId || '';
+        // 2026-10-01: 日语/英文音色 (可选)。旧角色没有这两个字段, 读出来是 undefined → 空串, 与旧配置完全一致。
+        document.getElementById('ai-voice-id-ja-input').value = chat.settings.minimaxVoiceIdJa || '';
+        document.getElementById('ai-voice-id-en-input').value = chat.settings.minimaxVoiceIdEn || '';
 
         document.getElementById('ai-voice-lang-group').style.display = isGroup ? 'none' : 'block';
         document.getElementById('ai-voice-lang-select').value = chat.settings.ttsLanguage || '';
@@ -4411,6 +4414,9 @@ window.initEventBindingsA = async function(state, db) {
         };
         
         chat.settings.minimaxVoiceId = document.getElementById('ai-voice-id-input').value.trim();
+        // 2026-10-01: 日语/英文音色留空 = 不启用, resolver 自动回落中文音色。
+        chat.settings.minimaxVoiceIdJa = document.getElementById('ai-voice-id-ja-input').value.trim();
+        chat.settings.minimaxVoiceIdEn = document.getElementById('ai-voice-id-en-input').value.trim();
 
         chat.settings.ttsLanguage = document.getElementById('ai-voice-lang-select').value;
         chat.settings.showSeconds = document.getElementById('chat-show-seconds-switch').checked;

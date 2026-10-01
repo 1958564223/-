@@ -169,7 +169,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/live2d-loader.js?v=0.3.6" defer></script>
   <!-- v0.5.0 P12/P13: 视频通话 AI 说话口型 + 元音嘴型 (独立模块, 无外部依赖; 必须在 tts-audio.js 之前加载) -->
   <script src="modules/call-lip-sync.js?v=0.0.2" defer></script>
-  <script src="modules/video-voice-call.js?v=0.0.74" defer></script>
+  <script src="modules/video-voice-call.js?v=0.0.75" defer></script>
   <script src="modules/message-actions.js?v=0.0.36" defer></script>
   <script src="modules/nai-imagen.js?v=0.0.36" defer></script>
   <script src="modules/backup-import-export.js?v=0.0.37" defer></script>
@@ -194,11 +194,12 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="src/lib/tts/adapters/minimax.js?v=0.0.38" defer></script>
   <script src="src/lib/tts/adapters/fishAudio.js?v=0.0.37" defer></script>
   <script src="src/lib/tts/adapters/openaiCompatible.js?v=0.0.37" defer></script>
-  <script src="src/lib/tts/index.js?v=0.0.38" defer></script>
-  <script src="src/lib/tts/settings-ui.js?v=0.0.36" defer></script>
+  <!-- 2026-10-01 TTS 音色选择: 按 speechText 自动选中文/日语/英文 voice_id (resolveVoiceId) -->
+  <script src="src/lib/tts/index.js?v=0.0.39" defer></script>
+  <script src="src/lib/tts/settings-ui.js?v=0.0.37" defer></script>
   <!-- 2026-09-30 TTS 表达层: [[语音:emotion]] 解析 + MiniMax 2.8-HD interjection 白名单 -->
   <script src="modules/tts-expression.js?v=0.0.2" defer></script>
-  <script src="modules/tts-audio.js?v=0.0.42" defer></script>
+  <script src="modules/tts-audio.js?v=0.0.43" defer></script>
   <script src="modules/appearance-theme.js?v=0.0.86" defer></script>
   <script src="modules/hot-news.js?v=0.1.2" defer></script>
   <script src="modules/runtime-diagnostics.js?v=0.0.38" defer></script>
@@ -238,8 +239,8 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- PIN/城市（依赖 DOM） -->
   <script src="modules/init-pin-city.js?v=0.0.36" defer></script>
   <!-- 事件绑定和功能（依赖 state, db） -->
-  <script src="modules/init-event-bindingsA.js?v=0.0.47" defer></script>
-  <script src="modules/init-event-bindingsB.js?v=0.0.39" defer></script>
+  <script src="modules/init-event-bindingsA.js?v=0.0.48" defer></script>
+  <script src="modules/init-event-bindingsB.js?v=0.0.40" defer></script>
   <script src="modules/init-features.js?v=0.0.40" defer></script>
   <!-- 主入口（最后加载，调用 init） -->
   <script src="modules/init-and-state.js?v=0.0.83" defer></script>
@@ -5564,9 +5565,21 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
                  <label class="toggle-switch"> <input type="checkbox" id="enable-tts-switch"> <span class="slider"></span> </label>
              </div>
              <div class="settings-item" id="ai-voice-id-group">
-                 <label>语音 ID</label>
+                 <label>中文音色 ID</label>
                  <div class="settings-right">
-                    <input type="text" id="ai-voice-id-input" placeholder="minimax voice_id">
+                    <input type="text" id="ai-voice-id-input" placeholder="minimax voice_id（默认/兜底音色）">
+                </div>
+            </div>
+            <div class="settings-item" id="ai-voice-id-ja-group">
+                <label>日语音色 ID（可选）</label>
+                <div class="settings-right">
+                   <input type="text" id="ai-voice-id-ja-input" placeholder="留空 = 日语也用中文音色">
+                </div>
+            </div>
+            <div class="settings-item" id="ai-voice-id-en-group">
+                <label>英文音色 ID（可选）</label>
+                <div class="settings-right">
+                   <input type="text" id="ai-voice-id-en-input" placeholder="留空 = 英文也用中文音色">
                  </div>
              </div>
              <div class="settings-item" id="ai-voice-lang-group">

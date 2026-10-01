@@ -60,14 +60,9 @@
           <select id="tts-minimax-model" class="settings-select">${modelOptions}</select>
         </div>
       </div>
-      <div class="settings-item">
-        <label>Voice ID <span style="color:#ff3b30;">*</span></label>
-        <div class="settings-right">
-          <input type="text" id="tts-minimax-voice" placeholder="角色未单独设置时使用此 Voice ID" value="${escapeHtml(config.voice)}">
-        </div>
-      </div>
       <p class="settings-description" style="padding: 0 15px 10px; color: #888; font-size: 12px;">
         MiniMax 接口地址已固化为：${escapeHtml(config.endpoint || window.TTSService.MINIMAX_ENDPOINT)}
+        <br>音色 ID 请在【角色设置】里按角色分别填写（中文 / 日语 / 英文），全局不再统一指定。
       </p>
     `;
   }
@@ -204,12 +199,13 @@
       cfg.apiKey = readInput('tts-minimax-api-key');
       cfg.groupId = readInput('tts-minimax-group-id');
       cfg.model = readInput('tts-minimax-model') || 'speech-01-hd';
-      cfg.voice = readInput('tts-minimax-voice');
       cfg.endpoint = window.TTSService.MINIMAX_ENDPOINT;
-
+      // 2026-10-01: 不再读全局 voice。音色改为 per-chat (chat.settings.minimaxVoiceId /
+      //   ...Ja / ...En), 全局这份从来就没被读到过 —— 聊天与两条通话链路都先用自己的
+      //   voiceId 判空, 走不到 index.js 的 `|| providerConfig.voice` 兜底。
+      //   存量 users 的 config.voice 原样保留不清理, 万一以后要复活它还在。
       if (!cfg.apiKey) return showTtsValidationError('MiniMax API Key 不能为空', silent);
       if (!cfg.groupId) return showTtsValidationError('MiniMax Group ID 不能为空', silent);
-      if (!cfg.voice) return showTtsValidationError('MiniMax Voice ID 不能为空', silent);
     }
 
     if (enabled && provider === 'fishAudio') {

@@ -2644,7 +2644,9 @@ ${linkedContents}
             setVideoCallStatusText('AI正在说话…');
             if (playVideoCallPureTTS(messageContent, voiceId, {
               source: 'videoCall',
-              languageBoost: getActiveCallTtsLanguageBoost()
+              languageBoost: getActiveCallTtsLanguageBoost(),
+              // 2026-10-01: 日语/英文音色可配, 语言判定在 tts-audio.js 内统一做
+              voices: getActiveCallVoiceConfig(chat)
             })) {
               hasVideoCallTtsPlayback = true;
               // v0.5.0 P26: 进入 tts_playing 阶段 — 通过 turn.onPhaseChange 同步三个布尔锁
@@ -3201,7 +3203,29 @@ ${linkedContents}
     }
   }
 
-  function enqueueVoiceCallDisplayTextTts(displayText, voiceId) {
+  // 2026-10-01: 取当前会话的三个音色配置 (中文/默认 + 日语 + 英文)。
+  //   语言判定与 voice 解析都在 tts-audio.js 的 resolveVoiceId 里做,
+  //   这里只负责把配置原样递过去 —— 通话链路不做任何语言判断。
+  //   与 getActiveCallTtsLanguageBoost 一样做成函数声明 (会提升)。
+  function getActiveCallVoiceConfig(chat) {
+    let target = chat;
+    if (!target) {
+      try {
+        const chatId = typeof state !== 'undefined' ? state.activeChatId : null;
+        target = chatId && typeof state !== 'undefined' ? state.chats?.[chatId] : null;
+      } catch (e) {
+        target = null;
+      }
+    }
+    const settings = (target && target.settings) || {};
+    return {
+      zh: settings.minimaxVoiceId || '',
+      ja: settings.minimaxVoiceIdJa || '',
+      en: settings.minimaxVoiceIdEn || ''
+    };
+  }
+
+  function enqueueVoiceCallDisplayTextTts(displayText, voiceId, voices) {
     const ttsText = String(displayText || '').trim();
     const queueLength = typeof window.getCallTtsQueueLength === 'function' ? window.getCallTtsQueueLength() : 0;
     const hasVoiceId = Boolean(voiceId);
@@ -3225,7 +3249,8 @@ ${linkedContents}
     const enqueued = typeof playVideoCallPureTTS === 'function'
       ? playVideoCallPureTTS(ttsText, voiceId, {
           source: 'voiceCall',
-          languageBoost: getActiveCallTtsLanguageBoost()
+          languageBoost: getActiveCallTtsLanguageBoost(),
+          voices: voices || getActiveCallVoiceConfig()
         })
       : false;
 
@@ -3854,6 +3879,7 @@ ${voiceCallTtsBlock}
         const speechArray = parseAiResponse(aiResponse);
         const enableTts = chat.settings.enableTts !== false;
         const voiceId = chat.settings.minimaxVoiceId;
+        const voiceConfig = getActiveCallVoiceConfig(chat);
         speechArray.forEach(turn => {
           const displayText = `${turn.name || ''}: ${turn.speech || ''}`.trim();
           if (!turn.name || turn.name === userNickname || !displayText) return;
@@ -3874,7 +3900,7 @@ ${voiceCallTtsBlock}
             textLength: displayText.length,
             hasVoiceId: Boolean(voiceId)
           });
-          if (enqueueVoiceCallDisplayTextTts(displayText, voiceId)) {
+          if (enqueueVoiceCallDisplayTextTts(displayText, voiceId, voiceConfig)) {
             hasVoiceCallTtsPlayback = true;
           }
 
@@ -3890,6 +3916,7 @@ ${voiceCallTtsBlock}
       } else {
         // 单聊模式：支持多条消息
         const voiceId = chat.settings.minimaxVoiceId;
+        const voiceConfig = getActiveCallVoiceConfig(chat);
 
         // ⚠️ [[语音:happy]] 标签【原样保留】在这里: 气泡、callHistory 全部拿带标签的原文。
         //   剥离只发生在 tts-audio.js 真正发 MiniMax 的那一刻。
@@ -3925,7 +3952,7 @@ ${voiceCallTtsBlock}
             textLength: displayText.length,
             hasVoiceId: Boolean(voiceId)
           });
-          if (enqueueVoiceCallDisplayTextTts(displayText, voiceId)) {
+          if (enqueueVoiceCallDisplayTextTts(displayText, voiceId, voiceConfig)) {
             hasVoiceCallTtsPlayback = true;
           }
         });
