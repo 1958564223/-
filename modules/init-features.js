@@ -10,6 +10,8 @@
 // ============================================================
 
 window.initFeatures = function(state, db) {
+    // v0.2.34: Gemini Live 桥接层加载标记 (用于确认一起看电影功能已就绪)
+    console.log('[WT-Live] initFeatures 已开始执行, 一起看电影功能就绪');
 
 
 
@@ -3798,9 +3800,6 @@ ${truthGameHistoryContext}
           // 删除这条AI消息及其后的所有消息
           watchTogetherState.messages = watchTogetherState.messages.slice(0, messageIndex);
           renderWatchTogetherMessages();
-
-          // 调用API
-          callWatchTogetherAPI();
         } else {
           // 用户消息：删除
           const confirmed = await showCustomConfirm('删除消息', '确定要删除这条消息吗？', {
@@ -3962,26 +3961,16 @@ ${truthGameHistoryContext}
     // ========== 真心话游戏结束 ==========
 
     // ========== 一起看电影功能 ==========
+    // v0.3.0 清理: 旧"定时截图 + Whisper + 手动调用API"链路的字段已全部移除
+    //   (已被 Gemini Live 完整替代, 详见 modules/live-client.js)
     let watchTogetherState = {
       isActive: false,
       chatId: null,
       videoUrl: null,
-      mode: 'online', // 默认线上模式
-      captureInterval: 5,
-      speechApi: 'none', // 默认不识别
-      whisperKey: '',
-      whisperUrl: 'https://api.openai.com/v1/audio/transcriptions',
-      maxScreenshots: 10, // 记住历史截图数量
-      maxAudios: 10, // 记住历史声音数量
-      maxMessages: 20, // 记住最近对话条数
+      mode: 'online',        // 线上/线下模式 (消息渲染用)
+      maxMessages: 20,       // 记住最近对话条数
       messages: [],
-      captureTimer: null,
-      speechRecognition: null,
-      audioContext: null,
-      mediaRecorder: null,
-      audioChunks: [],
-      corsWarningShown: false, // 跨域警告是否已显示
-      hlsInstance: null // HLS.js 实例
+      hlsInstance: null      // HLS.js 实例
     };
     window.watchTogetherState = watchTogetherState;
 
@@ -4007,12 +3996,6 @@ ${truthGameHistoryContext}
       // 加载保存的设置
       if (chat.watchTogetherSettings) {
         watchTogetherState.mode = chat.watchTogetherSettings.mode || 'online';
-        watchTogetherState.captureInterval = chat.watchTogetherSettings.captureInterval || 5;
-        watchTogetherState.speechApi = chat.watchTogetherSettings.speechApi || 'none';
-        watchTogetherState.whisperKey = chat.watchTogetherSettings.whisperKey || '';
-        watchTogetherState.whisperUrl = chat.watchTogetherSettings.whisperUrl || 'https://api.openai.com/v1/audio/transcriptions';
-        watchTogetherState.maxScreenshots = chat.watchTogetherSettings.maxScreenshots || 10;
-        watchTogetherState.maxAudios = chat.watchTogetherSettings.maxAudios || 10;
         watchTogetherState.maxMessages = chat.watchTogetherSettings.maxMessages || 20;
       }
 
@@ -4155,12 +4138,6 @@ ${truthGameHistoryContext}
       document.getElementById('watch-together-settings-modal').classList.add('visible');
     });
 
-    // 语音API选择
-    document.getElementById('watch-together-speech-api-select').addEventListener('change', (e) => {
-      const whisperConfig = document.getElementById('watch-together-whisper-config');
-      whisperConfig.style.display = e.target.value === 'whisper' ? 'block' : 'none';
-    });
-
     // 保存设置
     document.getElementById('save-watch-together-settings-btn').addEventListener('click', () => {
       saveWatchTogetherSettings();
@@ -4213,11 +4190,6 @@ ${truthGameHistoryContext}
       sendWatchTogetherUserMessage();
     });
 
-    // 调用API
-    document.getElementById('watch-together-call-api-btn').addEventListener('click', () => {
-      callWatchTogetherAPI();
-    });
-
     // 回车发送
     document.getElementById('watch-together-chat-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -4225,6 +4197,92 @@ ${truthGameHistoryContext}
         sendWatchTogetherUserMessage();
       }
     });
+
+    // ============================================================
+    // v0.3.0 Gemini Live — 最小接入
+    //   旧"定时截图 + Whisper + 手动调用API"链路已在 v0.3.0 清理干净,
+    //   这里只剩 3 个视频生命周期钩子 + 1 个开关按钮, 全部走 window.WatchTogetherLive。
+    // ============================================================
+    (function setupGeminiLiveBridge() {
+      const wtVideo = document.getElementById('watch-together-video');
+      if (!wtVideo) return;
+
+      // 视频暂停 → 停发帧, 保留 session (不销毁)
+      wtVideo.addEventListener('pause', () => {
+        if (window.WatchTogetherLive && window.WatchTogetherLive.isEnabled()) {
+          window.WatchTogetherLive.pauseFrames('video pause');
+        }
+      });
+      // 视频开始播放 → 自动连接 Gemini Live (方案 A: 播就连, 不用手动点)
+      wtVideo.addEventListener('play', () => {
+        if (!window.WatchTogetherLive) return;
+        if (window.WatchTogetherLive.isEnabled()) {
+          window.WatchTogetherLive.resumeFrames('video play');
+        } else {
+          window.WatchTogetherLive.autoConnect('video play');
+        }
+      });
+      // 视频播完 → 停发帧, session 保留
+      wtVideo.addEventListener('ended', () => {
+        if (window.WatchTogetherLive && window.WatchTogetherLive.isEnabled()) {
+          window.WatchTogetherLive.onVideoEnded();
+        }
+      });
+
+      // 开关按钮: 放在【聊天框标题栏】里 (角色名 和 收起按钮 之间)
+      //   为什么放这: 输入区只有 320px 宽, 已经挤了 [输入框][调用API][发送] 三个控件,
+      //   再塞一个会把输入框压到没法用 (实测复刻过)。标题栏有空间, 而且收起聊天框时也还看得见。
+      const chatHeader = document.getElementById('watch-together-chat-header');
+      if (!chatHeader) return;
+      if (document.getElementById('watch-together-live-btn')) return; // 防重复注入
+
+      const liveBtn = document.createElement('button');
+      liveBtn.id = 'watch-together-live-btn';
+      liveBtn.textContent = 'Gemini Live';
+      liveBtn.title = '方案A: 播放本地视频时会自动连上, 不用点。点这里可临时断开 / 重新连上';
+      liveBtn.setAttribute('style',
+        'font-size:12px;padding:4px 10px;border-radius:8px;border:1px solid #ddd;' +
+        'background:#fff;cursor:pointer;margin-left:auto;margin-right:8px;line-height:1.4;');
+      const toggleBtn = document.getElementById('watch-together-chat-toggle');
+      if (toggleBtn && toggleBtn.parentNode === chatHeader) {
+        chatHeader.insertBefore(liveBtn, toggleBtn);
+      } else {
+        chatHeader.appendChild(liveBtn);
+      }
+
+      // 按钮状态跟着实际连接状态走 (自动连上时也要变绿)
+      function syncBtn(enabled) {
+        liveBtn.textContent = enabled ? '● Live' : 'Gemini Live';
+        liveBtn.style.background = enabled ? '#dcfce7' : '#fff';
+        liveBtn.style.borderColor = enabled ? '#86efac' : '#ddd';
+      }
+      window.__wtSyncLiveBtn = syncBtn;
+
+      // 现在只是【临时开关】, 正常不用点 —— 播放时会自动连
+      liveBtn.addEventListener('click', () => {
+        if (!window.WatchTogetherLive) {
+          alert('watch-together-live.js 没加载');
+          return;
+        }
+        if (window.WatchTogetherLive.isEnabled()) {
+          window.WatchTogetherLive.setAutoMode(false);  // 手动断开后别再自动连回来
+          window.WatchTogetherLive.disable('用户手动关闭');
+          syncBtn(false);
+          return;
+        }
+        const v = document.getElementById('watch-together-video');
+        if (!v || !v.src || v.src.indexOf('blob:') !== 0) {
+          alert('第一阶段只支持【本地视频】。\n请先用「+」选择一个本地视频文件。');
+          return;
+        }
+        liveBtn.disabled = true;
+        liveBtn.textContent = '连接中…';
+        window.WatchTogetherLive.enable().then((ok) => {
+          liveBtn.disabled = false;
+          syncBtn(ok);
+        });
+      });
+    })();
 
     // 加载视频（本地文件）
     function loadWatchTogetherVideo(file, skipSavePrompt = false) {
@@ -4237,14 +4295,15 @@ ${truthGameHistoryContext}
       placeholder.style.display = 'none';
 
       watchTogetherState.videoUrl = url;
-      watchTogetherState.corsWarningShown = false; // 重置跨域警告
+
+      // v0.2.34 Gemini Live: 视频源换了, 抽帧缓存归零 (session 本身保持)
+      if (window.WatchTogetherLive && window.WatchTogetherLive.isEnabled()) {
+        window.WatchTogetherLive.onVideoSourceChanged();
+      }
 
       // 存储当前视频信息，用于保存到播放列表
       watchTogetherState.currentVideoFile = file;
       watchTogetherState.currentVideoUrl = null;
-
-      // 开始监听
-      startWatchTogetherMonitoring();
 
       addWatchTogetherSystemMessage('视频已加载，开始观看');
 
@@ -4271,9 +4330,13 @@ ${truthGameHistoryContext}
       placeholder.style.display = 'none';
 
       watchTogetherState.videoUrl = url;
-      watchTogetherState.corsWarningShown = false;
       watchTogetherState.currentVideoFile = null;
       watchTogetherState.currentVideoUrl = url;
+
+      // v0.2.34 Gemini Live: 视频源换了, 抽帧缓存归零 (session 本身保持)
+      if (window.WatchTogetherLive && window.WatchTogetherLive.isEnabled()) {
+        window.WatchTogetherLive.onVideoSourceChanged();
+      }
 
       const isHls = /\.m3u8(\?|$)/i.test(url);
 
@@ -4329,9 +4392,6 @@ ${truthGameHistoryContext}
           }
         };
       }
-
-      // 开始监听
-      startWatchTogetherMonitoring();
 
       addWatchTogetherSystemMessage('视频已加载，开始观看');
 
@@ -4460,227 +4520,19 @@ ${truthGameHistoryContext}
         await renderPlaylist();
       }
     };
-
-    // ========== 播放列表功能结束 ==========
-
-    // 开始监听（截图+语音识别）
-    function startWatchTogetherMonitoring() {
-      const video = document.getElementById('watch-together-video');
-
-      // 启动语音识别（如果启用）
-      if (watchTogetherState.speechApi === 'whisper') {
-        // 初始化音频上下文
-        if (!watchTogetherState.audioContext) {
-          watchTogetherState.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        }
-
-        // 创建音频源
-        const source = watchTogetherState.audioContext.createMediaElementSource(video);
-        const destination = watchTogetherState.audioContext.createMediaStreamDestination();
-        source.connect(destination);
-        source.connect(watchTogetherState.audioContext.destination);
-
-        // 启动 Whisper 录音
-        startWhisperRecording(destination.stream);
-      } else if (watchTogetherState.speechApi === 'none') {
-        console.log('已禁用语音识别');
-      }
-
-      // 启动截图定时器
-      startCaptureTimer();
-    }
-
-    // Whisper录音
-    function startWhisperRecording(stream) {
-      if (!MediaRecorder.isTypeSupported('audio/webm')) {
-        console.warn('浏览器不支持MediaRecorder');
-        return;
-      }
-
-      const mediaRecorder = new MediaRecorder(stream);
-      watchTogetherState.mediaRecorder = mediaRecorder;
-      watchTogetherState.audioChunks = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        watchTogetherState.audioChunks.push(event.data);
-      };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(watchTogetherState.audioChunks, { type: 'audio/webm' });
-        watchTogetherState.audioChunks = [];
-
-        // 发送到Whisper API
-        const transcript = await transcribeWithWhisper(audioBlob);
-        if (transcript) {
-          addWatchTogetherContextMessage('语音识别', transcript);
-        }
-
-        // 继续录制
-        if (watchTogetherState.isActive && watchTogetherState.mediaRecorder) {
-          watchTogetherState.audioChunks = [];
-          watchTogetherState.mediaRecorder.start();
-          setTimeout(() => {
-            if (watchTogetherState.mediaRecorder && watchTogetherState.mediaRecorder.state === 'recording') {
-              watchTogetherState.mediaRecorder.stop();
-            }
-          }, watchTogetherState.captureInterval * 1000);
-        }
-      };
-
-      mediaRecorder.start();
-      setTimeout(() => {
-        if (mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-        }
-      }, watchTogetherState.captureInterval * 1000);
-    }
-
-    // Whisper API转录
-    async function transcribeWithWhisper(audioBlob) {
-      try {
-        const formData = new FormData();
-        formData.append('file', audioBlob, 'audio.webm');
-        formData.append('model', 'whisper-1');
-
-        const response = await fetch(watchTogetherState.whisperUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${watchTogetherState.whisperKey}`
-          },
-          body: formData
-        });
-
-        if (!response.ok) {
-          throw new Error('Whisper API调用失败');
-        }
-
-        const data = await response.json();
-        return data.text;
-      } catch (error) {
-        console.error('Whisper转录失败:', error);
-        return null;
-      }
-    }
-
-    // 启动截图定时器
-    function startCaptureTimer() {
-      if (watchTogetherState.captureTimer) {
-        clearInterval(watchTogetherState.captureTimer);
-      }
-
-      watchTogetherState.captureTimer = setInterval(() => {
-        captureVideoFrame();
-      }, watchTogetherState.captureInterval * 1000);
-    }
-
-    // 截取视频画面
-    function captureVideoFrame() {
-      const video = document.getElementById('watch-together-video');
-      if (!video || video.paused) return;
-
-      // 检查视频尺寸
-      if (!video.videoWidth || !video.videoHeight) {
-        console.warn('视频尺寸无效，跳过本次截图');
-        return;
-      }
-
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0);
-
-        const imageData = canvas.toDataURL('image/jpeg', 0.6);
-        const currentTime = formatVideoTime(video.currentTime);
-
-        console.log(`✅ 视频截图已捕获: ${currentTime}, 大小: ${(imageData.length / 1024).toFixed(2)}KB`);
-        addWatchTogetherContextMessage('视频截图', `[${currentTime}]`, imageData);
-      } catch (error) {
-        console.error('❌ 视频截图失败（可能是跨域限制）:', error.message);
-        // 如果是第一次失败，给用户提示
-        if (!watchTogetherState.corsWarningShown) {
-          watchTogetherState.corsWarningShown = true;
-          addWatchTogetherSystemMessage('⚠️ 视频截图功能受限，该视频源不支持内容识别');
-        }
-      }
-    }
-
-    // 格式化时间
-    function formatVideoTime(seconds) {
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = Math.floor(seconds % 60);
-
-      if (h > 0) {
-        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-      } else {
-        return `${m}:${s.toString().padStart(2, '0')}`;
-      }
-    }
-
-    // 添加系统消息
-    function addWatchTogetherSystemMessage(text) {
-      const messagesDiv = document.getElementById('watch-together-chat-messages');
-      const msgDiv = document.createElement('div');
-      msgDiv.className = 'watch-together-system-message';
-      msgDiv.textContent = text;
-      messagesDiv.appendChild(msgDiv);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
-
-    // 添加上下文消息（不显示，但会发给AI）
-    function addWatchTogetherContextMessage(type, content, imageData = null) {
-      watchTogetherState.messages.push({
-        role: 'system',
-        type: type,
-        content: content,
-        imageData: imageData,
-        timestamp: Date.now()
-      });
-
-      // 根据类型清理超出限制的历史记录
-      if (type === '视频截图') {
-        const screenshots = watchTogetherState.messages.filter(m => m.role === 'system' && m.type === '视频截图');
-        if (screenshots.length > watchTogetherState.maxScreenshots) {
-          // 找到最旧的截图并删除
-          const oldestScreenshot = screenshots[0];
-          const index = watchTogetherState.messages.indexOf(oldestScreenshot);
-          if (index !== -1) {
-            watchTogetherState.messages.splice(index, 1);
-          }
-        }
-      } else if (type === '语音识别') {
-        const audios = watchTogetherState.messages.filter(m => m.role === 'system' && m.type === '语音识别');
-        if (audios.length > watchTogetherState.maxAudios) {
-          // 找到最旧的语音并删除
-          const oldestAudio = audios[0];
-          const index = watchTogetherState.messages.indexOf(oldestAudio);
-          if (index !== -1) {
-            watchTogetherState.messages.splice(index, 1);
-          }
-        }
-      }
-
-      // 限制对话消息数量（用户和助手的消息）
-      const dialogMessages = watchTogetherState.messages.filter(m => m.role === 'user' || m.role === 'assistant');
-      if (dialogMessages.length > watchTogetherState.maxMessages) {
-        // 找到最旧的对话消息并删除
-        const oldestDialog = dialogMessages[0];
-        const index = watchTogetherState.messages.indexOf(oldestDialog);
-        if (index !== -1) {
-          watchTogetherState.messages.splice(index, 1);
-        }
-      }
-    }
-
     // 发送用户消息（不调用API）
     function sendWatchTogetherUserMessage() {
       const input = document.getElementById('watch-together-chat-input');
       const text = input.value.trim();
 
       if (!text) return;
+
+      // v0.4.0 Gemini Live 优先接管 (它带实时视频画面 + 人设 + 长期记忆)
+      if (window.WatchTogetherLive && window.WatchTogetherLive.isEnabled()) {
+        input.value = '';
+        window.WatchTogetherLive.handleUserMessage(text);
+        return;
+      }
 
       input.value = '';
 
@@ -4702,9 +4554,27 @@ ${truthGameHistoryContext}
       }
 
       renderWatchTogetherMessages();
+
+      // v0.4.0: Live 未启用时自动走主 API (降级路径), 不用再手动点「调用API」
+      //   (那个按钮在 v0.3.0 已删, 聊天框发消息就是唯一入口)
+      callWatchTogetherAPI();
     }
 
-    // 调用API
+    // ============================================================
+    // 主 API fallback (v0.4.0 恢复)
+    //
+    // ⚠️ 定位: 这是 Gemini Live 的【降级路径】, 不是视频理解方案。
+    //   - Live 已连接  → 由 Gemini 3.8 Live 负责陪看 (走 watch-together-live.js)
+    //   - Live 未启用  → 退回主聊天 API, 纯文字问答
+    //
+    // ⚠️ 与 v0.3.0 之前的旧版差异 (有意为之, 不要恢复):
+    //   - ❌ 不再有 captureVideoFrame / 定时截图 / screenshot 历史
+    //   - ❌ 不再有 Whisper 语音识别 / maxScreenshots / maxAudios
+    //   - ❌ 不再有 image_url 截图附加
+    //   视频画面理解【只】由 Gemini 3.8 Live 负责, 旧的那套逐帧截图分析已废弃。
+    //
+    // 保留: 人设 + 世界书 + 长期记忆 + 跨聊天记忆 + 对话历史 (跟主聊天一致)
+    // ============================================================
     async function callWatchTogetherAPI() {
       if (!watchTogetherState.isActive) return;
 
@@ -4712,9 +4582,8 @@ ${truthGameHistoryContext}
       const video = document.getElementById('watch-together-video');
       const isOnlineMode = watchTogetherState.mode === 'online';
 
-      // 禁用按钮
-      document.getElementById('watch-together-call-api-btn').disabled = true;
-      document.getElementById('watch-together-chat-send').disabled = true;
+      const sendBtn = document.getElementById('watch-together-chat-send');
+      if (sendBtn) sendBtn.disabled = true;
 
       // 显示"正在输入中"
       const chatNameElement = document.getElementById('watch-together-chat-name');
@@ -4728,7 +4597,7 @@ ${truthGameHistoryContext}
           return;
         }
 
-        const currentTime = video.currentTime ? formatVideoTime(video.currentTime) : '0:00';
+        const currentTime = video.currentTime ? formatVideoTimeFallback(video.currentTime) : '0:00';
         const now = new Date();
         const selectedTimeZone = chat.settings.timeZone || 'Asia/Shanghai';
         const currentDateTime = now.toLocaleString('zh-CN', {
@@ -4737,7 +4606,7 @@ ${truthGameHistoryContext}
           timeStyle: 'short'
         });
 
-        // 构建基础系统提示词
+        // 基础系统提示 (人设)
         let basePrompt = `# 核心任务
 你正在和用户一起观看视频。当前时间：${currentDateTime}，视频播放时间：${currentTime}。
 
@@ -4789,7 +4658,7 @@ ${linkedContents}
           longTermMemoryContext += '\n';
         }
 
-        // 挂载聊天记录
+        // 挂载其他聊天的记忆
         let linkedMemoryContext = '';
         const memoryCount = chat.settings.linkedMemoryCount || 10;
         if (chat.settings.linkedMemoryChatIds && chat.settings.linkedMemoryChatIds.length > 0) {
@@ -4826,39 +4695,10 @@ ${linkedContents}
           }
         }
 
-        // 视频内容上下文
-        let videoContext = '\n# 视频内容\n';
+        let systemPrompt = basePrompt + worldBookContent + longTermMemoryContext + linkedMemoryContext;
 
-        // 最近的语音识别内容
-        const recentSpeech = watchTogetherState.messages
-          .filter(m => m.role === 'system' && m.type === '语音识别')
-          .slice(-watchTogetherState.maxAudios);
-
-        if (recentSpeech.length > 0) {
-          videoContext += '## 视频中的对话（最近听到的）:\n';
-          recentSpeech.forEach(s => {
-            videoContext += `- ${s.content}\n`;
-          });
-        }
-
-        // 最近的截图
-        const recentScreenshots = watchTogetherState.messages
-          .filter(m => m.role === 'system' && m.type === '视频截图')
-          .slice(-watchTogetherState.maxScreenshots);
-
-        if (recentScreenshots.length > 0) {
-          videoContext += '\n## 视频画面（最近截图）:\n';
-          recentScreenshots.forEach(s => {
-            videoContext += `- ${s.content}\n`;
-          });
-        }
-
-        // 组合完整系统提示
-        let systemPrompt = basePrompt + worldBookContent + longTermMemoryContext + linkedMemoryContext + videoContext;
-
-        // 根据模式添加格式指令
+        // 模式指令
         if (isOnlineMode) {
-          // 线上模式：使用JSON数组格式（和单聊一样）
           systemPrompt += `
 # 【【【线上聊天模式 - 最高优先级铁律】】】
 
@@ -4868,7 +4708,7 @@ ${linkedContents}
    - 禁止描写动作（如：*笑了笑*、*点点头*）
    - 禁止描写表情（如：她微笑着、他皱了皱眉）
    - 禁止描写环境（如：阳光洒在窗台上）
-   - 禁止使用任何标点符号来表示动作（如：*、（）、【】等）
+   - 禁止使用任何标点符号来表示动作
 3. **你只能打字**，就像真人在手机上聊天一样。
 4. 你可以用表情符号、网络用语、口语化表达，但**绝对不能**有任何"旁白"或"场景描写"。
 
@@ -4882,78 +4722,36 @@ ${linkedContents}
 \`\`\`json
 [
   {"type": "text", "content": "哇这个镜头好美啊！"},
-  {"type": "text", "content": "你注意到刚才那个细节了吗"},
-  {"type": "text", "content": "我好喜欢这段"}
+  {"type": "text", "content": "你注意到刚才那个细节了吗"}
 ]
 \`\`\`
-
-### 错误示例（绝对禁止）：
-❌ \`{"type": "text", "content": "*笑了笑* 确实很不错呢"}\`  
-❌ \`{"type": "text", "content": "（歪头思考）嗯...这个地方..."}\`  
-❌ \`{"type": "text", "content": "她露出了开心的笑容：这个..."}\`  
 
 现在，请像真人在手机上聊天一样，纯文字打字回复用户。可以发多条消息。
 `;
         } else {
-          // 线下模式：单条文本
           systemPrompt += `
 # 你的任务
-请根据以上所有信息，结合视频内容自然地回复用户。你的回复必须符合你的人设，并体现出对视频内容的理解。
+请根据以上所有信息自然地回复用户。你的回复必须符合你的人设。
 直接回复文本即可，不需要JSON格式。
 `;
         }
 
-        // 构建消息历史
+        // 对话历史 (纯文字, 无截图)
         const maxMemory = watchTogetherState.maxMessages || 20;
         const historyMessages = watchTogetherState.messages
           .filter(m => m.role === 'user' || m.role === 'assistant')
           .slice(-maxMemory)
           .map(m => ({
             role: m.role,
-            content: m.content
+            content: String(m.content == null ? '' : m.content)
           }));
-
-        // 获取最新截图
-        const latestScreenshot = watchTogetherState.messages
-          .filter(m => m.role === 'system' && m.type === '视频截图' && m.imageData)
-          .slice(-1)[0];
-
-        // 如果有截图，把它附加到最后一条用户消息上（类似视频通话的方式）
-        if (latestScreenshot && historyMessages.length > 0) {
-          const lastUserMsgIndex = historyMessages.map((m, i) => m.role === 'user' ? i : -1).filter(i => i >= 0).pop();
-
-          if (lastUserMsgIndex !== undefined) {
-            const lastUserMsg = historyMessages[lastUserMsgIndex];
-            // 将文本消息转换为多模态消息
-            historyMessages[lastUserMsgIndex] = {
-              role: 'user',
-              content: [
-                { type: 'text', text: typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '用户消息' },
-                { type: 'image_url', image_url: { url: latestScreenshot.imageData } }
-              ]
-            };
-            console.log(`📸 已将视频截图附加到用户消息: ${latestScreenshot.content}`);
-          }
-        } else if (latestScreenshot && historyMessages.length === 0) {
-          // 如果没有历史消息，把截图作为第一条用户消息
-          historyMessages.push({
-            role: 'user',
-            content: [
-              { type: 'text', text: `当前视频画面 ${latestScreenshot.content}` },
-              { type: 'image_url', image_url: { url: latestScreenshot.imageData } }
-            ]
-          });
-          console.log(`📸 已将视频截图作为首条消息发送: ${latestScreenshot.content}`);
-        } else {
-          console.log('📭 暂无视频截图可发送');
-        }
 
         const messagesPayload = [
           { role: 'system', content: systemPrompt },
           ...historyMessages
         ];
 
-        // 调用API（统一规则：用户填到 /v1，代码只补 /chat/completions）
+        // 调主 API
         const apiUrl = proxyUrl.endsWith('/v1') ? `${proxyUrl}/chat/completions` : `${proxyUrl}/v1/chat/completions`;
         const apiResponse = await fetch(apiUrl, {
           method: 'POST',
@@ -4984,11 +4782,9 @@ ${linkedContents}
         reply = reply.replace(/^```json\s*/i, '').replace(/^```\s*/m, '').replace(/```\s*$/m, '');
 
         if (isOnlineMode) {
-          // 线上模式：解析JSON数组，AI可以发送多条消息
           try {
             const parsed = JSON.parse(reply);
             if (Array.isArray(parsed)) {
-              // 为每条消息添加到历史
               parsed.forEach(item => {
                 if (item.type === 'text' && item.content) {
                   watchTogetherState.messages.push({
@@ -4999,25 +4795,13 @@ ${linkedContents}
                 }
               });
             } else {
-              // 如果不是数组，当作单条消息
-              watchTogetherState.messages.push({
-                role: 'assistant',
-                content: reply,
-                timestamp: Date.now()
-              });
+              watchTogetherState.messages.push({ role: 'assistant', content: reply, timestamp: Date.now() });
             }
           } catch (e) {
-            // JSON解析失败，当作纯文本
             console.error('JSON解析失败:', e);
-            watchTogetherState.messages.push({
-              role: 'assistant',
-              content: reply,
-              timestamp: Date.now()
-            });
+            watchTogetherState.messages.push({ role: 'assistant', content: reply, timestamp: Date.now() });
           }
         } else {
-          // 线下模式：直接添加单条文本消息
-          // 尝试解析JSON格式（兼容某些模型可能返回JSON）
           try {
             const parsed = JSON.parse(reply);
             if (Array.isArray(parsed) && parsed[0]) {
@@ -5025,56 +4809,39 @@ ${linkedContents}
                 reply = parsed[0].content;
               }
             }
-          } catch (e) {
-            // 保持原样
-          }
-
-          watchTogetherState.messages.push({
-            role: 'assistant',
-            content: reply,
-            timestamp: Date.now()
-          });
+          } catch (e) { /* 保持原样 */ }
+          watchTogetherState.messages.push({ role: 'assistant', content: reply, timestamp: Date.now() });
         }
 
         // 清理超出限制的对话消息
         const dialogMessages = watchTogetherState.messages.filter(m => m.role === 'user' || m.role === 'assistant');
         if (dialogMessages.length > watchTogetherState.maxMessages) {
-          // 计算需要删除的数量
           const deleteCount = dialogMessages.length - watchTogetherState.maxMessages;
           for (let i = 0; i < deleteCount; i++) {
             const oldestDialog = watchTogetherState.messages.find(m => m.role === 'user' || m.role === 'assistant');
             const index = watchTogetherState.messages.indexOf(oldestDialog);
-            if (index !== -1) {
-              watchTogetherState.messages.splice(index, 1);
-            }
+            if (index !== -1) watchTogetherState.messages.splice(index, 1);
           }
         }
 
         renderWatchTogetherMessages();
-
       } catch (error) {
         console.error('AI调用失败:', error);
         addWatchTogetherSystemMessage('AI调用失败：' + error.message);
-
-        // 显示错误弹窗
-        let errorDetail = error.message;
-        if (error.message.includes('模型') || error.message.includes('vision') || error.message.includes('image')) {
-          errorDetail += '\n\n提示：当前模型可能不支持视觉功能（图片识别）。建议使用支持视觉的模型，如：gpt-4o、claude-3、gemini-pro-vision 等。';
-        }
-        alert('观影AI调用失败\n\n' + errorDetail);
       } finally {
-        // 恢复原名字
-        const chat = state.chats[watchTogetherState.chatId];
-        const chatNameElement = document.getElementById('watch-together-chat-name');
-        if (chat) {
-          chatNameElement.textContent = chat.name;
-        }
-
-        document.getElementById('watch-together-call-api-btn').disabled = false;
-        document.getElementById('watch-together-chat-send').disabled = false;
+        if (chat) chatNameElement.textContent = chat.name;
+        if (sendBtn) sendBtn.disabled = false;
       }
     }
 
+    /** 秒 → mm:ss / h:mm:ss (主 API fallback 专用) */
+    function formatVideoTimeFallback(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
     // 渲染消息
     function renderWatchTogetherMessages() {
       const messagesDiv = document.getElementById('watch-together-chat-messages');
@@ -5165,16 +4932,11 @@ ${linkedContents}
       const settings = chat.watchTogetherSettings || {};
 
       document.getElementById('watch-together-mode-select').value = settings.mode || 'online';
-      document.getElementById('watch-together-interval-input').value = settings.captureInterval || 5;
-      document.getElementById('watch-together-speech-api-select').value = settings.speechApi || 'none';
-      document.getElementById('watch-together-whisper-key').value = settings.whisperKey || '';
-      document.getElementById('watch-together-whisper-url').value = settings.whisperUrl || 'https://api.openai.com/v1/audio/transcriptions';
-      document.getElementById('watch-together-max-screenshots').value = settings.maxScreenshots || 10;
-      document.getElementById('watch-together-max-audios').value = settings.maxAudios || 10;
       document.getElementById('watch-together-max-messages').value = settings.maxMessages || 20;
 
-      const whisperConfig = document.getElementById('watch-together-whisper-config');
-      whisperConfig.style.display = (settings.speechApi === 'whisper') ? 'block' : 'none';
+      // v0.2.34 Gemini Live: 各人填各人的 Google key (存在本机, 不上传服务器)
+      const geminiKeyInput = document.getElementById('watch-together-gemini-key');
+      if (geminiKeyInput) geminiKeyInput.value = settings.geminiApiKey || '';
     }
 
     // 保存设置
@@ -5183,63 +4945,70 @@ ${linkedContents}
 
       chat.watchTogetherSettings = {
         mode: document.getElementById('watch-together-mode-select').value,
-        captureInterval: parseInt(document.getElementById('watch-together-interval-input').value) || 5,
-        speechApi: document.getElementById('watch-together-speech-api-select').value,
-        whisperKey: document.getElementById('watch-together-whisper-key').value,
-        whisperUrl: document.getElementById('watch-together-whisper-url').value,
-        maxScreenshots: parseInt(document.getElementById('watch-together-max-screenshots').value) || 10,
-        maxAudios: parseInt(document.getElementById('watch-together-max-audios').value) || 10,
         maxMessages: parseInt(document.getElementById('watch-together-max-messages').value) || 20
       };
 
-      watchTogetherState.mode = chat.watchTogetherSettings.mode;
-      watchTogetherState.captureInterval = chat.watchTogetherSettings.captureInterval;
-      watchTogetherState.speechApi = chat.watchTogetherSettings.speechApi;
-      watchTogetherState.whisperKey = chat.watchTogetherSettings.whisperKey;
-      watchTogetherState.whisperUrl = chat.watchTogetherSettings.whisperUrl;
-      watchTogetherState.maxScreenshots = chat.watchTogetherSettings.maxScreenshots;
-      watchTogetherState.maxAudios = chat.watchTogetherSettings.maxAudios;
-      watchTogetherState.maxMessages = chat.watchTogetherSettings.maxMessages;
-
-      // 重启监听
-      if (watchTogetherState.videoUrl) {
-        stopMonitoring();
-        startWatchTogetherMonitoring();
+      // v0.2.34 Gemini Live: 各人填各人的 Google key
+      const geminiKeyInput2 = document.getElementById('watch-together-gemini-key');
+      if (geminiKeyInput2) {
+        chat.watchTogetherSettings.geminiApiKey = geminiKeyInput2.value.trim();
       }
+
+      watchTogetherState.mode = chat.watchTogetherSettings.mode;
+      watchTogetherState.maxMessages = chat.watchTogetherSettings.maxMessages;
 
       // 保存到数据库
       await db.chats.put(chat);
     }
 
-    // 停止监听
-    function stopMonitoring() {
-      if (watchTogetherState.captureTimer) {
-        clearInterval(watchTogetherState.captureTimer);
-        watchTogetherState.captureTimer = null;
+    // 停止观影 — v0.4.0: 拆成两步, 必须【先总结 → 写库 → 确认保存 → 才关 Live】
+    //
+    // 顺序 (用户第七节明确要求):
+    //   用户点关闭
+    //   → WatchTogetherLive.onLeaveWatchTogether()  (内部: 请求 Gemini 总结 → 写 longTermMemory
+    //                                                → await db.chats.put 成功 → 才关 WS)
+    //   → 只有它 resolve 之后, 才真正关弹窗 + 清 video.src
+    //
+    // ⚠️ 总结失败时它会 resolve {saved:false} 且【不关 Live】, 弹窗也不关,
+    //    用户可以通过「重试生成观影记忆」按钮再试一次。
+    function stopWatchTogether() {
+      if (_stopWatchTogetherBusy) {
+        // 防重复点击
+        return _stopWatchTogetherBusy;
       }
-
-      if (watchTogetherState.speechRecognition) {
-        watchTogetherState.speechRecognition.stop();
-        watchTogetherState.speechRecognition = null;
-      }
-
-      if (watchTogetherState.mediaRecorder) {
-        if (watchTogetherState.mediaRecorder.state === 'recording') {
-          watchTogetherState.mediaRecorder.stop();
-        }
-        watchTogetherState.mediaRecorder = null;
-      }
-
-      if (watchTogetherState.audioContext) {
-        watchTogetherState.audioContext.close();
-        watchTogetherState.audioContext = null;
-      }
+      _stopWatchTogetherBusy = doStopWatchTogether();
+      return _stopWatchTogetherBusy;
     }
 
-    // 停止观影
-    function stopWatchTogether() {
-      stopMonitoring();
+    let _stopWatchTogetherBusy = null;
 
+    async function doStopWatchTogether() {
+      let summaryResult = null;
+
+      if (window.WatchTogetherLive && window.WatchTogetherLive.isEnabled()) {
+        addWatchTogetherSystemMessage('⏳ 正在整理这次观影记忆，请稍等一下…');
+        try {
+          summaryResult = await window.WatchTogetherLive.onLeaveWatchTogether();
+        } catch (e) {
+          console.error('[一起看电影] 观影记忆流程异常:', e);
+          summaryResult = { saved: false, error: e.message };
+        }
+      }
+
+      // 总结失败 → 【不关 Live, 不关弹窗】, 给用户重试机会
+      if (summaryResult && summaryResult.saved === false && !summaryResult.skipped) {
+        addWatchTogetherSystemMessage(
+          '⚠️ 观影记忆还没有生成成功：' + (summaryResult.error || '未知错误') + '。可以点下面的按钮重试。'
+        );
+        showWatchSummaryRetryButton();
+        _stopWatchTogetherBusy = null;
+        return summaryResult;
+      }
+
+      // 清理旧重试按钮
+      hideWatchSummaryRetryButton();
+
+      // 真正关闭观影 UI
       // 销毁 HLS 实例
       if (watchTogetherState.hlsInstance) {
         watchTogetherState.hlsInstance.destroy();
@@ -5265,6 +5034,43 @@ ${linkedContents}
       watchTogetherState.isActive = false;
       watchTogetherState.videoUrl = null;
       watchTogetherState.messages = [];
+
+      return summaryResult || { saved: false, skipped: true };
+    }
+
+    // 观影记忆生成失败后的「重试」按钮
+    function showWatchSummaryRetryButton() {
+      hideWatchSummaryRetryButton();
+      const box = document.getElementById('watch-together-chat-messages');
+      if (!box) return;
+      const wrap = document.createElement('div');
+      wrap.id = 'wt-summary-retry';
+      wrap.style.cssText = 'text-align:center;margin:10px 0;';
+      const btn = document.createElement('button');
+      btn.textContent = '🔄 重试生成观影记忆';
+      btn.style.cssText = 'padding:8px 16px;border-radius:8px;border:1px solid #d1d5db;' +
+        'background:#fff;cursor:pointer;font-size:13px;';
+      btn.addEventListener('click', async () => {
+        if (!window.WatchTogetherLive) return;
+        btn.disabled = true;
+        btn.textContent = '正在重试…';
+        const r = await window.WatchTogetherLive.retryFinalSummary();
+        if (r && r.saved) {
+          wrap.remove();
+          addWatchTogetherSystemMessage('✅ 观影记忆已保存');
+          doStopWatchTogether();
+        } else {
+          btn.disabled = false;
+          btn.textContent = '🔄 重试生成观影记忆（又失败了，可以稍后再试）';
+        }
+      });
+      wrap.appendChild(btn);
+      box.appendChild(wrap);
+    }
+
+    function hideWatchSummaryRetryButton() {
+      const el = document.getElementById('wt-summary-retry');
+      if (el && el.parentNode) el.parentNode.removeChild(el);
     }
 
     // ========== 影视搜索功能 ==========
