@@ -766,7 +766,30 @@ body.cinema-room-active {
   left: 0;
   right: 0;
   bottom: 0;
-  max-height: 88vh;
+  /* ⚠️⚠️ 顶部留白改过两次 (2026-10-04 23:19 / 23:22 用户反馈)。
+   *
+   *   症状: 设置面板整个盖到屏幕最顶, 「关闭」按钮跟 iPhone 状态栏
+   *        (时间/信号/电量) 重叠在同一行, 手指点不到。
+   *
+   *   为什么 calc(env(safe-area-inset-top) + var(--cinema-topbar-h) + 10px) 不管用:
+   *     ① .cinema-room 是 position:fixed 的全屏层, 它自己从视口 0 开始;
+   *        而 env(safe-area-inset-top) 在浏览器【地址栏收起】时返回 0
+   *        (地址栏占了那块区域, 视觉上已经避开状态栏了, 但元素坐标还是从 0 算)
+   *     ② --cinema-topbar-h 是 JS 写进去的, 面板没开过房间时是 fallback 值
+   *   两个都可能拿到 0, 相加还是 0 → 面板贴死顶部。
+   *
+   *   解法: max() 强制一个【物理下限】。iPhone 顶部危险区 47px、灵动岛机型
+   *   更高, 留 56px 保证状态栏 + 灵动岛都盖不住; 桌面/安卓上 56px 也只是
+   *   多留一点空白, 无害。var() 部分仍会叠加真正的安全区, 所以带刘海的
+   *   机型会自动更靠下。
+   */
+  top: max(
+    calc(env(safe-area-inset-top, 0px) + var(--cinema-topbar-h, 58px) + 10px),
+    56px
+  );
+  max-height: none;
+  height: auto;
+  bottom: 0;
   display: flex;
   flex-direction: column;
   color: #f0e3d4;
