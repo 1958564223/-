@@ -1,0 +1,1579 @@
+/* ==========================================================================
+   cinema-room.css — 330 Cinema Room 房间外壳 (v0.3.0)
+
+   v0.3.0 (2026-10-04): 换成用户自己提供的房间图 (暖调夜间私人观影客厅)。
+     - 背景图 assets/cinema-room-bg.webp 来自用户, 不再 AI 生成
+     - UI 从"明亮奶油金"改回"暗暖色" —— 房间是暖光夜间氛围, 亮色 UI 压在上面会很跳
+     - 大屏按"尽可能做大"重排: 横屏 94% 宽, 竖屏 84% 宽(盖住沙发是刻意的)
+     - 加屏幕环境光: 取视频当前帧平均色, 给房间打光 (让屏幕成为房间主要光源)
+
+   分层铁律: 背景图只负责房间本体。大屏 / 人物 / 聊天 UI 全是独立 HTML 层,
+   绝不烤进图片 —— 否则后面想做发光、人物互动、竖屏覆盖都改不动。
+   人物 (.cinema-char-slot) 保持 opacity: 0 只占位, 等接糖糖/屌哥/音音/琪琪。
+   ========================================================================== */
+
+.cinema-room {
+  /* 顶栏是固定高度的固定层。所有大屏的 top 都用这个变量,
+     保证任何机型/横竖屏都绝对不会被按钮压住。 */
+  --cinema-topbar-h: calc(env(safe-area-inset-top, 0px) + 52px);
+
+  /* 必须压过 330 的 #floating-ball(9999) / #floating-ball-menu(10000) */
+  z-index: 99990;
+  display: none;
+
+  /* 🔴 iOS Safari 键盘处理 (2026-10-04 用户反馈: 一输入文字页面就变大遮住视频,
+     收起键盘后也回不来)。
+     position:fixed 在 iOS 上是相对【布局视口】定位的, 不是【可视视口】:
+     键盘弹出 → 布局视口不动、可视视口上移 → fixed 元素直接被顶出屏幕。
+     解法: JS 用 VisualViewport API 把可视视口的真实高度和偏移写进这两个变量,
+     房间跟着可视视口走 —— 键盘弹多高房间就缩多高, 视频永远不会被顶没。 */
+  position: fixed;
+  top: var(--cinema-vv-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--cinema-vv-height, 100dvh);
+
+  /* flex 列: 顶栏(固定) → 视频区(自适应) → 聊天区(占满剩余)
+     这样视频和聊天之间【不会】出现空洞 —— 2026-10-04 用户反馈中间浪费一大片。 */
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  color: #f0e3d4;
+  -webkit-font-smoothing: antialiased;
+
+  /* 房间照片铺满整个房间; 聊天面板半透明时能透出后面的房间 */
+  background-color: #1a1210;
+  background-image: url('../assets/cinema-room-bg.webp');
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: cover;
+}
+
+.cinema-room.open {
+  display: flex;
+}
+
+body.cinema-room-active {
+  overflow: hidden;
+  /* iOS 上聚焦输入框会滚文档, fixed 元素跟着飘 —— 一并锁住 */
+  position: fixed;
+  width: 100%;
+}
+
+/* 不支持 webp 的老 WebView 用 jpg 兜底 */
+@supports not (background-image: url('a.webp')) {
+  .cinema-room {
+    background-image: url('../assets/cinema-room-bg.jpg');
+  }
+}
+
+/* --------------------------------------------------------------------------
+   房间容器
+   背景照片已经挪到 .cinema-room 上了; 这里只当一个 flex 子项, 用来把
+   大屏和人物位摆进"顶栏和聊天区之间"那段空间里。
+   -------------------------------------------------------------------------- */
+
+.cinema-room-bg {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------------------------
+   屏幕环境光
+   取视频当前帧平均色, 在大屏后面铺一层柔光 —— 屏幕亮起后它就是房间的主要光源。
+   待机时是暖调微光, 播放时被视频颜色接管。
+   -------------------------------------------------------------------------- */
+
+.cinema-ambient {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity .8s ease, background .6s linear;
+  background: radial-gradient(closest-side, rgba(255, 214, 168, .30), rgba(255, 190, 140, .08) 58%, transparent 100%);
+}
+
+.cinema-ambient.is-on {
+  opacity: 1;
+}
+
+/* --------------------------------------------------------------------------
+   大屏电视
+   -------------------------------------------------------------------------- */
+
+/* 高度用 calc 而不是百分比: 顶栏是固定 ~50px 高的固定层, 百分比会随机型漂,
+   手机上待机画面会被按钮压住。这里用 safe-area + 固定偏移保证永远躲开顶栏。
+   (人物头顶约 42%~50%, 大屏底边到这里也不会盖住人头) */
+.cinema-room-screen {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 94%;
+  background: #08060a;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 2px rgba(216, 168, 116, .42),
+    0 22px 60px rgba(0, 0, 0, .70),
+    0 0 90px rgba(255, 196, 132, .16);
+  transition: width .32s cubic-bezier(.3, .7, .3, 1), top .32s cubic-bezier(.3, .7, .3, 1);
+}
+
+.cinema-room-screen video {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #08060a;
+}
+
+/* 16:9 满宽 (100%): 手机竖屏时宽度是硬约束 —— 比例锁死, 想更高就只能更宽。
+   已经放到不裁画面的极限了, 再大就出血。 */
+.cinema-room-screen.is-landscape {
+  width: min(100%, calc(58vh * 16 / 9));
+}
+
+/* 方正片 (接近 1:1) */
+.cinema-room-screen.is-square {
+  width: min(72%, 58vh);
+  top: 0;
+}
+
+/* 竖屏短剧 (9:16) —— 用户明确要求: 尽可能大, 可以盖住沙发/人物/部分装饰,
+   绝不为了露出家具而缩小视频。高度预算给到 78vh (横屏片才用 58vh):
+   9:16 本来就高, 用 58vh 会把它从 361x642 卡回 304x541, 违背"尽可能放大"。 */
+.cinema-room-screen.is-portrait {
+  width: min(84%, calc(78vh * 9 / 16));
+  top: 0;
+}
+
+/* 待机态 */
+.cinema-room-idle {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 18px;
+  background: linear-gradient(165deg, rgba(40, 27, 22, .96), rgba(20, 13, 11, .98));
+}
+
+.cinema-room-idle[hidden] {
+  display: none;
+}
+
+.cinema-room-idle-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: .18em;
+  color: #f0dcc4;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, .6);
+}
+
+.cinema-room-idle-hint {
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: rgba(240, 220, 196, .58);
+}
+
+.cinema-room-add-btn {
+  margin-top: 4px;
+  padding: 11px 24px;
+  border: 1px solid rgba(216, 168, 116, .45);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(216, 168, 116, .30), rgba(180, 128, 80, .20));
+  color: #ffeacd;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .45);
+  transition: transform .16s ease, background .16s ease;
+}
+
+.cinema-room-add-btn:active {
+  transform: scale(.97);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .42), rgba(180, 128, 80, .30));
+}
+
+.cinema-room-add-btn.small {
+  margin: 0;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+/* --------------------------------------------------------------------------
+   人物位 (沙发上的两个人)
+   2026-10-04: 原来是 opacity:0 的纯占位, 现在真的接图了。
+   图从 IndexedDB 读出来 → object URL → 这里 background-image。
+   刻意用 background 而不是 <img>: 一是能靠 data-empty 一个属性控制显隐,
+   二是 object: contain 保证 3:5 以外的图也不会撑破格子或变形。
+
+   【2026-10-04 重做: 位置不再由 CSS 决定, 改由用户拖】
+   真机效果: 左边那张坐得太高、两个人大小不一致 (立绘本身的留白和人物占比
+   都不一样, 我在 CSS 里猜不出一个对所有图都成立的框)。用户原话:
+   "图片大小形象不一样, 你很难具体框定范围" —— 说得对, 猜不出来。
+
+   所以改成: 人物位是一个固定尺寸的图层, 位置和大小全交给用户拖/捏,
+   调完把 x/y/scale(百分比 + 倍数) 存进 IndexedDB, 下次进房直接复原。
+   百分比而不是 px: 换手机 / 转屏时人物还坐在沙发的同一个位置。
+
+   transform-origin 放在 50% 100% (脚底中心) —— 拖动和缩放时脚不离地,
+   才是"坐在沙发上"而不是"飘着"。
+   -------------------------------------------------------------------------- */
+
+.cinema-char-slot {
+  position: absolute;
+  z-index: 1;
+  /* left/top 由 JS 按用户的 x/y 百分比写 (见 applyCharTransform)。
+     这里只给一个兜底 —— 第一次渲染、存储层还没返回时的样子。 */
+  left: 27%;
+  top: 66%;
+  width: 30%;
+  aspect-ratio: 3 / 5;
+  background: none center bottom / contain no-repeat;
+  border: none;
+  pointer-events: none;
+  opacity: 0;
+  /* 锚点对齐: JS 写 translate(-50%,-100%) 把"脚底中心"对到 left/top 上。
+     缩放围绕脚底, 拖动时人物不会"离地"。 */
+  transform-origin: 50% 100%;
+  will-change: transform;
+  transition: opacity .25s ease;
+}
+
+/* 有图才亮起来 (JS 在 applyCharToSlot 里写 data-empty) */
+.cinema-char-slot[data-empty="false"] {
+  opacity: 1;
+}
+
+/* ---------- 编辑模式: 用户长按人物开始拖动 ---------- */
+/* 只有 .is-adjusting 时人物才接事件; 平时 pointer-events:none 不挡视频/片单 */
+.cinema-room.is-adjusting .cinema-char-slot[data-empty="false"] {
+  pointer-events: auto;
+  cursor: grab;
+  /* 关键: 让浏览器别抢手势, 我们自己处理双指缩放 */
+  touch-action: none;
+  filter: drop-shadow(0 0 6px rgba(255, 210, 150, .55));
+}
+
+.cinema-room.is-adjusting .cinema-char-slot.is-dragging {
+  cursor: grabbing;
+  filter: drop-shadow(0 0 12px rgba(255, 210, 150, .9));
+}
+
+/* 左右只是语义标记, 真正的位置由 JS 写 --char-x / --char-y / --char-scale。
+   这两条规则只保留一个默认 transform, 首次渲染(还没读到存储层)时用。 */
+.cinema-char-slot.left {
+  --char-x: 27%;
+  --char-y: 66%;
+  --char-scale: 1;
+}
+
+.cinema-char-slot.right {
+  --char-x: 73%;
+  --char-y: 66%;
+  --char-scale: 1;
+}
+
+/* 茶几: 宽而矮 (16:9 左右), 横着铺在沙发前面。
+   ⚠️ DOM 里它写在人物【后面】, 同层级后写的层级更高 -> 会挡住人物下半身,
+      这正是"人坐在茶几后面"的效果。 */
+.cinema-char-slot.table {
+  --char-x: 50%;
+  --char-y: 84%;
+  --char-scale: 1;
+  width: 46%;
+  aspect-ratio: 16 / 10;
+}
+
+/* --------------------------------------------------------------------------
+   顶栏
+   -------------------------------------------------------------------------- */
+
+.cinema-room-topbar {
+  /* flex 子项, 不再 absolute —— 键盘弹出时整个房间一起缩, 顶栏不会飘 */
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  /* 标题行 + 按钮行 = 两行。
+     ⚠️ 曾经试过"一行塞下标题+5个按钮", 结果最右的「退出」被推出 390px 屏外
+        (2026-10-04 用户反馈), 所以按钮固定占第二行, 永不与标题抢宽度。 */
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: calc(env(safe-area-inset-top, 0px) + 10px) 12px 10px;
+  background: linear-gradient(to bottom, rgba(18, 11, 9, .82), rgba(18, 11, 9, 0));
+}
+
+/* 标题行: 标题 + 状态条并排。状态条是 flex 子项, 不是 absolute 浮层 ——
+   2026-10-04 用户反馈"绿色已连接放到视频框里了", 就是因为它 absolute 挂在
+   房间根上, top 按顶栏高度算, 正好压在视频画面上。放进这行就没有这个问题。 */
+.cinema-room-titles {
+  min-width: 0;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.cinema-room-title {
+  flex: 0 0 auto;
+}
+
+.cinema-topbar-status {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;   /* 状态条靠右 */
+  align-items: center;
+}
+
+/* 状态条本体 (cinema-live.js 创建, 塞进上面的容器里) */
+.cinema-live-status {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(24, 16, 13, .78);
+  border: 1px solid rgba(216, 168, 116, .28);
+  color: #f0e3d4;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;   /* 不挡标题/按钮的点击 */
+}
+
+.cinema-room-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .10em;
+  color: #f0dcc4;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, .7);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cinema-room-now {
+  margin-top: 2px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: rgba(255, 226, 190, .72);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, .8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cinema-room-now:empty {
+  display: none;
+}
+
+.cinema-room-topbar-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  /* 5 个按钮在 390px 上放不下 → 允许换行, 而不是溢出屏幕。
+     每行至少放得下两个, 挤了就掉到下一行。 */
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+/* --------------------------------------------------------------------------
+   按钮
+   照 KI-CO 的做法 (.room-side-entry / .web-assist-button):
+   药丸形「图标 + 中文标签」, 不是圆形纯图标。
+   纯 emoji/纯图标在手机上完全看不出功能 (用户 2026-10-04 反馈), 一律带文字。
+
+   ⚠️ 尺寸是按"5 个按钮必须能塞进 390px 屏"倒推的, 别随手调大:
+     5 × (padding 18 + icon 15 + gap 4 + 文字 26) + 4 × gap 6 ≈ 348px, 刚好。
+   -------------------------------------------------------------------------- */
+
+.cinema-room-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 9px 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(216, 168, 116, .30);
+  background: rgba(28, 19, 15, .66);
+  color: #f0e3d4;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .45);
+}
+
+.cinema-room-icon-btn svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.cinema-room-icon-btn:active {
+  background: rgba(48, 33, 25, .85);
+}
+
+.cinema-room-icon-btn:active span {
+  transform: scale(.96);
+}
+
+.cinema-stop-btn {
+  color: #ffcbb8;
+  border-color: rgba(214, 130, 106, .42);
+  background: rgba(74, 34, 28, .62);
+}
+
+.cinema-stop-btn[hidden] {
+  display: none;
+}
+
+.cinema-chat-hbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 9px 0 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(216, 168, 116, .24);
+  background: rgba(255, 255, 255, .05);
+  color: #f0dcc4;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cinema-chat-hbtn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.cinema-chat-hbtn:active {
+  background: rgba(255, 255, 255, .14);
+}
+
+/* --------------------------------------------------------------------------
+   片单抽屉
+   -------------------------------------------------------------------------- */
+
+.cinema-room-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(88vw, 370px);
+  z-index: 99991;
+  display: flex;
+  flex-direction: column;
+  color: #f0e3d4;
+  background: rgba(24, 16, 13, .93);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  border-left: 1px solid rgba(216, 168, 116, .20);
+  box-shadow: -14px 0 46px rgba(0, 0, 0, .6);
+  transform: translateX(100%);
+  transition: transform .26s cubic-bezier(.22, .61, .36, 1);
+  padding-top: calc(env(safe-area-inset-top, 0px) + 60px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+}
+
+.cinema-room-drawer.open {
+  transform: translateX(0);
+}
+
+.cinema-drawer-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 99990;
+  background: rgba(10, 6, 5, .52);
+}
+
+.cinema-drawer-scrim[hidden] {
+  display: none;
+}
+
+.cinema-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px 11px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .10em;
+  color: #f0dcc4;
+  border-bottom: 1px solid rgba(216, 168, 116, .18);
+}
+
+.cinema-drawer-warn {
+  margin: 11px 14px 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(214, 140, 70, .16);
+  border: 1px solid rgba(214, 140, 70, .34);
+  color: #ffcf9c;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.cinema-drawer-warn[hidden] {
+  display: none;
+}
+
+.cinema-drawer-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px 12px;
+}
+
+.cinema-drawer-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: rgba(240, 220, 196, .42);
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+.cinema-film-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 11px 11px 13px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .055);
+  border: 1px solid rgba(216, 168, 116, .14);
+}
+
+.cinema-film-item.active {
+  border-color: rgba(216, 168, 116, .55);
+  background: rgba(216, 168, 116, .14);
+}
+
+.cinema-film-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.cinema-film-name {
+  font-size: 14px;
+  color: #f2e6d8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cinema-film-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: rgba(240, 220, 196, .50);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cinema-film-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.cinema-film-play,
+.cinema-film-del {
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(216, 168, 116, .30);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .24), rgba(180, 128, 80, .14));
+  color: #ffeacd;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cinema-film-play:active {
+  background: rgba(216, 168, 116, .38);
+}
+
+.cinema-film-del {
+  color: #f0b0a4;
+  border-color: rgba(210, 120, 105, .30);
+  background: linear-gradient(180deg, rgba(190, 90, 78, .22), rgba(150, 70, 60, .14));
+}
+
+.cinema-film-progress {
+  position: absolute;
+  left: 11px;
+  right: 11px;
+  bottom: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(216, 168, 116, .18);
+  overflow: hidden;
+}
+
+.cinema-film-progress-fill {
+  height: 100%;
+  background: linear-gradient(to right, #e0ab6e, #c9815e);
+}
+
+.cinema-drawer-foot {
+  padding: 9px 18px 0;
+  border-top: 1px solid rgba(216, 168, 116, .16);
+  font-size: 11.5px;
+  color: rgba(240, 220, 196, .46);
+}
+
+/* --------------------------------------------------------------------------
+   聊天面板 (Cinema Room 自己的)
+   ⚠️ 纯覆盖层: position:absolute + transform 滑入, 不占文档流,
+      绝对不参与 .cinema-room-screen 的尺寸计算。
+      竖屏短剧时它会盖住屏幕 —— 用户可收起, 但绝不为它缩小视频。
+   -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+   聊天面板 (Cinema Room 自己的)
+
+   布局照 KI-CO 的做法 (styles.css:7710-7716 手机端 media query):
+   视频缩成顶部一条, 聊天面板在【下方】, 两者同时可见 —— 不是盖在视频上。
+   面板半透明 + 背景模糊, 还能看见后面的房间, 不会像一块膏药糊在屏幕上。
+   -------------------------------------------------------------------------- */
+
+.cinema-chat-panel {
+  position: relative;
+  /* flex 子项: 打开时占满"视频区下面剩下的所有空间", 视频和聊天之间不会有空洞。
+     原来用 height:38vh 固定高, 遇到 16:9 视频(高度只有 ~24vh)中间就空一大片
+     (2026-10-04 用户反馈"聊天框离视频又远, 中间空间浪费")。 */
+  flex: 0 0 auto;
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  z-index: 6;
+  color: #f0e3d4;
+  background: rgba(22, 15, 12, .72);
+  backdrop-filter: blur(22px) saturate(1.2);
+  -webkit-backdrop-filter: blur(22px) saturate(1.2);
+  border-top: 1px solid rgba(216, 168, 116, .26);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, .55);
+  /* 收起用 clip + 高度, 不做位移 —— 位移动画在 iOS 上会和键盘打架 */
+  transition: height .28s cubic-bezier(.22, .61, .36, 1), opacity .2s ease;
+  opacity: 0;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+}
+
+.cinema-chat-panel.open {
+  /* 占满剩余空间: 房间是 flex 列, 这块把视频区下面全吃掉 */
+  flex: 1 1 auto;
+  height: auto;
+  opacity: 1;
+}
+
+/* 聊天打开时: 视频区缩到刚好装下大屏(flex 0 0 auto), 聊天区吃掉剩下的全部。
+   两者紧贴, 中间不会有任何空洞。 */
+.cinema-room.is-chatting .cinema-room-bg {
+  flex: 0 0 auto;
+}
+
+.cinema-room.is-chatting .cinema-room-screen {
+  position: relative;
+  left: auto;
+  top: auto;
+  transform: none;
+  margin: 0 auto;
+  width: 94%;
+  max-height: 44vh;
+  box-shadow:
+    0 0 0 2px rgba(216, 168, 116, .42),
+    0 8px 22px rgba(0, 0, 0, .6);
+}
+
+.cinema-room.is-chatting .cinema-room-screen.is-portrait {
+  width: auto;
+  height: 44vh;
+  max-height: 44vh;
+}
+
+.cinema-room.is-chatting .cinema-room-screen.is-square {
+  width: min(56%, 44vh);
+}
+
+/* 聊天打开时把人物位和沙发藏起来 (在视频区被压扁后会挤成一团) */
+.cinema-room.is-chatting .cinema-char-slot,
+.cinema-room.is-chatting .cinema-room-sofa {
+  display: none;
+}
+
+.cinema-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 8px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: #f0dcc4;
+  border-bottom: 1px solid rgba(216, 168, 116, .18);
+}
+
+.cinema-chat-head-actions {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* --------------------------------------------------------------------------
+   设置面板 (2026-10-04)
+   收编了原来聊天头部的「密钥」key-box (那一整段样式已删), 外加人物立绘上传。
+   面板外观刻意跟 .cinema-source-sheet 一致 —— 两个都是底部上滑半屏。
+   -------------------------------------------------------------------------- */
+
+.cinema-settings-sheet {
+  position: absolute;
+  z-index: 99995;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  color: #f0e3d4;
+  background: rgba(22, 15, 12, .97);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  border-top: 1px solid rgba(216, 168, 116, .26);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -14px 44px rgba(0, 0, 0, .7);
+  transform: translateY(100%);
+  transition: transform .28s cubic-bezier(.22, .61, .36, 1);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+}
+
+.cinema-settings-sheet.open {
+  transform: translateY(0);
+}
+
+.cinema-settings-pane {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 16px 10px;
+}
+
+.cinema-set-group {
+  margin-bottom: 20px;
+}
+
+.cinema-set-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #ffd9a8;
+  margin-bottom: 5px;
+}
+
+.cinema-set-desc {
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(240, 220, 196, .58);
+  margin-bottom: 10px;
+}
+
+/* 密钥行: 输入框 + 保存按钮并排 (窄屏时也不会挤) */
+.cinema-set-keyrow {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.cinema-set-keyrow input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(216, 168, 116, .28);
+  background: rgba(0, 0, 0, .32);
+  color: #f0e3d4;
+  /* ⚠️ 必须 >=16px: 小于 16 iOS Safari 聚焦时会自动放大整页且不还原 */
+  font-size: 16px;
+}
+
+.cinema-set-save {
+  flex-shrink: 0;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(216, 168, 116, .40);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .30), rgba(180, 128, 80, .20));
+  color: #ffeacd;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cinema-set-state {
+  margin-top: 7px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: rgba(240, 220, 196, .50);
+}
+
+.cinema-set-state.ok {
+  color: #9fe0a8;
+}
+
+/* 人物立绘: 左右两个格子并排 */
+.cinema-char-edit-row {
+  display: flex;
+  gap: 10px;
+}
+
+.cinema-char-edit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* 茶几: 单独一整行, 缩略图也跟着用宽比例 */
+.cinema-char-edit.wide {
+  flex: 1 0 100%;
+}
+
+.cinema-char-edit.wide .cinema-char-edit-prev {
+  aspect-ratio: 16 / 7;
+}
+
+/* 缩略图: 3:5 跟房间里实际显示的比例一致, 所见即所得 */
+.cinema-char-edit-prev {
+  width: 100%;
+  aspect-ratio: 3 / 5;
+  border-radius: 12px;
+  border: 1px dashed rgba(216, 168, 116, .34);
+  background: rgba(0, 0, 0, .26);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.cinema-char-edit-prev img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.cinema-char-edit-empty {
+  font-size: 12px;
+  color: rgba(240, 220, 196, .40);
+}
+
+/* 存图中: 缩略图上盖一层提示。
+   保存要走 await ensureCharTable → db.open(), 手机上可能有一两秒空窗,
+   没有提示用户会以为没点上就再点一次 (2026-10-04 用户反馈"要点两次")。 */
+.cinema-char-edit-prev.is-saving::after {
+  content: '保存中…';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #ffeacd;
+  background: rgba(22, 15, 12, .78);
+  border-radius: 12px;
+}
+
+.cinema-char-edit-prev {
+  position: relative;
+}
+
+/* --------------------------------------------------------------------------
+   诊断区 (2026-10-04 21:04)
+   平时完全收起, 只有出问题时用户主动点开 —— 不打扰正常使用, 但下次查 bug
+   不用再逼用户去 iPhone 上开 console。
+   -------------------------------------------------------------------------- */
+
+.cinema-diag-group {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(216, 168, 116, .14);
+}
+
+.cinema-diag-box {
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  max-height: 190px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 9px;
+  border: 1px solid rgba(216, 168, 116, .20);
+  background: rgba(0, 0, 0, .42);
+  color: rgba(240, 220, 196, .78);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.cinema-diag-box[hidden] {
+  display: none;
+}
+
+.cinema-char-edit-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.cinema-set-pick,
+.cinema-set-del {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 0;
+  border-radius: 9px;
+  border: 1px solid rgba(216, 168, 116, .38);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .30), rgba(180, 128, 80, .20));
+  color: #ffeacd;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cinema-set-del {
+  background: transparent;
+  border-color: rgba(216, 168, 116, .20);
+  color: rgba(240, 220, 196, .55);
+}
+
+.cinema-set-del[hidden] {
+  display: none;
+}
+
+/* 「调位置」: 跟主按钮区分开, 免得跟"选图"抢视觉 */
+.cinema-set-pick.ghost {
+  background: rgba(216, 168, 116, .10);
+  border-color: rgba(216, 168, 116, .26);
+  color: rgba(255, 234, 205, .82);
+}
+
+.cinema-set-pick[hidden] {
+  display: none;
+}
+
+.cinema-set-reset {
+  margin-top: 10px;
+  width: 100%;
+  padding: 9px 0;
+  border-radius: 9px;
+  border: 1px dashed rgba(216, 168, 116, .28);
+  background: transparent;
+  color: rgba(240, 220, 196, .52);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.cinema-set-desc b {
+  color: #ffd9a8;
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   调整工具条 (人物拖动/缩放)
+   浮在房间底部, 不占视频区, 也不挡人物本身。
+   -------------------------------------------------------------------------- */
+
+.cinema-adjust-bar {
+  position: absolute;
+  z-index: 99990;
+  left: 10px;
+  right: 10px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(22, 15, 12, .92);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(216, 168, 116, .34);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .6);
+}
+
+.cinema-adjust-bar[hidden] {
+  display: none;
+}
+
+.cinema-adjust-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #f0dcc4;
+}
+
+.cinema-adjust-done {
+  flex-shrink: 0;
+  padding: 8px 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(216, 168, 116, .45);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .34), rgba(180, 128, 80, .22));
+  color: #ffeacd;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* 消息区 */
+.cinema-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.cinema-chat-sys {
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: rgba(240, 220, 196, .48);
+  padding: 2px 6px;
+}
+
+.cinema-chat-msg {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  max-width: 92%;
+}
+
+.cinema-chat-msg.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.cinema-chat-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid rgba(216, 168, 116, .30);
+}
+
+/* 两边结构现在完全一致: 外层 .cinema-chat-msg 套内层 .cinema-chat-bubble。
+   ⚠️ 原来用户那条写的是 `> :last-child`, 那匹配到的是【文本节点】(没有背景),
+      所以用户消息看着"没有气泡" (2026-10-04 用户反馈)。
+      统一改成选 .cinema-chat-bubble —— 要一样就真的选同一个类。 */
+.cinema-chat-bubble {
+  padding: 8px 11px;
+  border-radius: 13px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cinema-chat-msg.assistant .cinema-chat-bubble {
+  background: rgba(255, 255, 255, .07);
+  border-top-left-radius: 4px;
+}
+
+.cinema-chat-msg.user .cinema-chat-bubble {
+  background: linear-gradient(180deg, rgba(216, 168, 116, .34), rgba(180, 128, 80, .24));
+  border-top-right-radius: 4px;
+  color: #fff3e2;
+}
+
+/* 输入行 */
+.cinema-chat-input-row {
+  display: flex;
+  gap: 7px;
+  padding: 9px 12px 4px;
+  border-top: 1px solid rgba(216, 168, 116, .16);
+}
+
+.cinema-chat-input-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(216, 168, 116, .28);
+  background: rgba(0, 0, 0, .30);
+  color: #f0e3d4;
+  font-size: 16px;
+}
+
+.cinema-chat-input-row input::placeholder {
+  color: rgba(240, 220, 196, .34);
+}
+
+.cinema-chat-send {
+  flex-shrink: 0;
+  padding: 9px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(216, 168, 116, .38);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .32), rgba(180, 128, 80, .22));
+  color: #ffeacd;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------------------------
+   剧情记忆面板 (由 cinema-live.js 创建并挂进聊天面板内部)
+   原来是 position:absolute + bottom:12px 挂在房间底部, 正好压住聊天输入框
+   (2026-10-04 用户反馈)。现在改成聊天面板里的一条可展开区域:
+     收起 = 一行标题, 不占地方; 展开 = 吃掉最多 45% 高度, 消息列表自动让位。
+   -------------------------------------------------------------------------- */
+
+.cinema-plot-panel {
+  position: relative;
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  color: #e8dccd;
+  font-size: 12px;
+  line-height: 1.6;
+  background: rgba(0, 0, 0, .26);
+  border-top: 1px solid rgba(216, 168, 116, .18);
+  border-bottom: 1px solid rgba(216, 168, 116, .18);
+  cursor: pointer;
+}
+
+.cinema-plot-panel[style*="display: none"] {
+  display: none;
+}
+
+.cinema-plot-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-weight: 700;
+  color: #f0dcc4;
+}
+
+.cinema-plot-meta {
+  margin-left: auto;
+  font-weight: 400;
+  color: rgba(240, 220, 196, .50);
+}
+
+.cinema-plot-body {
+  padding: 0 10px 10px;
+  max-height: 54vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  cursor: default;
+}
+
+.cinema-plot-label {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  color: rgba(240, 220, 196, .50);
+}
+
+.cinema-plot-text {
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .05);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.cinema-plot-text.dim {
+  color: rgba(240, 220, 196, .36);
+}
+
+.cinema-plot-busy {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(250, 204, 21, .16);
+  border: 1px solid rgba(250, 204, 21, .38);
+  color: #fde68a;
+}
+
+.cinema-plot-stat {
+  margin: 7px 0;
+  font-size: 11px;
+  color: rgba(240, 220, 196, .45);
+}
+
+.cinema-plot-edit {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 120px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(216, 168, 116, .38);
+  background: rgba(0, 0, 0, .34);
+  color: #e8dccd;
+  font-size: 16px;
+  line-height: 1.6;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.cinema-plot-edit-bar {
+  display: flex;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.cinema-plot-btn {
+  padding: 5px 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(216, 168, 116, .34);
+  background: rgba(216, 168, 116, .18);
+  color: #ffeacd;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cinema-plot-btn.ghost {
+  background: transparent;
+  color: rgba(240, 220, 196, .58);
+}
+
+.cinema-plot-hint {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: rgba(240, 220, 196, .42);
+}
+
+/* --------------------------------------------------------------------------
+   片源面板 (本地 / 直链 / B站 / 片库)
+   -------------------------------------------------------------------------- */
+
+.cinema-source-sheet {
+  position: absolute;
+  z-index: 99995;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  color: #f0e3d4;
+  background: rgba(22, 15, 12, .97);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  border-top: 1px solid rgba(216, 168, 116, .26);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -14px 44px rgba(0, 0, 0, .7);
+  transform: translateY(100%);
+  transition: transform .28s cubic-bezier(.22, .61, .36, 1);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+}
+
+.cinema-source-sheet.open {
+  transform: translateY(0);
+}
+
+.cinema-source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 16px 10px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  color: #f0dcc4;
+}
+
+.cinema-source-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 0 14px 10px;
+  border-bottom: 1px solid rgba(216, 168, 116, .16);
+}
+
+.cinema-source-tab {
+  flex: 1;
+  padding: 8px 0;
+  border-radius: 9px;
+  border: 1px solid rgba(216, 168, 116, .22);
+  background: rgba(255, 255, 255, .04);
+  color: rgba(240, 220, 196, .70);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cinema-source-tab.active {
+  background: linear-gradient(180deg, rgba(216, 168, 116, .30), rgba(180, 128, 80, .20));
+  color: #ffeacd;
+  border-color: rgba(216, 168, 116, .45);
+}
+
+.cinema-source-pane {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 16px 6px;
+}
+
+.cinema-source-pane[hidden] {
+  display: none;
+}
+
+.cinema-source-desc {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: rgba(240, 220, 196, .58);
+  margin-bottom: 11px;
+}
+
+.cinema-source-pane input[type="url"],
+.cinema-source-pane input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(216, 168, 116, .28);
+  background: rgba(0, 0, 0, .32);
+  color: #f0e3d4;
+  font-size: 16px;
+}
+
+.cinema-source-go {
+  margin-top: 6px;
+  width: 100%;
+  padding: 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(216, 168, 116, .38);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .30), rgba(180, 128, 80, .20));
+  color: #ffeacd;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cinema-source-go.small {
+  width: auto;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 9px 20px;
+  font-size: 13px;
+}
+
+.cinema-source-searchrow {
+  display: flex;
+  gap: 8px;
+}
+
+.cinema-source-searchrow input {
+  margin-bottom: 0 !important;
+}
+
+.cinema-source-status {
+  margin: 10px 0 8px;
+  font-size: 16px;
+  color: rgba(240, 220, 196, .52);
+}
+
+.cinema-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cinema-src-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(216, 168, 116, .13);
+}
+
+.cinema-src-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.cinema-src-name {
+  font-size: 13.5px;
+  color: #f2e6d8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cinema-src-year {
+  font-size: 11px;
+  color: rgba(240, 220, 196, .45);
+}
+
+.cinema-src-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: rgba(240, 220, 196, .50);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cinema-src-desc {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(240, 220, 196, .38);
+}
+
+.cinema-src-add,
+.cinema-src-ext {
+  flex-shrink: 0;
+  padding: 6px 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(216, 168, 116, .32);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .26), rgba(180, 128, 80, .16));
+  color: #ffeacd;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.cinema-src-ext {
+  background: transparent;
+  color: rgba(240, 220, 196, .62);
+}
+
+/* --------------------------------------------------------------------------
+   移动端
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 720px) {
+  /* 竖屏手机: 16:9 满宽, 高度预算 58vh 在竖屏视口下不生效(宽度先顶到上限) */
+  .cinema-room-screen {
+    top: 0;
+    width: min(100%, calc(58vh * 16 / 9));
+  }
+
+  .cinema-room-screen.is-landscape { width: min(100%, calc(58vh * 16 / 9)); }
+  .cinema-room-screen.is-square { width: min(72%, 58vh); top: 0; }
+  .cinema-room-screen.is-portrait { width: min(84%, calc(78vh * 9 / 16)); top: 0; }
+
+  /* 竖屏: 人物位跟房间一起等比放大即可, 位置由用户拖出来的 --char-* 决定,
+     这里只给一个基准宽度。窄屏上 30% 太挤, 收到 28%。 */
+  .cinema-char-slot {
+    width: 28%;
+  }
+
+  .cinema-room-drawer {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: 58vh;
+    border-left: none;
+    border-top: 1px solid rgba(216, 168, 116, .24);
+    border-radius: 18px 18px 0 0;
+    transform: translateY(100%);
+    padding-top: 12px;
+    box-shadow: 0 -12px 44px rgba(0, 0, 0, .6);
+  }
+
+  .cinema-room-drawer.open {
+    transform: translateY(0);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   手机横屏 (用户经常横过来看番 —— 字幕要够大才看得清)
+   2026-10-04 用户反馈: 横屏时大屏太小, 字幕看不清, 而且上面还空着一截。
+
+   两件事要一起改, 不然大屏会浮在错误的位置上:
+
+   1) 背景图重新取景。cover 到 932x430 时, 1920 高的图只能露出中间 26%,
+      默认 center 正好露出 37%~63% —— 那是沙发区, 大屏会挂在沙发前面。
+      改成 center 30% 后露出 22%~48%, 正好是墙上那块空白墙龛。
+
+   2) 高度预算从 58vh 放宽到 82vh, 顶部上移到 11%。
+      16:9 大屏从 440x248 变成约 627x353 (线性 +43%), 字幕明显变大。
+      留 18vh 余量给顶栏和底部, 不会顶穿。
+   -------------------------------------------------------------------------- */
+
+@media (orientation: landscape) and (max-height: 620px) {
+  .cinema-room-bg {
+    background-position: center 30%;
+  }
+
+  .cinema-room-screen {
+    top: 0;
+  }
+
+  .cinema-room-screen.is-landscape {
+    width: min(100%, calc(82vh * 16 / 9));
+  }
+
+  .cinema-room-screen.is-square {
+    width: min(80%, 80vh);
+    top: 0;
+  }
+
+  /* 竖屏片在横屏视口里天然瘦高, 宽度上限给足, 高度由 80vh 兜住 */
+  .cinema-room-screen.is-portrait {
+    width: min(88%, calc(80vh * 9 / 16));
+    top: 0;
+  }
+
+  /* 横向刘海/挖孔在左右, 顶栏要避开 */
+  .cinema-room-topbar {
+    padding-left: calc(env(safe-area-inset-left, 0px) + 14px);
+    padding-right: calc(env(safe-area-inset-right, 0px) + 14px);
+    padding-top: 8px;
+    padding-bottom: 12px;
+  }
+
+  /* 横屏: 背景图往上取景, 房间变矮, 人物位跟着收窄。
+     ⚠️ 位置仍然由用户的 --char-y (百分比) 决定 —— 百分比是相对房间高度的,
+        所以转屏后人物会跟着一起挪, 不会跑到画面外。 */
+  .cinema-char-slot {
+    width: 22%;
+  }
+}

@@ -1323,6 +1323,26 @@
     }
   }
 
+  /**
+   * 通话气泡的显示层过滤 (2026-10-04)。
+   *
+   * prompt 里已经跟 AI 承诺过"通话界面上不会显示"这些标签 (见上方第 4 段),
+   * 但气泡此前是直接渲染原文的, (sighs) / <#0.4#> 全露在屏幕上 —— 承诺没兑现。
+   * 现在渲染前统一摘掉, callHistory 和 TTS 仍然拿原文。
+   * 解析器没加载时原样返回, 宁可多显示几个标签, 也不能让气泡空掉。
+   */
+  function stripCallDisplayText(rawText) {
+    const raw = String(rawText == null ? '' : rawText);
+    try {
+      if (typeof window.stripTtsTagsForDisplay === 'function') {
+        return window.stripTtsTagsForDisplay(raw);
+      }
+    } catch (e) {
+      console.warn('[通话TTS] 气泡显示过滤失败, 退回原文:', e);
+    }
+    return raw.trim();
+  }
+
 
   async function handleInitiateCall() {
     if (!state.activeChatId || videoCallState.isActive || videoCallState.isAwaitingResponse) return;
@@ -2505,7 +2525,7 @@ ${linkedContents}
           const aiTimestamp = Date.now() + Math.random();
           const aiBubble = document.createElement('div');
           aiBubble.className = 'call-message-bubble ai-speech';
-          aiBubble.innerHTML = `<strong>${turn.name}:</strong> ${turn.speech}`;
+          aiBubble.innerHTML = `<strong>${turn.name}:</strong> ${stripCallDisplayText(turn.speech)}`;
           aiBubble.dataset.timestamp = aiTimestamp;
           addLongPressListener(aiBubble, () => showCallMessageActions(aiTimestamp));
           callFeed.appendChild(aiBubble);
@@ -2622,7 +2642,8 @@ ${linkedContents}
 
           const aiBubble = document.createElement('div');
           aiBubble.className = 'call-message-bubble ai-speech';
-          aiBubble.textContent = messageContent;
+          // 显示时摘掉语气声 / 停顿标记 (callHistory 与 TTS 仍用 messageContent 原文)
+          aiBubble.textContent = stripCallDisplayText(messageContent);
           aiBubble.dataset.timestamp = aiTimestamp;
           addLongPressListener(aiBubble, () => showCallMessageActions(aiTimestamp));
           callFeed.appendChild(aiBubble);
@@ -3886,7 +3907,7 @@ ${voiceCallTtsBlock}
           const aiTimestamp = Date.now() + Math.random();
           const aiBubble = document.createElement('div');
           aiBubble.className = 'call-message-bubble ai-speech';
-          aiBubble.textContent = displayText;
+          aiBubble.textContent = stripCallDisplayText(displayText);
           aiBubble.dataset.timestamp = aiTimestamp;
           addLongPressListener(aiBubble, () => showCallMessageActions(aiTimestamp));
           callFeed.appendChild(aiBubble);
@@ -3937,7 +3958,7 @@ ${voiceCallTtsBlock}
 
           const aiBubble = document.createElement('div');
           aiBubble.className = 'call-message-bubble ai-speech';
-          aiBubble.textContent = displayText;
+          aiBubble.textContent = stripCallDisplayText(displayText);
           aiBubble.dataset.timestamp = aiTimestamp;
           addLongPressListener(aiBubble, () => showCallMessageActions(aiTimestamp));
           callFeed.appendChild(aiBubble);

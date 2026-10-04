@@ -205,4 +205,21 @@ db.version(64).stores({
   live2d_backgrounds: '&id, name, addedAt'
 });
 
+// Cinema Room 影片库 (v0.1.0, 2026-10-04 第一阶段)
+// 三张表必须拆开: cinemaFilms 放纯元数据, 一旦把 Blob 混在同一条记录里,
+// Dexie toArray() 会把整条反序列化 -> 列一次片单就把所有视频读进 JS 堆, 手机必崩。
+// 旧观影 (watchTogetherPlaylist) 就是这么崩的: readAsDataURL 存 32MB base64 字符串。
+db.version(65).stores({
+  cinemaFilms: '&id, name, addedAt, size',          // 元数据, 绝不含 Blob
+  cinemaBlobs: '&id',                               // { id, file } File 对象直存, 只取单片时读
+  cinemaProgress: '&filmId, updatedAt'              // { filmId, currentTime, duration, updatedAt }
+});
+
+// Cinema Room 人物立绘 (2026-10-04 用户需求: 上传透明背景坐姿小人, 摆在沙发上)
+// 只存 Blob 本体, 名字不占地方; slot 固定 'left' / 'right' 两个位置。
+// ⚠️ 必须存 Blob 不能转 base64 —— 理由跟 cinemaBlobs 一样, base64 会撑爆内存。
+db.version(66).stores({
+  cinemaChars: '&id, updatedAt'                      // { id:'left'|'right', image: Blob, updatedAt }
+});
+
 window.db = db;

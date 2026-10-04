@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -152,7 +152,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/chat-interface.js?v=0.0.37" defer></script>
   <script src="modules/chat-input.js?v=0.0.36" defer></script>
   <!-- 第四层：AI 核心 -->
-  <script src="modules/ai-response.js?v=0.0.55" defer></script>
+  <script src="modules/ai-response.js?v=0.0.56" defer></script>
   <script src="modules/ai-group.js?v=0.0.40" defer></script>
   <!-- 第五层：功能模块 -->
   <script src="modules/music-player.js?v=0.0.45" defer></script>
@@ -169,7 +169,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/live2d-loader.js?v=0.3.6" defer></script>
   <!-- v0.5.0 P12/P13: 视频通话 AI 说话口型 + 元音嘴型 (独立模块, 无外部依赖; 必须在 tts-audio.js 之前加载) -->
   <script src="modules/call-lip-sync.js?v=0.0.2" defer></script>
-  <script src="modules/video-voice-call.js?v=0.0.75" defer></script>
+  <script src="modules/video-voice-call.js?v=0.0.76" defer></script>
   <script src="modules/message-actions.js?v=0.0.36" defer></script>
   <script src="modules/nai-imagen.js?v=0.0.36" defer></script>
   <script src="modules/backup-import-export.js?v=0.0.37" defer></script>
@@ -198,8 +198,8 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="src/lib/tts/index.js?v=0.0.39" defer></script>
   <script src="src/lib/tts/settings-ui.js?v=0.0.37" defer></script>
   <!-- 2026-09-30 TTS 表达层: [[语音:emotion]] 解析 + MiniMax 2.8-HD interjection 白名单 -->
-  <script src="modules/tts-expression.js?v=0.0.2" defer></script>
-  <script src="modules/tts-audio.js?v=0.0.43" defer></script>
+  <script src="modules/tts-expression.js?v=0.0.3" defer></script>
+  <script src="modules/tts-audio.js?v=0.0.44" defer></script>
   <script src="modules/appearance-theme.js?v=0.0.86" defer></script>
   <script src="modules/hot-news.js?v=0.1.2" defer></script>
   <script src="modules/runtime-diagnostics.js?v=0.0.38" defer></script>
@@ -216,12 +216,12 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/card-import.js?v=0.0.36" defer></script>
   <script src="modules/character-export.js?v=0.0.36" defer></script>
   <script src="modules/data-management.js?v=0.0.36" defer></script>
-  <script src="modules/misc-features.js?v=0.0.41" defer></script>
+  <script src="modules/misc-features.js?v=0.0.42" defer></script>
   <script src="modules/system-settings-home.js?v=0.0.37" defer></script>
   <!-- 第八层：初始化（必须在所有模块之后） -->
   <!-- 数据定义（无依赖） -->
   <script src="modules/init-avatar-frames.js?v=0.0.36" defer></script>
-  <script src="modules/init-db-schema.js?v=0.0.37" defer></script>
+  <script src="modules/init-db-schema.js?v=0.0.38" defer></script>
   <script src="modules/live2d-config.js?v=0.0.1" defer></script>
   <script src="modules/live2d-uploader.js?v=0.0.1" defer></script>
   <script src="modules/live2d-storage.js?v=0.0.1" defer></script>
@@ -245,6 +245,15 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/init-event-bindingsA.js?v=0.0.48" defer></script>
   <script src="modules/init-event-bindingsB.js?v=0.0.40" defer></script>
   <script src="modules/init-features.js?v=0.0.43" defer></script>
+  <!-- Cinema Room (v0.1.0, 2026-10-04 第一阶段): 全新独立房间模块, 与旧「一起看电影」并存互不影响。
+       旧观影 + Gemini Live 桥接 (watch-together-live.js / live-client.js) 一行未改。
+       顺序要求: cinema-storage.js 必须在前 —— cinema-room.js 在加载时就捕获了 window.CinemaStorage 引用。 -->
+  <script src="modules/cinema-storage.js?v=0.3.0" defer></script>
+  <script src="modules/cinema-room.js?v=0.17.0" defer></script>
+  <link rel="stylesheet" href="modules/cinema-room.css?v=0.16.0">
+  <!-- Cinema Room 的 Gemini 3.8 Live 桥接层 (迁移自 watch-together-live.js, 协议层仍是 live-client.js)。
+       必须在 cinema-room.js 之后加载 —— cinema-room.js 打开房间时才会调它。 -->
+  <script src="modules/cinema-live.js?v=1.0.8" defer></script>
   <!-- 主入口（最后加载，调用 init） -->
   <script src="modules/init-and-state.js?v=0.0.83" defer></script>
   <!-- 第九层：DOMContentLoaded 外部的独立模块 -->
@@ -3679,7 +3688,13 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
             <div class="text">被引用的消息内容...</div>
           </div> <span id="cancel-reply-btn">×</span>
         </div>
-        <div id="chat-input-actions-top"> <button id="open-sticker-panel-btn" class="chat-action-icon-btn action-button" title="表情面板">
+        <div id="chat-input-actions-top"> <button id="open-cinema-room-btn" class="chat-action-icon-btn action-button" title="Cinema Room">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
+        <path d="M7 4v16M17 4v16"></path>
+        <path d="M2 9h5M2 15h5M17 9h5M17 15h5"></path>
+    </svg>
+</button> <button id="open-sticker-panel-btn" class="chat-action-icon-btn action-button" title="表情面板">
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"></circle>
         <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>

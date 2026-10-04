@@ -264,24 +264,30 @@
   }
 
   // ============================================================
-  // TTS 暂停标记的显示层过滤 (第三阶段)
+  // TTS 控制标记的显示层过滤 (第三 / 四阶段)
   // ------------------------------------------------------------
-  // <#x#> 是纯 TTS 控制标记, 显示出来是一堆 "<#0.4#>" 很难看。
-  // 但只影响【显示】: 原文 / data-text / callHistory 一律不动,
-  // TTS 仍拿到带停顿的 speechText。
-  // ⚠️ 与第二阶段的规则不冲突: [[语音:x]] 和 (chuckle) 【照常显示】, 本函数不碰。
+  // <#x#> 停顿标记和 (chuckle) 语气声都是纯 TTS 控制标记: 漏给用户看到
+  // 一堆 "<#0.4#>" / "(sighs)" 很粗糙, 但它们【要照常发声】。
+  // 所以只做【显示层】过滤: 原文 / data-text / callHistory 一律不动,
+  // TTS 仍拿到带停顿和语气声的 speechText。
+  // ⚠️ 只有渲染前能调这个, 拿去发 MiniMax 会让语气声失效。
   // ============================================================
-  function stripPauseMarkersSafe(rawText) {
+  function stripTtsTagsSafe(rawText) {
     const raw = String(rawText == null ? '' : rawText);
     try {
-      if (window.TTSExpression && typeof window.TTSExpression.stripPauseMarkers === 'function') {
-        return window.TTSExpression.stripPauseMarkers(raw);
+      if (window.TTSExpression && typeof window.TTSExpression.stripTtsTagsForDisplay === 'function') {
+        return window.TTSExpression.stripTtsTagsForDisplay(raw);
       }
     } catch (e) {
-      console.warn('[TTS] 暂停标记显示过滤失败, 退回原文:', e);
+      console.warn('[TTS] 控制标记显示过滤失败, 退回原文:', e);
     }
     return raw.trim();
   }
+
+  // 语音通话 / 通话记录弹窗这些文件也要用同一套过滤, 它们不认识
+  // TTSExpression 内部细节, 这里给一个带兜底的全局入口。
+  // 解析器没加载时原样返回, 宁可多显示几个标签, 也不能让界面空掉。
+  window.stripTtsTagsForDisplay = stripTtsTagsSafe;
 
   // 2026-09-29: 新增 languageBoost 形参。
   //   旧版只传 text/voice/signal, 请求体里根本没有 language_boost 字段,
@@ -942,8 +948,9 @@
     if (!bubble) return;
 
     const transcriptEl = bubble.querySelector('.voice-transcript');
-    // 第三阶段: 显示时去掉 <#x#> 停顿标记 (只影响显示, data-text 原文不动, TTS 照常拿到停顿)
-    const text = stripPauseMarkersSafe(decodeURIComponent(bodyElement.dataset.text));
+    // 显示时摘掉 <#x#> 停顿标记和 (chuckle) 语气声
+    // (只影响显示, data-text 原文不动, TTS 照常拿到停顿和语气声)
+    const text = stripTtsTagsSafe(decodeURIComponent(bodyElement.dataset.text));
 
     if (transcriptEl.style.display === 'block') {
 
@@ -957,7 +964,10 @@
         const decodedOriginal = decodeURIComponent(originalContent);
         
         // 提取外语部分（去掉〖〗中的内容）
-        const foreignText = decodedOriginal.replace(/[〖【][^〗】]*[〗】]/g, '').trim();
+        // 语气声 / 停顿标记同样要摘掉, 否则双语模式下又露出来了
+        const foreignText = stripTtsTagsSafe(
+          decodedOriginal.replace(/[〖【][^〗】]*[〗】]/g, '').trim()
+        );
         
         // 提取中文翻译
         const translationMatches = decodedOriginal.match(/[〖【]\s*([^〗】]+?)\s*[〗】]/g);

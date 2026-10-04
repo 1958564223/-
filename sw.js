@@ -3,7 +3,7 @@
 // CACHE_VERSION bump 强制清缓存
 // 关键约束: URLS_TO_CACHE 增删需同步 sw.js 注释 + ?v= 版本号
 
-const CACHE_VERSION = 'v0.2.31.68';
+const CACHE_VERSION = 'v0.2.32.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
@@ -50,7 +50,17 @@ const URLS_TO_CACHE = [
   // v0.2.15.1 新增: �?ByteString 涉及�?3 �?modules (之前漏了, 现在加进白名�? SW 主动缓存)
   './modules/proactive-wake.js',
   './modules/notification-battery.js',
-  './modules/background-activity.js'
+  './modules/background-activity.js',
+  // v0.2.31.69: Cinema Room 第一阶段 (2026-10-04) 新模块。
+  //   影片本体走 IndexedDB 直存 Blob, 不经过 SW —— 视频永远不进 Cache API
+  //   (进 Cache 会双份占空间, 且 24MB+ 直接撑爆安装期缓存), 只把这三个静态壳文件预缓存。
+  './modules/cinema-storage.js',
+  './modules/cinema-room.js',
+  './modules/cinema-room.css',
+  './modules/cinema-live.js',
+  // 房间背景图 93KB, 预缓存是为了离线也能开房间 + 首屏不闪白。
+  // jpg 兜底不预缓存 —— 只给不认 webp 的老 WebView 用, 按需拉就行。
+  './assets/cinema-room-bg.webp'
 ];
 
 self.addEventListener('install', event => {

@@ -9,7 +9,8 @@
 //   2. 校验 emotion 白名单 (MiniMax speech-2.8-hd 官方 7 值)
 //   3. 识别 MiniMax 2.8-HD 官方 19 个 interjection 标签, 清洗时予以保留
 //   4. 非白名单括号内容按需删除 (MiniMax 不识别的括号不能进 TTS)
-//   5. 剥离控制标签, 输出 displayText / speechText
+//   5. 剥离控制标签, 只产出 speechText (给 MiniMax 的那一份)
+//   6. 显示层过滤: stripTtsTagsForDisplay 把语气声 / 停顿标记从展示文本里摘掉
 //
 // 严格边界 (第一阶段):
 //   - 本阶段【不让 AI 主动生成】任何标签, 仅供手工注入测试。
@@ -186,7 +187,9 @@
    * <#x#> 是纯 TTS 控制标记, 漏给用户看到一堆 "<#0.4#>" 很难看;
    * 但它【只影响显示】—— 原文 / data-text / callHistory 一律不动,
    * TTS 仍会拿到带停顿的 speechText。
-   * 注意: 本函数【不碰】 [[语音:x]] 和 (chuckle) —— 那两个按第二阶段规则必须显示。
+   * 注意: 本函数【不碰】 [[语音:x]] 和 (chuckle)。
+   *   语气声由 stripTtsTagsForDisplay 一起处理 (2026-10-04 需求反转:
+   *   语气声从"照常显示"改成"只播不显示")。
    * @param {string} text
    * @returns {string}
    */
@@ -200,6 +203,61 @@
       .replace(/([，、；：,])\s*\1+/g, '$1')
       .replace(/[ \t]{2,}/g, ' ')
       .trim();
+  }
+
+  // ============================================================
+  // 第四阶段: 语气声只播不显示
+  // ------------------------------------------------------------
+  // (sighs) / (chuckle) 这类是 MiniMax 的【语气声】控制标记, 作用是在
+  // 那个位置真发出一声叹气/轻笑。播放必须留着, 显示上不要 —— 和 <#x#>
+  // 停顿标记同一套处理: speechText (发给 MiniMax) 原样不动,
+  // 只在【渲染前】把标记从显示文本里摘掉。
+  //
+  // ⚠️ 需求反转记录 (2026-10-04): 第二阶段是"语气声要留在文字里给用户看",
+  //    现在改成跟停顿标记一样藏起来 —— 显示层过滤, 不动原文 / data-text /
+  //    callHistory / 历史消息, 所以老消息重新渲染就自动干净了。
+  // ============================================================
+
+  /**
+   * 摘掉显示文本里的语气声标签。
+   * ⚠️ 判定口径必须与 sanitizeForMiniMax 【完全一致】: 半角括号内容原文全等
+   *   白名单才算, 不 trim、不做前缀/包含匹配。
+   *   否则 "(he2)" 这类内联注音会被连坐删掉, 而 MiniMax 恰恰要它。
+   * @param {string} text
+   * @returns {string}
+   */
+  function stripInterjections(text) {
+    const raw = String(text == null ? '' : text);
+    if (!raw) return '';
+    return raw.replace(HALF_PAREN_RE, function (match, inner) {
+      const key = String(inner == null ? '' : inner);
+      return MINIMAX_INTERJECTIONS.has(key) ? '' : match;
+    });
+  }
+
+  /**
+   * 显示层总闸: 把 TTS 控制标记 (语气声 + 停顿) 从【给用户看的文本】里摘干净。
+   *
+   * 唯一用途是渲染前清洗, 绝不能拿去发 MiniMax —— 那样语气声就不发声了。
+   * 全部调用方都应该包一层 try/catch 兜底 (见 tts-audio.js 的同名接线)。
+   *
+   * @param {string} text
+   * @returns {string}
+   */
+  function stripTtsTagsForDisplay(text) {
+    const raw = String(text == null ? '' : text);
+    if (!raw.trim()) return '';
+
+    const cleaned = stripPauseMarkers(stripInterjections(raw))
+      // 摘掉语气声会留下 "你终于来了！ 等你好久了" 这种【中文标点后多一个空格】,
+      // 中文里看着还是毛糙, 这里收掉。只动中文标点, 不碰英文的 "Hello ! World"。
+      .replace(/([，。！？、；：…])[ \t]+(?=\S)/g, '$1')
+      .trim();
+
+    // 兜底: 整条只有一个语气声 (比如就写了 "(chuckle)") 时剥完是空串。
+    // 气泡空着比露出一个标签更糟, 这种极端情况退回原文。
+    if (!cleaned) return raw.trim();
+    return cleaned;
   }
 
   /**
@@ -272,6 +330,8 @@
     sanitizeForMiniMax: sanitizeForMiniMax,
     insertSpeechBreaks: insertSpeechBreaks,
     stripPauseMarkers: stripPauseMarkers,
+    stripInterjections: stripInterjections,
+    stripTtsTagsForDisplay: stripTtsTagsForDisplay,
     MAX_PAUSE_SECONDS: MAX_PAUSE_SECONDS,
     VALID_EMOTIONS: VALID_EMOTIONS,
     MINIMAX_INTERJECTIONS: MINIMAX_INTERJECTIONS

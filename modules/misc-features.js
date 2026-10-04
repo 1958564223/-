@@ -1065,7 +1065,9 @@
       record.transcript.forEach(entry => {
         const bubble = document.createElement('div');
         bubble.className = `transcript-entry ${entry.role}`;
-        bubble.textContent = entry.content;
+        // 只在显示层摘掉语气声 / 停顿标记, record.transcript 原文不动
+        // (AI 回看的上下文和"总结"功能都还靠它)
+        bubble.textContent = window.stripTtsTagsForDisplay?.(entry.content) ?? entry.content;
         bodyEl.appendChild(bubble);
       });
     }
