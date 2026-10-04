@@ -83,6 +83,32 @@ body.cinema-room-active {
 }
 
 /* --------------------------------------------------------------------------
+   自定义房间背景 (2026-10-05)
+   用户上传的房间背景, 盖在默认 CSS 背景之上。
+   ⚠️ 刻意用 <img> 而不是改 CSS background-image:
+      自传图压缩后是 WebP, 极老的 WebView 不认 → CSS 的话整面墙空白;
+      <img> 解不出来只是这张不显示, 底下默认背景还在, 不会白屏。
+   object-fit: cover = 铺满裁切, 比例不对会裁边 (传的时候已经提醒过用户)。
+   -------------------------------------------------------------------------- */
+
+.cinema-room-custom-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+  pointer-events: none;
+  /* 自传图可能不如默认图清晰, 稍微压一点亮度让视频更突出 */
+  filter: brightness(.92);
+}
+
+.cinema-room-custom-bg[hidden] {
+  display: none;
+}
+
+/* --------------------------------------------------------------------------
    屏幕环境光
    取视频当前帧平均色, 在大屏后面铺一层柔光 —— 屏幕亮起后它就是房间的主要光源。
    待机时是暖调微光, 播放时被视频颜色接管。
@@ -1564,6 +1590,11 @@ body.cinema-room-active {
 @media (orientation: landscape) and (max-height: 620px) {
   .cinema-room-bg {
     background-position: center 30%;
+  }
+
+  /* 自传背景要跟着一起上移取景, 否则横屏时露出的是图的底部 (地毯) */
+  .cinema-room-custom-bg {
+    object-position: center 30%;
   }
 
   .cinema-room-screen {

@@ -87,6 +87,12 @@
     '  </div>',
 
     '  <div class="cinema-room-bg">',
+    // 自定义背景层 (2026-10-05): 用户传自己的房间背景。
+    // ⚠️ 刻意用 <img> 而不是 CSS background-image:
+    //   自传图经过压缩可能是 WebP, 极老的 WebView 不认 → CSS 的话整面墙空白;
+    //   <img> 解不出来最多是这张图不显示, 底下的默认 CSS 背景还在, 不会白屏。
+    //   z-index: 0 压在 ambient / 道具 下面, 当它就是"墙"。
+    '    <img class="cinema-room-custom-bg" id="cinema-room-custom-bg" alt="" hidden>',
     // 环境光层: 在大屏下面, 用视频当前帧的平均色给房间打光。
     // 屏幕亮起后它就是房间的主要光源 —— 这是 v0.3.0 房间氛围的核心。
     '    <div class="cinema-ambient" id="cinema-ambient"></div>',
@@ -216,6 +222,18 @@
     '          </div>',
     '        </div>',
     '      </div>',
+    // --- 房间背景 (2026-10-05 用户需求: 自己换房间背景) ---
+    '      <div class="cinema-set-group">',
+    '        <div class="cinema-set-title">房间背景</div>',
+    '        <div class="cinema-set-desc">默认是暖调客厅。<b>推荐 9:16 竖图</b>（1080×1920 最理想，不用透明背景）。<b>上传会自动压缩</b>到 1080 长边，一张 iPhone 照片从 3MB 压到约 100KB。</div>',
+    '        <div class="cinema-char-edit wide" data-slot="bg">',
+    '          <div class="cinema-char-edit-prev" id="cinema-room-bg-prev"><span class="cinema-char-edit-empty">默认房间</span></div>',
+    '          <div class="cinema-char-edit-btns">',
+    '            <button class="cinema-set-pick" data-roombg-pick>选择图片</button>',
+    '            <button class="cinema-set-reset" data-roombg-del hidden>恢复默认</button>',
+    '          </div>',
+    '        </div>',
+    '      </div>',
     // --- 诊断 (平时收着, 出事时点开看) ---
     // 2026-10-04: "上传要点两次"查了四轮都查不出来, 每次都要问用户看 console。
     //   iPhone 上看 console 很麻烦, 所以这里留一个折叠区, 平时完全不打扰。
@@ -239,7 +257,10 @@
     // ⚠️ accept 用 image/* 而不是白名单 (png/webp/jpeg):
     //    iOS 上写死三种格式会让 HEIC 等格式【根本选不出来】(选择器里直接不显示),
     //    用户看到的就是"点开相册找不到图"。放宽后交给 saveCharImage 去判。
-    '<input type="file" id="cinema-char-file-input" accept="image/*" hidden>'
+    '<input type="file" id="cinema-char-file-input" accept="image/*" hidden>',
+    // 房间背景选择框 (2026-10-05)。accept 写 image/* 不写白名单 ——
+    //   iOS 上写死 png/jpeg 会让 HEIC 等格式在相册里【直接选不出来】。
+    '<input type="file" id="cinema-roombg-file-input" accept="image/*" hidden>'
   ].join('\n');
 
   function ensureDom() {
@@ -252,6 +273,7 @@
       root: document.getElementById('cinema-room'),
       screen: document.getElementById('cinema-screen'),
       ambient: document.getElementById('cinema-ambient'),
+      customBg: document.getElementById('cinema-room-custom-bg'),
       video: document.getElementById('cinema-video'),
       idle: document.getElementById('cinema-room-idle'),
       addBtn: document.getElementById('cinema-add-btn'),
@@ -335,8 +357,33 @@
         return;
       }
       var del = e.target.getAttribute && e.target.getAttribute('data-char-del');
-      if (del) { removeCharImage(del); }
+      if (del) { removeCharImage(del); return; }
+      // 房间背景 (2026-10-05)
+      // ⚠️⚠️ 必须用 hasAttribute, 不能用 getAttribute 判真假!
+      //   data-roombg-pick / data-roombg-del 是【无值属性】(HTML 里就写了个名字),
+      //   getAttribute 返回空字符串 "" —— falsy —— `if (getAttribute(...))` 永远不进,
+      //   结果两个按钮点了完全没反应 (2026-10-05 测试实测)。
+      if (e.target.hasAttribute && e.target.hasAttribute('data-roombg-pick')) {
+        pickRoomBg();
+        return;
+      }
+      if (e.target.hasAttribute && e.target.hasAttribute('data-roombg-del')) {
+        removeRoomBgImage();
+      }
     });
+
+    // 房间背景的 change: 先拷字节再清 value (iOS 会 invalidate 已取出的 File)
+    const bgInput = document.getElementById('cinema-roombg-file-input');
+    if (bgInput) {
+      bgInput.addEventListener('change', function (e) {
+        const file = e.target.files && e.target.files[0];
+        if (!file) { try { e.target.value = ''; } catch (x) {} return; }
+        var safe = file;
+        try { safe = file.slice(0, file.size, file.type || 'image/png'); } catch (x) { safe = file; }
+        try { e.target.value = ''; } catch (x) { /* noop */ }
+        saveRoomBgImage(safe);
+      });
+    }
     document.getElementById('cinema-char-reset').addEventListener('click', resetCharLayouts);
     // 诊断区: 平时收起, 出事时点开看最近发生了什么
     if (els.diagToggle && els.diagBox) {
@@ -1293,26 +1340,61 @@
     }, 60000);   // 60s: 用户在相册里挑图本来就要时间
   }
 
+  /**
+   * 验证一个 Blob 是不是"能解开的图片"。
+   *
+   * ⚠️⚠️ 为什么不用 file.type / 扩展名判 (2026-10-05 真机踩到):
+   *   iOS 从相册选图时, file.name 常常是 undefined、file.type 常是空字符串
+   *   (HEIC / Safari 转码前更是两个都空)。任何"看名字/类型"的判断都会把
+   *   正常图片全拒掉 —— 用户看到的就是"选什么图都弹『看起来不是图片』"。
+   *
+   * 唯一的可靠判据是【真解码】。这里两条路:
+   *   ① 压缩模块在 → 用它的 loadImage (顺带能拿到尺寸做比例检查)
+   *   ② 压缩模块没加载 → createImageBitmap 兜底 (iOS 15+ / Chrome 都支持)
+   * ⚠️ 只验"能不能解开", 【不改数据】—— 调用方自己决定要不要压缩。
+   */
+  async function verifyImageBlob(blob) {
+    if (!blob) return false;
+    // ① 有压缩模块就用它
+    if (global.CinemaImage && typeof global.CinemaImage.probe === 'function') {
+      try { return await global.CinemaImage.probe(blob); } catch (e) { return false; }
+    }
+    // ② createImageBitmap 兜底
+    if (typeof createImageBitmap === 'function') {
+      try { await createImageBitmap(blob); return true; } catch (e) { /* 继续试下一条 */ }
+    }
+    // ③ 最后的兜底: <img> (最老的实现也能走通)
+    return new Promise(function (resolve) {
+      try {
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = function () { URL.revokeObjectURL(url); resolve(true); };
+        img.onerror = function () { URL.revokeObjectURL(url); resolve(false); };
+        img.src = url;
+      } catch (e) { resolve(false); }
+    });
+  }
+
   async function saveCharImage(slot, file, nameHint, sizeHint) {
     ensureDom();
-    // ⚠️ 不能只看 file.type —— iOS 相册里的图 (HEIC / Safari 转码前) 经常是空字符串,
-    //    拿 type 当唯一依据会直接把这些图全拒掉, 用户看着就是"传不上去"。
-    //    真正的判据是扩展名 + size 兜底。
-    //    nameHint/sizeHint 是 change 里【拷字节之前】记下的原始值 ——
-    //    那个 File 可能已经被 input.value='' 弄失效, 属性读不出来。
     const name = nameHint || (file && file.name) || '';
     const size = sizeHint || (file && file.size) || 0;
-    const looksImage = /^image\//.test(file.type || '') ||
-                       /\.(png|webp|jpg|jpeg|gif|bmp|heic|heif|avif)$/i.test(name);
-    if (!looksImage) {
-      diagLogPush('✗ 判不出是图片 slot=' + slot + ' type=' + (file.type || '(空)') + ' name=' + name);
-      reportError('这张不能用',
-        '「' + (name || '这个文件') + '」看起来不是图片。\n\n' +
-        'iPhone 相册里的图如果是 HEIC 格式，浏览器读不出 type —— ' +
-        '可以先在相册里「分享 → 存储为文件」再试，或者截图另存。');
+
+    // ⚠️ 判图【不看 file.type / 扩展名】(2026-10-05 真机踩到):
+    //   iOS 从相册选图时 file.name 常常是 undefined、file.type 常是空字符串,
+    //   所以"看名字/类型"的判断会把正常图片全拒掉 —— 症状是"选什么图都弹不是图片"。
+    //
+    //   判真假只有一个可靠办法: 真解码。压缩模块没加载时用 createImageBitmap
+    //   兜底 (iOS 15+ / Chrome 都支持), 它只验"是不是能解开的图片", 不改数据 ——
+    //   立绘仍然【原样存储】, 不做任何压缩 (2026-10-05 用户明确要求别动人物)。
+    if (!await verifyImageBlob(file)) {
+      diagLogPush('✗ 立绘解不开 slot=' + slot + ' type=' + (file.type || '(空)') + ' name=' + (name || '(空)'));
+      reportError('这张图打不开',
+        '浏览器没能把这张图解开，所以没法显示在房间里。\n\n' +
+        '可以试试：在相册里「分享 → 存储为文件」，或直接截图另存一张再传。');
       return;
     }
-    // 只是给个软提醒, 不拦 —— 用户可能就想用大图
+
     const warn = size > 3 * 1024 * 1024
       ? '这张 ' + S.formatBytes(size) + '，偏大，手机上可能会卡。' : null;
 
@@ -1324,7 +1406,7 @@
     diagLogPush('保存中… slot=' + slot);
 
     try {
-      await S.saveChar(slot, file);
+      await S.saveChar(slot, file);   // 立绘原样存储, 不压缩
     } catch (e) {
       if (prevEl) prevEl.classList.remove('is-saving');
       console.error('[CinemaRoom] 存人物图失败', (e && e.name) || '', (e && e.message) || e);
@@ -1457,6 +1539,141 @@
   }
 
   // --------------------------------------------------------------------------
+  // 房间背景 (2026-10-05 用户需求: 自己换房间背景)
+  //
+  // 【存在哪】IndexedDB cinemaChars 表, slot='bg'。跟着【这台手机】走 ——
+  //   IndexedDB 不联网, 你和琪琪各存各的, 谁也看不到谁的 (跟人物/茶几一样)。
+  //
+  // 【怎么显示】盖一层 <img> 在 .cinema-room-bg 里 (z-index:0), 不是改 CSS。
+  //   自传图压缩后可能是 WebP, 老 WebView 不认的话 CSS 背景会整面空白;
+  //   <img> 解不出来只是这张不显示, 底下默认 CSS 背景还在。
+  //
+  // 【比例】cover 铺满。9:16 最合适; 比例差太多会裁掉一大块, 人物/沙发位置就偏了
+  //   —— 传的时候提醒她, 但不拦。
+  // --------------------------------------------------------------------------
+  let roomBgUrl = null;
+
+  function pickRoomBg() {
+    ensureDom();
+    const input = document.getElementById('cinema-roombg-file-input');
+    if (!input) return;
+    // click() 前先清 value: iOS 上连续选同一个文件时, 不清就不会触发 change
+    try { input.value = ''; } catch (e) { /* noop */ }
+    diagLogPush('选了「更换房间背景」…');
+    input.click();
+  }
+
+  async function loadRoomBg() {
+    ensureDom();
+    await applyRoomBg();
+  }
+
+  async function applyRoomBg() {
+    ensureDom();
+    const blob = await S.getRoomBg();
+    if (roomBgUrl) { URL.revokeObjectURL(roomBgUrl); roomBgUrl = null; }
+    if (!blob) {
+      els.customBg.hidden = true;
+      els.customBg.removeAttribute('src');
+      refreshRoomBgEditor();
+      return;
+    }
+    roomBgUrl = URL.createObjectURL(blob);
+    els.customBg.src = roomBgUrl;
+    els.customBg.hidden = false;
+    refreshRoomBgEditor();
+  }
+
+  async function saveRoomBgImage(file) {
+    ensureDom();
+
+    // 复制字节再清 value (iOS 会 invalidate 已取出的 File, 同人物上传那套)
+    var safeBlob;
+    try { safeBlob = file.slice(0, file.size, file.type || 'image/png'); }
+    catch (e) { safeBlob = file; }
+    var origKB = Math.round(safeBlob.size / 1024);
+    diagLogPush('背景: 收到 ' + origKB + 'KB, name=' + ((file && file.name) || '(空)') +
+                ' type=' + ((file && file.type) || '(空)'));
+
+    // ⚠️ 压缩模块可能没加载 (2026-10-05 用户真机遇到过: cinema-img.js 是新文件,
+    //   Service Worker 还没缓存它 → window.CinemaImage 是 undefined → 整个功能报
+    //   "图片压缩模块没加载上" 就罢工了)。
+    //   压缩是【锦上添花】不是【必需】: 没它就直接存原图, 功能照样能用。
+    const prev = document.getElementById('cinema-room-bg-prev');
+    if (prev) prev.classList.add('is-saving');
+
+    let payload = safeBlob, out = null;
+    if (global.CinemaImage && typeof global.CinemaImage.compress === 'function') {
+      try {
+        out = await global.CinemaImage.compress(safeBlob);
+        payload = out.blob;
+        diagLogPush('背景已压缩: ' + origKB + 'KB → ' + Math.round(out.blob.size / 1024) + 'KB (' + out.format + ')');
+      } catch (e) {
+        if (prev) prev.classList.remove('is-saving');
+        diagLogPush('✗ 背景压缩失败: ' + ((e && e.message) || e));
+        reportError('这张图打不开',
+          '浏览器没能把这张图解开，所以没法当房间背景。\n\n' +
+          '可以试试：在相册里「分享 → 存储为文件」，或直接截图另存一张再传。');
+        return;
+      }
+    } else {
+      // 压缩模块没加载 —— 先验一下确实是图片, 再原样存, 别直接罢工
+      diagLogPush('背景: 压缩模块未加载, 改为原样存储');
+      if (!await verifyImageBlob(safeBlob)) {
+        if (prev) prev.classList.remove('is-saving');
+        diagLogPush('✗ 背景解不开, 且压缩模块不可用');
+        reportError('这张图打不开',
+          '浏览器没能把这张图解开。\n\n刷新一下页面再试 —— 刷新后压缩模块就会加载上，' +
+          '也顺便能自动压缩省空间。');
+        return;
+      }
+    }
+    if (prev) prev.classList.remove('is-saving');
+
+    const outKB = Math.round(payload.size / 1024);
+    try {
+      await S.saveRoomBg(payload);
+    } catch (e) {
+      diagLogPush('✗ 背景存盘失败: ' + ((e && e.message) || e));
+      reportError('存不下', describeSaveError(e));
+      return;
+    }
+    await applyRoomBg();
+    diagLogPush('背景已换: ' + outKB + 'KB' + (out ? ' (压缩后)' : ' (原样)'));
+
+    if (out && out.ratioWarn) {
+      // 提醒但已经存好了 —— 不拦她, 只是让她知道可能会裁边
+      reportError('已经换上了, 但比例有点怪',
+        '这张是 ' + out.srcW + '×' + out.srcH + '（比例 ' + out.ratio.toFixed(2) + '），' +
+        '理想是 9:16（0.56）。\n\n' +
+        '房间背景是铺满裁切的，比例差太多会裁掉一部分，人物坐的位置可能会偏。' +
+        '不用重传也行，看着不对就把人物拖一下。');
+    }
+  }
+
+  async function removeRoomBgImage() {
+    ensureDom();
+    await S.removeRoomBg();
+    await applyRoomBg();
+    diagLogPush('背景已恢复默认');
+  }
+
+  /** 设置面板里背景那一栏的显隐 */
+  function refreshRoomBgEditor() {
+    const prev = document.getElementById('cinema-room-bg-prev');
+    const del = document.querySelector('[data-roombg-del]');
+    const reset = document.getElementById('cinema-roombg-reset');
+    const has = roomBgUrl != null;
+    if (prev) {
+      prev.innerHTML = has
+        ? '<img src="' + roomBgUrl + '" alt="">'
+        : '<span class="cinema-char-edit-empty">默认房间</span>';
+    }
+    if (del) del.hidden = !has;
+    if (reset) reset.hidden = !has;
+  }
+
+  // --------------------------------------------------------------------------
   // 开关房间
   // --------------------------------------------------------------------------
 
@@ -1524,6 +1741,8 @@
     await refreshList();
     // 沙发上那两个人 (第一次进房或换过图才读 IDB, 很快)
     await loadChars();
+    // 房间背景 (2026-10-05): 用户可能自己传过
+    await loadRoomBg();
     diagLogPush('道具已加载: ' + S.CHAR_SLOTS.map(function (s) {
       return s + '=' + (charUrls[s] ? '有' : '空');
     }).join(' '));
@@ -1561,6 +1780,7 @@
     clearCharPickWatchdog();
     // object URL 不 revoke 就是内存泄漏 —— Blob 还压在 IDB 里, 但 URL 一直占着堆
     releaseCharUrls();
+    if (roomBgUrl) { URL.revokeObjectURL(roomBgUrl); roomBgUrl = null; }
   }
 
   // --------------------------------------------------------------------------

@@ -334,6 +334,44 @@
     return Object.assign({}, DEFAULT_CHAR_LAYOUT_BY_SLOT[slot] || DEFAULT_CHAR_LAYOUT);
   }
 
+  // --------------------------------------------------------------------------
+  // 房间背景 (2026-10-05 用户需求: 让用户自己换房间背景)
+  //
+  // 【存在哪】复用 cinemaChars 表, slot = 'bg'。不另开表 —— 同一个
+  //   "一张图存一个 slot" 的模式, 少一个表少一份 schema 版本。
+  //
+  // 【为什么不进 CHAR_SLOTS】CHAR_SLOTS 那套循环带 x/y/scale 位置逻辑
+  //   (applyCharTransform / 拖动 / 缩放), 背景图是 cover 铺满, 根本不需要。
+  //   混进去会让拖动手势套到背景上, 把房间拖乱。
+  //
+  // 【隔离性】IndexedDB 在各自手机本地, 不联网。糖糖和琪琪各存各的,
+  //   永远看不到对方的背景 (跟人物/茶几一样)。
+  // --------------------------------------------------------------------------
+  const BG_SLOT = 'bg';
+
+  async function saveRoomBg(blob) {
+    if (!blob) throw new Error('没有图片数据');
+    const table = await ensureCharTable();
+    if (!table) throw new Error('道具数据表缺失 (db schema 未升级到 v66), 请刷新页面重试');
+    // 背景不需要位置信息, 只存图 —— 换图就是整个替换
+    await table.put({ id: BG_SLOT, image: blob, updatedAt: Date.now() });
+    return BG_SLOT;
+  }
+
+  async function getRoomBg() {
+    const table = await ensureCharTable();
+    if (!table) return null;
+    const row = await table.get(BG_SLOT);
+    return (row && row.image) ? row.image : null;
+  }
+
+  async function removeRoomBg() {
+    const table = await ensureCharTable();
+    if (!table) return false;
+    await table.delete(BG_SLOT);
+    return true;
+  }
+
   /**
    * 存道具图 (人物 / 茶几)。换图时位置重置 (新图尺寸肯定不一样, 旧位置没意义)。
    */
@@ -441,6 +479,10 @@
     DEFAULT_CHAR_LAYOUT_BY_SLOT: DEFAULT_CHAR_LAYOUT_BY_SLOT,
     CHAR_SLOTS: CHAR_SLOTS,
     defaultLayoutFor: defaultLayoutFor,
+    // 房间背景 (2026-10-05): 单独一套接口, 不走 CHAR_SLOTS 的位置逻辑
+    saveRoomBg: saveRoomBg,
+    getRoomBg: getRoomBg,
+    removeRoomBg: removeRoomBg,
     getAllChars: getAllChars,
     removeChar: removeChar
   };
