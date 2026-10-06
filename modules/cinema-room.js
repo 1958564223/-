@@ -950,9 +950,28 @@
       setDrawer(false);
       // 剧情条常驻在聊天面板顶上, 打开时主动刷一次
       if (global.CinemaLive) global.CinemaLive.renderPlotPanel();
-      // 没填 key 就直接把设置面板推出来, 省得用户发消息才发现
-      // (原来推的是聊天面板内嵌的 key-box, 那版已经删掉了)
-      if (global.CinemaLive && !global.CinemaLive.hasKey()) setSettingsSheet(true);
+
+      // 🔴 2026-10-06 修复: 原来这里是「没填 key 就直接把设置面板推出来」。
+      //
+      //   症状: 点 Cinema 聊天按钮 → 一个标题写着「设置」的整屏面板从底部滑上来,
+      //         盖住整个房间 (z-index 99995, 比聊天面板 6 高三个数量级),
+      //         退出按钮点不到; 而且 sendChat() 每次发送都会再调一次
+      //         setChatPanel(true), 于是面板反复弹回来 —— 表现为「卡住、关不掉」。
+      //         用户第一反应是「330 的 Settings 自己冒出来了」, 其实这是 Cinema
+      //         自己的 #cinema-settings-sheet, 全局 showScreen 一次都没被调用
+      //         (取证: showScreen 调用次数 = 0)。
+      //
+      //   为什么原来会走到这个分支: hasKey() 读的是【当前活跃聊天】的
+      //   watchTogetherSettings.geminiApiKey (cinema-live.js:1408)。从首页直接
+      //   进影院、或者切过角色, 这个字段可能就是空的 —— 于是每次开聊天都判定
+      //   「没填」, 每次都强推面板。
+      //
+      //   现在: 聊天照常打开, 只给一条 3 秒自动消失、不遮挡任何东西的提示条。
+      //   真要填 key 仍然点房间右上角的齿轮 —— 那条路径一行都没改。
+      //   sendChat() 里本来就还有一条「Gemini 还没连上」的友好提示, 没删。
+      if (global.CinemaLive && !global.CinemaLive.hasKey() && typeof global.showToast === 'function') {
+        global.showToast('还没填 Gemini Live 密钥, 这轮 Gemini 不会接话。要填点右上角齿轮。');
+      }
     } else {
       keepViewportPinned();
     }
@@ -1677,37 +1696,105 @@
   // 开关房间
   // --------------------------------------------------------------------------
 
-  /**
-   * 把可视视口的真实高度/偏移写进 CSS 变量。
-   *
-   * 为什么必须有 (2026-10-04 用户反馈: 一输入文字页面就变大遮住视频, 收起后回不来):
-   *   iOS Safari 里 position:fixed 是相对【布局视口】定位的, 不是可视视口。
-   *   键盘弹出时布局视口一点没变, 可视视口却上移了一大截 → 固定元素被顶到屏幕外,
-   *   键盘收起后浏览器也不一定把它滚回来。
-   *   监听 visualViewport 的 resize/scroll, 把可视视口尺寸喂给 .cinema-room,
-   *   房间就跟着可视视口走 —— 键盘弹多高房间缩多高, 视频永远露在外面。
-   */
-  function syncVisualViewport() {
+  // --------------------------------------------------------------------------
+  // visualViewport → CSS 变量 (iOS 键盘适配)
+  //
+  // 作用 (2026-10-04 用户反馈: 一输入文字页面就变大遮住视频, 收起后回不来):
+  //   iOS Safari 里 position:fixed 是相对【布局视口】定位的, 不是可视视口。
+  //   键盘弹出时布局视口一点没变, 可视视口却上移了一大截 → 固定元素被顶到屏幕外,
+  //   键盘收起后浏览器也不一定把它滚回来。
+  //   监听 visualViewport 的 resize/scroll, 把可视视口尺寸喂给 .cinema-room,
+  //   房间就跟着可视视口走 —— 键盘弹多高房间缩多高, 视频永远露在外面。
+  //
+  // 🔴 2026-10-06 iOS 严重卡顿修复 (只动这三处, 不碰 Gemini/播放/记忆):
+  //   症状: 完整 330 里点聊天输入框、键盘刚弹出的瞬间主线程严重阻塞,
+  //         standalone Cinema 完全正常, 视频连续播 30 分钟也不卡。
+  //   原因: 变量原本写在 documentElement(:root) 上。自定义属性挂在 :root 会让
+  //         WebKit 对【整篇文档】做样式失效; 而完整 330 有 54 个 .screen 全屏 flex
+  //         面板 (visibility:hidden 不是 display:none, 仍完整参与布局), 于是每个
+  //         visualViewport 事件都要重排这一大片。键盘弹出动画期间 iOS 会连续抛
+  //         几十上百个事件 → 事件风暴。standalone 没有 .screen, 所以毫发无损。
+  //   修法 (三条都在这里):
+  //     ① 变量写到 .cinema-room 自己身上 (els.root), 作用域从「整篇文档」缩到
+  //        「房间这一棵子树」。--cinema-vv-* 全项目只有 .cinema-room 自己用
+  //        (css 第 31/34 行), 缩作用域不影响任何外部样式。
+  //     ② 事件回调走 requestAnimationFrame 合帧: 一帧最多写一次, 把「按事件次数」
+  //        变成「按帧数」, 上限锁死 60 次/秒。
+  //     ③ 值去重: height/top 没变就一个字节都不写。iOS 键盘动画里绝大多数事件
+  //        带的值和上一帧完全一样, 去重后实际写入次数是个位数。
+  // --------------------------------------------------------------------------
+
+  let vvFrame = 0;          // 待执行的 rAF id, 0 = 当前没有排队的帧
+  let vvFrameAt = 0;        // 排队时刻, 用来判断这一帧是不是已经"卡住"了
+  let lastVvHeight = -1;    // 上次真正写进 DOM 的值 (去重用)
+  let lastVvTop = -1;
+
+  // 只读诊断计数, 给「键盘还卡不卡」做实测用。不影响任何行为。
+  const vvDiag = { events: 0, writes: 0 };
+  global.__cinemaVVDiag = vvDiag;
+  global.__cinemaVVDiagReset = function () { vvDiag.events = 0; vvDiag.writes = 0; };
+
+  // 真正写 DOM 的那一步。rAF 合帧和值去重都收敛在这里。
+  function applyVisualViewport() {
     const vv = global.visualViewport;
-    if (!vv) return;
-    const root = document.documentElement;
-    root.style.setProperty('--cinema-vv-height', Math.round(vv.height) + 'px');
-    root.style.setProperty('--cinema-vv-top', Math.max(0, Math.round(vv.offsetTop)) + 'px');
+    const root = els && els.root;
+    if (!vv || !root) return;
+    const h = Math.round(vv.height);
+    const t = Math.max(0, Math.round(vv.offsetTop));
+    if (h === lastVvHeight && t === lastVvTop) return;  // 没变 → 不碰 DOM
+    lastVvHeight = h;
+    lastVvTop = t;
+    root.style.setProperty('--cinema-vv-height', h + 'px');
+    root.style.setProperty('--cinema-vv-top', t + 'px');
+    vvDiag.writes++;
+  }
+
+  // 给 visualViewport 的 resize/scroll 用: 同一帧里的几十个事件只跑一次。
+  //
+  // ⚠️ vvFrameAt 那个陈旧帧判断不是多余的: iOS Safari 在页面切后台/来电时会
+  // 【丢弃】还没执行的 rAF 回调, 于是 vvFrame 永远停在非 0, 之后所有事件都被
+  // 这个 if 吞掉 → 键盘弹出时房间不再跟随 → 用户看到"键盘一弹房间就不动了"。
+  // 所以超过 250ms 还没执行就认为那一帧废了, 重新排一帧。
+  function syncVisualViewport() {
+    if (vvFrame && Date.now() - vvFrameAt < 250) return;   // 本帧已排过, 吞掉
+    vvFrame = global.requestAnimationFrame(function () {
+      vvFrame = 0;
+      applyVisualViewport();
+    });
+    vvFrameAt = Date.now();
+    vvDiag.events++;
   }
 
   function initVisualViewport() {
     const vv = global.visualViewport;
-    if (!vv || vv.__cinemaBound) { syncVisualViewport(); return; }
+    if (!vv) return;
+    vvFrame = 0;   // 进房间先清一次排队状态, 防止上次残留的陈旧帧挡住首次同步
+    if (vv.__cinemaBound) { applyVisualViewport(); return; }
     vv.__cinemaBound = true;
     vv.addEventListener('resize', syncVisualViewport);
     vv.addEventListener('scroll', syncVisualViewport);
-    syncVisualViewport();
+    applyVisualViewport();   // 首帧同步执行一次, 不等 rAF (避免房间先按 100dvh 闪一下)
   }
 
-  // iOS 聚焦输入框会把文档往上滚, 固定元素跟着飘。聚焦后立刻归位。
+  /**
+   * 输入框聚焦后的「钉住视口」。
+   *
+   * ⚠️ 2026-10-06: 原来的 window.scrollTo(0, 0) 已经删掉了, 它就是卡顿振荡的源头:
+   *   iOS 聚焦输入框会自己把文档滚动到让输入框可见 (scroll-into-view)。
+   *   我们 scrollTo(0,0) 强行把滚动归零 → iOS 判定输入框又被挡住 → 再滚回来 →
+   *   visualViewport 再次抛 scroll → syncVisualViewport 写变量 → 房间整体位移 →
+   *   iOS 再次调整 → …… 来回振荡, 每圈还附带一次整篇文档重排。
+   *
+   * 现在为什么不用再 scrollTo:
+   *   房间是 position:fixed + top: var(--cinema-vv-top), 而 --cinema-vv-top 就是
+   *   vv.offsetTop。iOS 把文档滚了 N px, 我们就把房间往下挪 N px, 两者抵消 ——
+   *   输入框在【可视视口坐标里】原地不动, iOS 立刻认为「已经可见」, 不会再来回滚。
+   *   所以正确做法是顺着 iOS 的滚动补偿, 不是跟它对着干。
+   *
+   * 保留这个函数: 它保证「聚焦后立刻同步一次」, 不必等下一个 visualViewport 事件。
+   */
   function keepViewportPinned() {
     syncVisualViewport();
-    try { global.scrollTo(0, 0); } catch (e) { /* noop */ }
   }
 
   /**

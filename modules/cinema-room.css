@@ -17,6 +17,17 @@
      保证任何机型/横竖屏都绝对不会被按钮压住。 */
   --cinema-topbar-h: calc(env(safe-area-inset-top, 0px) + 52px);
 
+  /* 🔴 2026-10-06 iOS 键盘卡顿修复: 可视视口尺寸变量的【作用域只留房间自己】。
+     之前 JS 把它们写在 documentElement(:root) 上 → 每次 visualViewport 事件都
+     让 WebKit 对整篇 330 文档做样式失效, 而完整 330 有 54 个 .screen 全屏 flex
+     面板(visibility:hidden 也照样参与布局)跟着一起重排 → 键盘弹出瞬间卡死。
+     现在 JS 只写在 .cinema-room 元素上(见 cinema-room.js applyVisualViewport),
+     失效范围从「整篇文档 6000+ 节点」缩到「房间这一棵子树」。
+     全项目只有下面两行用这两个变量, 所以缩作用域不影响任何外部样式。
+     JS 没跑起来时(极老的浏览器 / 首帧)用默认值兜底。 */
+  --cinema-vv-top: 0px;
+  --cinema-vv-height: 100dvh;
+
   /* 必须压过 330 的 #floating-ball(9999) / #floating-ball-menu(10000) */
   z-index: 99990;
   display: none;
@@ -25,13 +36,13 @@
      收起键盘后也回不来)。
      position:fixed 在 iOS 上是相对【布局视口】定位的, 不是【可视视口】:
      键盘弹出 → 布局视口不动、可视视口上移 → fixed 元素直接被顶出屏幕。
-     解法: JS 用 VisualViewport API 把可视视口的真实高度和偏移写进这两个变量,
+     解法: JS 用 VisualViewport API 把可视视口的真实高度和偏移写进上面这两个变量,
      房间跟着可视视口走 —— 键盘弹多高房间就缩多高, 视频永远不会被顶没。 */
   position: fixed;
-  top: var(--cinema-vv-top, 0px);
+  top: var(--cinema-vv-top);
   left: 0;
   right: 0;
-  height: var(--cinema-vv-height, 100dvh);
+  height: var(--cinema-vv-height);
 
   /* flex 列: 顶栏(固定) → 视频区(自适应) → 聊天区(占满剩余)
      这样视频和聊天之间【不会】出现空洞 —— 2026-10-04 用户反馈中间浪费一大片。 */
@@ -330,6 +341,13 @@ body.cinema-room-active {
 .cinema-room-topbar {
   /* flex 子项, 不再 absolute —— 键盘弹出时整个房间一起缩, 顶栏不会飘 */
   position: relative;
+  /* 🔴 2026-10-06: 顶栏必须永远压在三个底部上滑面板之上。
+     .cinema-room-drawer=99991 / .cinema-source-sheet=99995 / .cinema-settings-sheet=99995
+     原来都没给顶栏 z-index, 一旦面板的 top 算成 0 (作者自己的注释记录过这个坑:
+     env(safe-area-inset-top) 在地址栏收起时返回 0), 面板就会盖到顶栏上,
+     ✕ 退出 / ⚙ 设置 / 聊天 三个按钮全部点不到 → 用户表现为「整个页面卡死」。
+     99996 高过所有面板, 从结构上保证顶栏按钮永远可点。 */
+  z-index: 99996;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -746,9 +764,26 @@ body.cinema-room-active {
 }
 
 .cinema-room.is-chatting .cinema-room-screen.is-portrait {
+  /* 🔴 2026-10-06 修复「竖屏退出按钮被挤出屏幕」。
+   *
+   *   原来这里是 height: 44vh。横屏用的是 max-height: 44vh (只是上限, 不会被撑开),
+   *   竖屏却是【写死的高度】—— 而 vh 在 iOS 上指的是【布局视口】高度, 键盘弹出不缩。
+   *   于是竖屏时: 键盘弹出 → 可视视口缩到只剩 ~55%, 但大屏块仍然是 44vh (按整屏算),
+   *   两者相加超出房间高度 → .cinema-room 是 overflow:hidden, 撑出去的部分直接被裁,
+   *   而 flex 列被顶开后, 顶栏(✕ 退出 / ⚙ 设置 / 聊天)会被挤到可视区之外 → 用户点不到,
+   *   表现就是「整个页面卡死、出不去」。
+   *   横屏用 max-height 所以没这个毛病 —— 这就是为什么只有竖屏能稳定复现。
+   *
+   *   改法: 用我们已经在维护的 --cinema-vv-height (JS 按 visualViewport 实时写,
+   *   见 cinema-room.js applyVisualViewport) 代替 vh。这样键盘一弹, 大屏跟着
+   *   可视视口一起缩, 永远是可视区的 44%, 顶栏永远留在屏内。
+   *   JS 没跑起来时回落到 100dvh, 与原来的 vh 语义等价。
+   *   注意这不是"为了塞下 Settings/Chat 而把视频缩小" —— 那个自动弹出的设置面板
+   *   已经拆掉了; 这里只是让竖屏大屏跟着真实可视高度走, 横屏规则一行没动。
+   */
   width: auto;
-  height: 44vh;
-  max-height: 44vh;
+  height: calc(var(--cinema-vv-height, 100dvh) * 0.44);
+  max-height: calc(var(--cinema-vv-height, 100dvh) * 0.44);
 }
 
 .cinema-room.is-chatting .cinema-room-screen.is-square {
