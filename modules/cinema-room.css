@@ -110,6 +110,27 @@ body.cinema-room-active {
   background: #18100d;
 }
 
+/* --------------------------------------------------------------------------
+   🔴 关闭状态的面板: 毛玻璃只在该【真的看得见】的时候才挂 (2026-10-07)
+
+   这四个面板关闭时都是靠 transform 移出可视区(侧边/下方), 不是 display:none,
+   所以它们的 backdrop-filter 一直挂着、一直参与合成。而用户根本看不见它们 ——
+   属于纯浪费。iOS 上 backdrop-filter 每次都要重新采样背后全部内容,
+   房间每变一次高(键盘动画期间变几十次), 这四层就白白重采样几十次。
+
+   真机实测 (0.24.0): 带模糊最长卡顿 4509ms, 关掉模糊 93ms —— 差 98%。
+
+   这里只在【打开】时保留毛玻璃, 关闭时摘掉。视觉上零差别: 关闭的面板
+   本来就在屏幕外, 没人看得见它糊不糊。
+   -------------------------------------------------------------------------- */
+.cinema-room-drawer:not(.open),
+.cinema-source-sheet:not(.open),
+.cinema-settings-sheet:not(.open),
+.cinema-episode-sheet:not(.open) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 /* 不支持 webp 的老 WebView 用 jpg 兜底 */
 @supports not (background-image: url('a.webp')) {
   .cinema-room {

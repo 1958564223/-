@@ -36,9 +36,15 @@
   function sample(ms) {
     return new Promise(function (resolve) {
       var gaps = [], last = performance.now(), t0 = last;
+      var kbSeen = 0, kbTicks = 0, focusSeen = '(未聚焦任何输入框)';
       function tick(now) {
         gaps.push(now - last);
         last = now;
+        kbTicks++;
+        var room = document.getElementById('cinema-room');
+        if (room && room.classList.contains('kb-open')) kbSeen++;
+        var a = document.activeElement;
+        if (a && a.tagName === 'INPUT') focusSeen = a.id || 'input';
         if (now - t0 < ms) { requestAnimationFrame(tick); return; }
         gaps.sort(function (a, b) { return a - b; });
         var sum = 0, over = 0;
@@ -49,11 +55,28 @@
           p95: Math.round(gaps[Math.floor(gaps.length * 0.95)] || 0),
           median: Math.round(gaps[Math.floor(gaps.length / 2)] || 0),
           over100: over,
-          busyMs: Math.round(sum)
+          busyMs: Math.round(sum),
+          kbSeen: kbSeen, kbTicks: kbTicks, focusSeen: focusSeen
         });
       }
       requestAnimationFrame(tick);
     });
+  }
+
+  // ---------- 此刻房间里还有哪些元素挂着毛玻璃 ----------
+  function blurCensus() {
+    var room = document.getElementById('cinema-room');
+    if (!room) return ['(房间不在)'];
+    var out = [], all = room.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      var cs = getComputedStyle(all[i]);
+      var bf = cs.backdropFilter || cs.webkitBackdropFilter;
+      if (bf && bf !== 'none') {
+        out.push((all[i].className || all[i].tagName).toString().split(' ')[0] + ' → ' + bf);
+      }
+    }
+    if (!out.length) out.push('(一个都没有)');
+    return out;
   }
 
   // ---------- 把影院里所有 backdrop-filter 摘掉 ----------
@@ -124,7 +147,8 @@
 
   function fmt(tag, r) {
     return tag + ': 最长卡顿=' + r.maxGap + 'ms  p95=' + r.p95 + 'ms' +
-      '  中位=' + r.median + 'ms  >100ms帧数=' + r.over100 + '  帧数=' + r.frames;
+      '  中位=' + r.median + 'ms  >100ms帧数=' + r.over100 + '  帧数=' + r.frames +
+      '\n        kb-open 命中 ' + r.kbSeen + '/' + r.kbTicks + ' 帧, 焦点元素=' + r.focusSeen;
   }
 
   var busy = false;
@@ -135,6 +159,7 @@
     try {
       say(info() + '\n\n① 采样中（现状，5 秒）…\n现在去点聊天输入框！');
       var a = await sample(5000);
+      var censusA = blurCensus();
 
       say(info() + '\n\n① 现状: ' + fmt('', a) +
         '\n② 关掉所有模糊，采样中（5 秒）…\n再点一次聊天输入框');
@@ -146,11 +171,13 @@
       var d = a.maxGap - b.maxGap;
       var verdict = (a.maxGap > 100 && b.maxGap < a.maxGap * 0.6)
         ? '→ 模糊就是主因（关掉后卡顿降到 ' + Math.round((1 - b.maxGap / a.maxGap) * 100) + '%）'
-        : (a.maxGap < 60 ? '→ 桌面/本机本来就不卡，问题在 iOS 特有环节'
-                          : '→ 模糊不是主因，差距不够大');
+        : (a.maxGap < 60 ? '→ 本机本来就不卡, 问题在 iOS 特有环节'
+                          : '→ 模糊不是主因, 差距不够大');
 
       say(info() + '\n\n' + fmt('① 现状', a) + '\n' + fmt('② 无模糊', b) +
         '\n\n最长卡顿差 ' + d + 'ms\n' + verdict +
+        '\n\n① 采样时房间里还挂着的毛玻璃: ' + censusA.join(' / ') +
+        '\n（kb-open 命中 0 帧 = 键盘态那个 class 压根没挂上）' +
         '\n\n（把这个全部复制给我）');
     } catch (e) {
       say('出错了: ' + e.message);

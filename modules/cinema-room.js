@@ -2342,7 +2342,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.24.0';
+  global.__CINEMA_VER = '0.25.0';
 
   global.CinemaRoom = {
     open: open,
