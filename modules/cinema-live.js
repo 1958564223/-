@@ -637,13 +637,47 @@
         '<div class="cinema-plot-text">' + epText + '</div>';
   }
 
+  /**
+   * 本次实际攒下了多少条记忆 (2026-10-07 用户真机截图反馈)
+   *
+   * 症状: 短剧看完一集, 展开面板里明明写着「本次已记 1 集」而且有第1集摘要,
+   *       收起后那行却显示「0 次」, 状态点还是灰的 ⚪。
+   *
+   * 根因: 收起那行读的是 watchSession.summaryCount —— 那是【5 分钟定时摘要】的次数。
+   *       而短剧模式下一集一条是走 watchSession.episodeMemories 的, 根本不经过
+   *       summaryCount。所以短剧攒了 1 集, summaryCount 仍然是 0。
+   *       展开面板里那句「本次已记 N 集」读的是另一个数据源, 两边对不上。
+   *       状态点同理, 只看 currentPlotSummary, 短剧模式下它一直是空的 → 永远灰点。
+   *
+   * 改法: 统一一个"到底记了几条"的口径 —— 短剧看集数, 普通观影看定时摘要次数,
+   *       取两者里更大的那个, 避免任何模式下都显示 0。
+   */
+  function memoryCount() {
+    var eps = (watchSession.episodeMemories || []).length;
+    var timed = watchSession.summaryCount || 0;
+    return Math.max(eps, timed);
+  }
+
+  /** 有短剧集数就用「集」, 没有才用「次」—— 单位跟着数据源走 */
+  function memoryUnit() {
+    return (watchSession.episodeMemories || []).length > 0 ? ' 集' : ' 次';
+  }
+
+  /** 到底有没有记到东西(任一路径算过就算) */
+  function hasAnyMemory() {
+    return !!(watchSession.currentPlotSummary
+      || watchSession.seriesOutline
+      || (watchSession.episodeMemories || []).length
+      || watchSession.summaryCount);
+  }
+
   function buildPlotPanelHtml() {
     var head = 'Gemini 剧情记忆';
     if (!plotPanelOpen) {
-      var dot = watchSession.summaryBusy ? '🟡' : (watchSession.currentPlotSummary ? '🟢' : '⚪');
+      var dot = watchSession.summaryBusy ? '🟡' : (hasAnyMemory() ? '🟢' : '⚪');
       var savedTag = watchSession.finalSummarySaved ? ' · 记忆已存' : '';
       return '<div class="cinema-plot-head">' + dot + ' ' + esc(head) +
-        '<span class="cinema-plot-meta">' + watchSession.summaryCount + ' 次' + esc(savedTag) + ' ▸</div>';
+        '<span class="cinema-plot-meta">' + memoryCount() + memoryUnit() + esc(savedTag) + ' ▸</div>';
     }
 
     var busyHtml = watchSession.summaryBusy
@@ -667,7 +701,11 @@
         '<button class="cinema-plot-btn" data-plot="edit">编辑</button>' +
         '</div>';
     } else {
-      summaryBody = '<div class="cinema-plot-text dim">（还没有剧情摘要，约 5 分钟后生成第一份）</div>';
+      // 短剧是【按集】记忆的, 不是按 5 分钟。照抄普通观影那句"约 5 分钟后生成第一份"
+      // 会让人以为功能没生效(用户真机截图就是被这句 + 「0 次」双重误导)。
+      summaryBody = watchSession.kind === 'series'
+        ? '<div class="cinema-plot-text dim">（短剧按集记忆：每看完一集自动记一条，看下面「本次已记」）</div>'
+        : '<div class="cinema-plot-text dim">（还没有剧情摘要，约 5 分钟后生成第一份）</div>';
     }
 
     var finalHtml = watchSession.finalSummaryText
@@ -682,7 +720,7 @@
       busyHtml +
       (watchSession.kind === 'series' ? buildSeriesHtml() : '') +
       '<div class="cinema-plot-stat">更新 ' + fmtTime(watchSession.summaryUpdatedAt) +
-        ' · 次数 ' + watchSession.summaryCount + '</div>' +
+        ' · 已记 ' + memoryCount() + memoryUnit() + '</div>' +
       '<div class="cinema-plot-label">最终观影记忆</div>' +
       finalHtml +
       '</div>';

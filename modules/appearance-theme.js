@@ -704,6 +704,13 @@
   };
   window.lockScreenState = lockScreenState;
 
+  // 🔴 2026-10-07 定时器泄漏修复
+  // 原来直接 setInterval(updateLockScreenClock, 1000), 句柄没存、也没有 clearInterval。
+  // 而 initLockScreen() 在 init-and-state.js / init-event-bindingsA.js / init-features.js
+  // 三个地方各被调了一次 → 一开页面就有 3 个重复的每秒定时器, 而且永远不清。
+  // 每个都每秒钟做 2 次 getElementById + 2 次 textContent 写入, 无时无刻搅主线程。
+  let lockScreenClockTimer = null;
+
   function initLockScreen() {
     const lockScreen = document.getElementById('lock-screen');
 
@@ -720,8 +727,9 @@
       lockScreen.classList.add('active');
       updateLockScreenClock();
 
-      // 启动锁屏时钟更新
-      setInterval(updateLockScreenClock, 1000);
+      // 启动锁屏时钟更新 (先清掉旧的, 别重复开)
+      if (lockScreenClockTimer) clearInterval(lockScreenClockTimer);
+      lockScreenClockTimer = setInterval(updateLockScreenClock, 1000);
     }
 
     // 绑定设置界面的事件

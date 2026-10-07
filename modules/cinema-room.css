@@ -111,6 +111,38 @@ body.cinema-room-active {
 }
 
 /* --------------------------------------------------------------------------
+   🔴 低性能降级 (2026-10-07)
+
+   毛玻璃的代价完全取决于设备当下的状态:
+     · GPU 正常时, backdrop-filter 几乎不要钱
+     · 手机热降频 / 内存吃紧 → WebKit 退回 CPU 软件光栅化
+       → 同一层模糊慢 10~100 倍
+   这就是为什么"别人新手机没事、我这台 iPhone 11 晚上就卡"
+   —— 不是代码逻辑问题, 是这层模糊对硬件状态极度敏感。
+
+   所以加一个自适应兜底: 掉帧就摘掉全部模糊, 缓过来自动装回去。
+   强机全程不触发, 观感一点不变; 弱机自动降级, 至少不卡死。
+
+   判定逻辑见 cinema-room.js startPerfWatchdog()。
+   -------------------------------------------------------------------------- */
+.cinema-room.perf-low,
+.cinema-room.perf-low * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.cinema-room.perf-low .cinema-chat-panel {
+  background: rgba(22, 15, 12, .96);
+}
+.cinema-room.perf-low .cinema-room-drawer {
+  background: #18100d;
+}
+.cinema-room.perf-low .cinema-source-sheet,
+.cinema-room.perf-low .cinema-settings-sheet,
+.cinema-room.perf-low .cinema-episode-sheet {
+  background: #160f0c;
+}
+
+/* --------------------------------------------------------------------------
    🔴 关闭状态的面板: 毛玻璃只在该【真的看得见】的时候才挂 (2026-10-07)
 
    这四个面板关闭时都是靠 transform 移出可视区(侧边/下方), 不是 display:none,
@@ -518,7 +550,10 @@ body.cinema-room-active {
   padding: 0 9px 0 8px;
   border-radius: 999px;
   border: 1px solid rgba(216, 168, 116, .30);
-  background: rgba(28, 19, 15, .66);
+  /* 2026-10-07: 原来这层是 .66 半透明 + backdrop-filter: blur(12px),
+     靠模糊撑住"不糊"的可读性。全屋毛玻璃删干净后这里补实到 .88,
+     按钮依然能看清后面的房间, 但不再需要 GPU 去算模糊。 */
+  background: rgba(28, 19, 15, .88);
   color: #f0e3d4;
   font-family: inherit;
   font-size: 12px;
@@ -526,8 +561,6 @@ body.cinema-room-active {
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   box-shadow: 0 2px 10px rgba(0, 0, 0, .45);
 }
 
@@ -598,8 +631,6 @@ body.cinema-room-active {
   flex-direction: column;
   color: #f0e3d4;
   background: rgba(24, 16, 13, .93);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
   border-left: 1px solid rgba(216, 168, 116, .20);
   box-shadow: -14px 0 46px rgba(0, 0, 0, .6);
   transform: translateX(100%);
@@ -783,9 +814,22 @@ body.cinema-room-active {
   flex-direction: column;
   z-index: 6;
   color: #f0e3d4;
-  background: rgba(22, 15, 12, .72);
-  backdrop-filter: blur(22px) saturate(1.2);
-  -webkit-backdrop-filter: blur(22px) saturate(1.2);
+  /* 🔴 2026-10-07 去掉这块的 backdrop-filter。
+   *
+   *   真机实测 (iPhone 11): 带这层模糊, 键盘弹出瞬间主线程单帧阻塞 4509ms;
+   *   关掉全屋模糊 → 93ms。差 98%, 毛玻璃就是唯一元凶。
+   *
+   *   为什么这块最该先砍:
+   *     ① 它是【最大】的一层 —— 盖住整个视频区下半屏
+   *     ② 它【本来就没多少观感】—— 底下压着 72% 不透明的深色底,
+   *        blur 在那后面基本看不出来, 白花 iOS 的 GPU 钱
+   *     ③ 键盘一弹房间就 resize, 它就要重新采样一次背景 —— 一次 4.5 秒
+   *
+   *   所以: 模糊去掉, 不透明度 .72 → .94 补回来。
+   *   肉眼看过去几乎没区别(反正模糊在 72% 底色后面就看不清),
+   *   但这一层的成本直接归零。
+   *   其余几层(面板类)只在【打开】时才挂模糊, 关闭时零成本。 */
+  background: rgba(22, 15, 12, .94);
   border-top: 1px solid rgba(216, 168, 116, .26);
   border-radius: 18px 18px 0 0;
   box-shadow: 0 -12px 40px rgba(0, 0, 0, .55);
@@ -913,8 +957,6 @@ body.cinema-room-active {
   flex-direction: column;
   color: #f0e3d4;
   background: rgba(22, 15, 12, .97);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
   border-top: 1px solid rgba(216, 168, 116, .26);
   border-radius: 18px 18px 0 0;
   box-shadow: 0 -14px 44px rgba(0, 0, 0, .7);
@@ -1179,8 +1221,6 @@ body.cinema-room-active {
   padding: 10px 12px;
   border-radius: 14px;
   background: rgba(22, 15, 12, .92);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
   border: 1px solid rgba(216, 168, 116, .34);
   box-shadow: 0 10px 30px rgba(0, 0, 0, .6);
 }
@@ -1449,8 +1489,6 @@ body.cinema-room-active {
   flex-direction: column;
   color: #f0e3d4;
   background: rgba(22, 15, 12, .97);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
   border-top: 1px solid rgba(216, 168, 116, .26);
   border-radius: 18px 18px 0 0;
   box-shadow: 0 -14px 44px rgba(0, 0, 0, .7);
@@ -1599,8 +1637,6 @@ body.cinema-room-active {
   flex-direction: column;
   color: #f0e3d4;
   background: rgba(22, 15, 12, .97);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
   border-top: 1px solid rgba(216, 168, 116, .26);
   border-radius: 18px 18px 0 0;
   box-shadow: 0 -14px 44px rgba(0, 0, 0, .7);

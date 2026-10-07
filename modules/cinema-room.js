@@ -363,6 +363,7 @@
     };
     bindEvents();
     initKeyboardMode();
+    startPerfWatchdog();
     return els;
   }
 
@@ -417,6 +418,46 @@
         if (!isTextField(document.activeElement)) setKeyboardMode(false);
       }, 350);
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // 低性能看门狗: 掉帧就把面板底色压实, 缓过来自动还原
+  //
+  // 背景 (2026-10-07):
+  //   全屋 backdrop-filter 已经删干净了(真机实测那 6 层模糊 = 4509ms 的唯一元凶)。
+  //   这里保留一个更轻的兜底: 设备吃力时把几个面板的底色再压实一点,
+  //   没有模糊兜着的时候字更清楚, 相当于弱机版的"可读性保险"。
+  //
+  //   阈值刻意保守: 120ms 算一次"卡", 累计 250ms 才降级。
+  //   宁可晚点降级, 也不要因为偶发一下就牺牲观感。
+  // --------------------------------------------------------------------------
+  function startPerfWatchdog() {
+    if (!els || !els.root || els.root.__perfWatch) return;
+    els.root.__perfWatch = true;
+
+    var low = false;
+    var gapSum = 0;      // 累计卡顿
+    var last = 0;        // 上一次心跳
+
+    function tick() {
+      var now = performance.now();
+      if (last) {
+        var gap = now - last - 1000;   // 减去 1 秒的正常等待
+        if (gap > 120) gapSum += gap;
+        else gapSum = Math.max(0, gapSum * 0.6);   // 流畅了就快速回落
+      }
+      last = now;
+
+      if (!low && gapSum > 250) {
+        low = true;
+        els.root.classList.add('perf-low');
+      } else if (low && gapSum < 40) {
+        low = false;
+        els.root.classList.remove('perf-low');
+      }
+      setTimeout(tick, 1000);
+    }
+    setTimeout(tick, 1000);
   }
 
   // --------------------------------------------------------------------------
@@ -2342,7 +2383,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.25.0';
+  global.__CINEMA_VER = '0.26.0';
 
   global.CinemaRoom = {
     open: open,

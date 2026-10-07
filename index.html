@@ -200,7 +200,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 2026-09-30 TTS 表达层: [[语音:emotion]] 解析 + MiniMax 2.8-HD interjection 白名单 -->
   <script src="modules/tts-expression.js?v=0.0.3" defer></script>
   <script src="modules/tts-audio.js?v=0.0.44" defer></script>
-  <script src="modules/appearance-theme.js?v=0.0.86" defer></script>
+  <script src="modules/appearance-theme.js?v=0.0.87" defer></script>
   <script src="modules/hot-news.js?v=0.1.2" defer></script>
   <script src="modules/runtime-diagnostics.js?v=0.0.38" defer></script>
   <!-- Gemini 3.8 Live 纯协议层 (无 DOM)。Cinema Room 与已删除的旧观影共用这一份。必须在 init-features.js 之前加载。 -->
@@ -252,14 +252,11 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 图片压缩 (2026-10-05): 上传房间背景时把 3~5MB 的 iPhone 照片压到 ~100KB。
        必须在 cinema-room.js 之前 —— 它在加载时就要拿到 window.CinemaImage。 -->
   <script src="modules/cinema-img.js?v=1.0.1" defer></script>
-  <script src="modules/cinema-room.js?v=0.25.0" defer></script>
-  <link rel="stylesheet" href="modules/cinema-room.css?v=0.23.0">
-  <!-- 影院性能探针 (2026-10-07): 临时加的, 自己跑 A/B 对比找出 iOS 卡顿真凶。
-       纯读性能指标 + 临时改 CSS, 不碰业务逻辑, 刷新即恢复。查完可以删。 -->
-  <script src="modules/cinema-perf-probe.js?v=1.1.0" defer></script>
+  <script src="modules/cinema-room.js?v=0.26.0" defer></script>
+  <link rel="stylesheet" href="modules/cinema-room.css?v=0.24.0">
   <!-- Cinema Room 的 Gemini 3.8 Live 桥接层 (协议层仍是 live-client.js)。
        必须在 cinema-room.js 之后加载 —— cinema-room.js 打开房间时才会调它。 -->
-  <script src="modules/cinema-live.js?v=1.1.2" defer></script>
+  <script src="modules/cinema-live.js?v=1.1.3" defer></script>
   <!-- 主入口（最后加载，调用 init） -->
   <script src="modules/init-and-state.js?v=0.0.83" defer></script>
   <!-- 第九层：DOMContentLoaded 外部的独立模块 -->
