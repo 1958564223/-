@@ -1,9 +1,9 @@
-// Service Worker (sw.js)
+﻿// Service Worker (sw.js)
 // 白名单缓存: 只缓存已知静态资源, API 请求 pass-through
 // CACHE_VERSION bump 强制清缓存
 // 关键约束: URLS_TO_CACHE 增删需同步 sw.js 注释 + ?v= 版本号
 
-const CACHE_VERSION = 'v0.2.32.4';
+const CACHE_VERSION = 'v0.2.32.5';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

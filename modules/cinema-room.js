@@ -1061,8 +1061,25 @@
     if (!url) { setSeriesState('还没填地址。先在电脑上跑起来，然后填上面的地址。', 'warn'); return Promise.resolve(false); }
 
     setSeriesState('连接中…');
-    return fetch(seriesApi('/api/library'), { cache: 'no-store' })
+
+    // 🔴 2026-10-07 用户实测「一直显示连接中, 也不连, 也不结束让人重新连」。
+    //
+    //   原因: fetch 没有超时。iOS 18+ 的私有网络访问预检被卡住时,
+    //   浏览器【既不 resolve 也不 reject】—— 它就在那儿挂着。
+    //   于是 setSeriesState('连接中…') 永远不变, 用户既等不到结果,
+    //   也点不了「重试」。这不是加载慢, 是请求永远不会结束。
+    //
+    //   修法: AbortController + 12 秒超时。超了就明确报错, 让用户能重来。
+    //   (服务端侧还补了 Access-Control-Allow-Private-Network, 见 server.mjs)
+    var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 12000) : null;
+
+    var opts = { cache: 'no-store' };
+    if (ctrl) opts.signal = ctrl.signal;
+
+    return fetch(seriesApi('/api/library'), opts)
       .then(function (r) {
+        if (timer) clearTimeout(timer);
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       })
@@ -1076,8 +1093,18 @@
       })
       .catch(function (err) {
         seriesLibrary = null;
-        setSeriesState('连不上：' + err.message +
-          '  —— 确认电脑开着、连同一个 WiFi、地址对。', 'err');
+        if (timer) clearTimeout(timer);
+        // 超时和网络失败要分开说 —— iOS 弹过「允许访问本地网络」被拒绝时
+        // 也表现为连不上, 但那是权限问题, 让人重试没用, 得让他去设置里开。
+        var msg = (err && err.name === 'AbortError')
+          ? '连接超时（12 秒没回应）。'
+            + '\n如果是第一次用，iOS 可能弹过「允许访问本地网络」—— 没看到或点了拒绝的话，'
+            + '去 设置 → 无线局域网 → 找到这个 WiFi 旁边的小字，点「允许」。'
+            + '顺便确认：电脑开着、短剧服务窗口没关、手机连的是同一个 WiFi。'
+          : '连不上：' + (err && err.message || err) +
+            '\n确认电脑开着、短剧服务窗口没关、手机连同一个 WiFi、地址对。'
+            + '\n（iOS 第一次访问局域网设备会问「允许访问本地网络」，要选允许。）';
+        setSeriesState(msg, 'err');
         return false;
       });
   }
@@ -2257,6 +2284,11 @@
   // --------------------------------------------------------------------------
   // 对外接口
   // --------------------------------------------------------------------------
+
+  // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
+  // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
+  // 每次改动影院都顺手改这里。
+  global.__CINEMA_VER = '0.23.0-probe';
 
   global.CinemaRoom = {
     open: open,

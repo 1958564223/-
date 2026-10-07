@@ -252,8 +252,11 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 图片压缩 (2026-10-05): 上传房间背景时把 3~5MB 的 iPhone 照片压到 ~100KB。
        必须在 cinema-room.js 之前 —— 它在加载时就要拿到 window.CinemaImage。 -->
   <script src="modules/cinema-img.js?v=1.0.1" defer></script>
-  <script src="modules/cinema-room.js?v=0.22.3" defer></script>
+  <script src="modules/cinema-room.js?v=0.23.1" defer></script>
   <link rel="stylesheet" href="modules/cinema-room.css?v=0.21.0">
+  <!-- 影院性能探针 (2026-10-07): 临时加的, 自己跑 A/B 对比找出 iOS 卡顿真凶。
+       纯读性能指标 + 临时改 CSS, 不碰业务逻辑, 刷新即恢复。查完可以删。 -->
+  <script src="modules/cinema-perf-probe.js?v=1.0.0" defer></script>
   <!-- Cinema Room 的 Gemini 3.8 Live 桥接层 (协议层仍是 live-client.js)。
        必须在 cinema-room.js 之后加载 —— cinema-room.js 打开房间时才会调它。 -->
   <script src="modules/cinema-live.js?v=1.1.2" defer></script>
