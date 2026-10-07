@@ -760,21 +760,6 @@
       if (!isDragging) return;
       isDragging = false;
 
-      // 保存观影对话框的位置
-      if (windowEl.id === 'watch-together-chat-float' && watchTogetherState.isActive && watchTogetherState.chatId) {
-        const chat = state.chats[watchTogetherState.chatId];
-        if (chat) {
-          if (!chat.watchTogetherSettings) {
-            chat.watchTogetherSettings = {};
-          }
-          chat.watchTogetherSettings.position = {
-            top: windowEl.style.top,
-            left: windowEl.style.left
-          };
-          saveChatsToIndexedDB();
-        }
-      }
-
       if (!hasMoved) {
 
         windowEl.click();

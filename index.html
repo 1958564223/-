@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -9,7 +9,7 @@
   <title>EPhone</title>
   <!-- 从 style.css 拆分出的模块（共13块） -->
   <link rel="stylesheet" href="css/base.css?v=0.0.41">
-  <link rel="stylesheet" href="css/chat-ui.css?v=0.0.36">
+  <link rel="stylesheet" href="css/chat-ui.css?v=0.0.37">
   <link rel="stylesheet" href="css/image-nai.css?v=0.0.36">
   <link rel="stylesheet" href="css/memory.css?v=0.0.36">
   <link rel="stylesheet" href="css/music-player.css?v=0.0.37">
@@ -172,7 +172,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/video-voice-call.js?v=0.0.76" defer></script>
   <script src="modules/message-actions.js?v=0.0.36" defer></script>
   <script src="modules/nai-imagen.js?v=0.0.36" defer></script>
-  <script src="modules/backup-import-export.js?v=0.0.37" defer></script>
+  <script src="modules/backup-import-export.js?v=0.0.38" defer></script>
   <script src="modules/settings-presets.js?v=0.0.89" defer></script>
   <script src="modules/chat-settings-presets.js?v=0.0.36" defer></script>
   <script src="modules/shopping.js?v=0.0.36" defer></script>
@@ -187,7 +187,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/cphone.js?v=0.0.36" defer></script>
   <script src="modules/myphone.js?v=0.0.36" defer></script>
   <script src="modules/werewolf.js?v=0.0.36" defer></script>
-  <script src="modules/reading-room.js?v=0.0.37" defer></script>
+  <script src="modules/reading-room.js?v=0.0.38" defer></script>
 
   <!-- 第七层：其余功能 -->
   <script src="api-config.js?v=0.0.36" defer></script>
@@ -203,9 +203,8 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="modules/appearance-theme.js?v=0.0.86" defer></script>
   <script src="modules/hot-news.js?v=0.1.2" defer></script>
   <script src="modules/runtime-diagnostics.js?v=0.0.38" defer></script>
-  <!-- Gemini 3.8 Live: live-client.js 纯协议层(无 DOM) + watch-together-live.js 桥接层(抽帧/UI)。必须在 init-features.js 之前加载。 -->
+  <!-- Gemini 3.8 Live 纯协议层 (无 DOM)。Cinema Room 与已删除的旧观影共用这一份。必须在 init-features.js 之前加载。 -->
   <script src="modules/live-client.js?v=0.4.0" defer></script>
-  <script src="modules/watch-together-live.js?v=0.4.2" defer></script>
   <script src="modules/notification-battery.js?v=0.0.49" defer></script>
   <script src="modules/background-activity.js?v=0.0.49" defer></script>
   <script src="modules/proactive-wake.js?v=0.2.15" defer></script>      
@@ -215,13 +214,13 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <link rel="stylesheet" href="css/proactive-wake.css?v=0.2.01">
   <script src="modules/card-import.js?v=0.0.36" defer></script>
   <script src="modules/character-export.js?v=0.0.36" defer></script>
-  <script src="modules/data-management.js?v=0.0.36" defer></script>
-  <script src="modules/misc-features.js?v=0.0.42" defer></script>
+  <script src="modules/data-management.js?v=0.0.37" defer></script>
+  <script src="modules/misc-features.js?v=0.0.43" defer></script>
   <script src="modules/system-settings-home.js?v=0.0.37" defer></script>
   <!-- 第八层：初始化（必须在所有模块之后） -->
   <!-- 数据定义（无依赖） -->
   <script src="modules/init-avatar-frames.js?v=0.0.36" defer></script>
-  <script src="modules/init-db-schema.js?v=0.0.38" defer></script>
+  <script src="modules/init-db-schema.js?v=0.0.39" defer></script>
   <script src="modules/live2d-config.js?v=0.0.1" defer></script>
   <script src="modules/live2d-uploader.js?v=0.0.1" defer></script>
   <script src="modules/live2d-storage.js?v=0.0.1" defer></script>
@@ -244,19 +243,20 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 事件绑定和功能（依赖 state, db） -->
   <script src="modules/init-event-bindingsA.js?v=0.0.48" defer></script>
   <script src="modules/init-event-bindingsB.js?v=0.0.40" defer></script>
-  <script src="modules/init-features.js?v=0.0.43" defer></script>
-  <!-- Cinema Room (v0.1.0, 2026-10-04 第一阶段): 全新独立房间模块, 与旧「一起看电影」并存互不影响。
-       旧观影 + Gemini Live 桥接 (watch-together-live.js / live-client.js) 一行未改。
+  <script src="modules/init-features.js?v=0.0.44" defer></script>
+  <!-- Cinema Room (v0.1.0, 2026-10-04 第一阶段): 家庭影院模块。
+       旧「一起看电影」已于 2026-10-07 整体删除(代码+入口), 只保留本模块。
+       Gemini 协议层仍是 live-client.js (与旧观影共用过, 现为影院独占)。
        顺序要求: cinema-storage.js 必须在前 —— cinema-room.js 在加载时就捕获了 window.CinemaStorage 引用。 -->
   <script src="modules/cinema-storage.js?v=0.3.0" defer></script>
   <!-- 图片压缩 (2026-10-05): 上传房间背景时把 3~5MB 的 iPhone 照片压到 ~100KB。
        必须在 cinema-room.js 之前 —— 它在加载时就要拿到 window.CinemaImage。 -->
   <script src="modules/cinema-img.js?v=1.0.1" defer></script>
-  <script src="modules/cinema-room.js?v=0.20.0" defer></script>
-  <link rel="stylesheet" href="modules/cinema-room.css?v=0.20.0">
-  <!-- Cinema Room 的 Gemini 3.8 Live 桥接层 (迁移自 watch-together-live.js, 协议层仍是 live-client.js)。
+  <script src="modules/cinema-room.js?v=0.22.1" defer></script>
+  <link rel="stylesheet" href="modules/cinema-room.css?v=0.21.0">
+  <!-- Cinema Room 的 Gemini 3.8 Live 桥接层 (协议层仍是 live-client.js)。
        必须在 cinema-room.js 之后加载 —— cinema-room.js 打开房间时才会调它。 -->
-  <script src="modules/cinema-live.js?v=1.0.8" defer></script>
+  <script src="modules/cinema-live.js?v=1.1.1" defer></script>
   <!-- 主入口（最后加载，调用 init） -->
   <script src="modules/init-and-state.js?v=0.0.83" defer></script>
   <!-- 第九层：DOMContentLoaded 外部的独立模块 -->
@@ -3802,11 +3802,6 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
     </svg>
-</button> <button id="open-watch-together-btn" class="chat-action-icon-btn action-button" title="一起看电影">
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="7" width="20" height="15" rx="2" ry="2"></rect>
-        <polyline points="17 2 12 7 7 2"></polyline>
-    </svg>
 </button> <button id="stop-api-call-btn" class="chat-action-icon-btn action-button" title="暂停调用" style="display: none;"> <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"></circle>
               <rect x="9" y="8" width="2" height="8" rx="1" fill="currentColor"></rect>
@@ -4584,7 +4579,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
           class="control-btn join-btn" style="display: none;"></button> </div>
 
       <!-- 模型管理面板 — 视频通话页面内浮层, 默认隐藏
-           复用项目通用 .modal 模式 (跟 watch-together-*-modal 同一套), toggle visible 显示 -->
+           复用项目通用 .modal 模式, toggle visible 显示 -->
       <div id="model-management-panel" class="modal model-management-panel">
         <div class="modal-content model-management-content">
           <div class="modal-header model-management-header">
@@ -6922,163 +6917,6 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <div id="truth-game-float-ball" style="display: none;">
     <img id="truth-game-float-avatar" src="" alt="角色头像">
     <div id="truth-game-float-indicator"></div>
-  </div>
-  <div id="watch-together-modal" class="modal">
-    <div id="watch-together-container">
-      <div id="watch-together-header">
-        <span style="font-size: 16px; font-weight: 500;">一起看电影</span>
-        <div style="display: flex; gap: 10px; align-items: center;">
-          <button id="watch-together-playlist-btn" style="font-size: 16px;">播放列表</button>
-          <button id="watch-together-settings-btn" style="font-size: 16px;">设置</button>
-          <button id="watch-together-upload-btn" style="font-size: 20px; font-weight: bold;">+</button>
-          <button id="close-watch-together-btn" style="font-size: 24px;">×</button>
-        </div>
-      </div>
-      <div id="watch-together-main">
-        <div id="watch-together-video-container">
-          <video id="watch-together-video" controls></video>
-          <div id="watch-together-placeholder">
-            <p>点击右上角"+"上传视频开始观看</p>
-          </div>
-        </div>
-        <div id="watch-together-chat-float">
-          <div id="watch-together-chat-header">
-            <span id="watch-together-chat-name"></span>
-            <button id="watch-together-chat-toggle">-</button>
-          </div>
-          <div id="watch-together-chat-messages"></div>
-          <div id="watch-together-chat-input-area">
-            <textarea id="watch-together-chat-input" rows="1" placeholder="输入消息..."></textarea>
-            <button id="watch-together-chat-send">发送</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div id="watch-together-upload-modal" class="modal" style="z-index: 10001;">
-    <div class="modal-content" style="width: 400px; height: auto;">
-      <div class="modal-header">
-        <span>上传视频</span>
-      </div>
-      <div class="modal-body" style="padding: 20px;">
-        <div style="display: flex; flex-direction: column; gap: 15px;">
-          <button id="watch-together-upload-local" style="padding: 15px; background: #fff; border: 1px solid #d0d0d0; border-radius: 4px; cursor: pointer; font-size: 14px;">本地上传</button>
-          <button id="watch-together-upload-url" style="padding: 15px; background: #fff; border: 1px solid #d0d0d0; border-radius: 4px; cursor: pointer; font-size: 14px;">URL上传</button>
-          <button id="watch-together-search-online" style="padding: 15px; background: #fff; border: 1px solid #d0d0d0; border-radius: 4px; cursor: pointer; font-size: 14px;">在线搜索影视</button>
-        </div>
-        <input type="file" id="watch-together-file-input" accept="video/*" style="display: none;">
-      </div>
-      <div class="modal-footer">
-        <button class="cancel" id="cancel-watch-together-upload-btn">取消</button>
-      </div>
-    </div>
-  </div>
-  <div id="watch-together-url-modal" class="modal" style="z-index: 10001;">
-    <div class="modal-content" style="width: 450px; height: auto;">
-      <div class="modal-header">
-        <span>输入视频URL</span>
-      </div>
-      <div class="modal-body" style="padding: 20px;">
-        <input type="text" id="watch-together-url-input" placeholder="输入视频URL..." style="width: 100%; padding: 10px; border: 1px solid #d0d0d0; border-radius: 4px; font-size: 14px;">
-      </div>
-      <div class="modal-footer">
-        <button class="cancel" id="cancel-watch-together-url-btn">取消</button>
-        <button class="save" id="confirm-watch-together-url-btn">确定</button>
-      </div>
-    </div>
-  </div>
-  <div id="watch-together-search-modal" class="modal" style="z-index: 10002;">
-    <div class="modal-content" style="width: 800px; height: 600px; max-width: 90vw; max-height: 90vh;">
-      <div class="modal-header">
-        <span>在线搜索影视</span>
-      </div>
-      <div class="modal-body" style="padding: 20px; display: flex; flex-direction: column; height: calc(100% - 100px);">
-        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-          <input type="text" id="watch-together-search-input" placeholder="输入影片名称搜索..." style="flex: 1; padding: 10px; border: 1px solid #d0d0d0; border-radius: 4px; font-size: 14px;">
-          <button id="watch-together-search-btn" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500;">搜索</button>
-        </div>
-        <div id="watch-together-search-status" style="margin-bottom: 10px; color: #666; font-size: 13px; min-height: 20px;"></div>
-        <div id="watch-together-search-results" style="flex: 1; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 4px; padding: 10px;">
-          <div style="text-align: center; color: #999; padding: 40px;">在上方输入影片名称开始搜索</div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="cancel" id="cancel-watch-together-search-btn">取消</button>
-      </div>
-    </div>
-  </div>
-  <div id="watch-together-playlist-modal" class="modal" style="z-index: 10001;">
-    <div class="modal-content" style="width: 600px; max-width: 90vw; height: 70vh;">
-      <div class="modal-header">
-        <span>播放列表</span>
-        <button id="close-watch-together-playlist-btn" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #666;">×</button>
-      </div>
-      <div class="modal-body" style="padding: 15px; overflow-y: auto;">
-        <div id="watch-together-playlist-list" style="display: flex; flex-direction: column; gap: 10px;">
-          <p style="text-align: center; color: #999; padding: 40px;">暂无视频，上传视频后可保存到列表</p>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="cancel" id="cancel-watch-together-playlist-btn">关闭</button>
-      </div>
-    </div>
-  </div>
-  <div id="watch-together-save-video-modal" class="modal" style="z-index: 10002;">
-    <div class="modal-content" style="width: 400px; height: auto;">
-      <div class="modal-header">
-        <span>保存视频到播放列表</span>
-      </div>
-      <div class="modal-body" style="padding: 20px;">
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; font-size: 14px; color: #333;">视频名称</label>
-          <input type="text" id="watch-together-video-name-input" placeholder="输入视频名称..." style="width: 100%; padding: 10px; border: 1px solid #d0d0d0; border-radius: 4px; font-size: 14px;">
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="cancel" id="cancel-save-video-btn">取消</button>
-        <button class="save" id="confirm-save-video-btn">保存</button>
-      </div>
-    </div>
-  </div>
-  <div id="watch-together-settings-modal" class="modal" style="z-index: 10001;">
-    <div class="modal-content" style="width: 450px; height: auto;">
-      <div class="modal-header">
-        <span>观影设置</span>
-      </div>
-      <div class="modal-body" style="padding: 20px;">
-        <div class="form-group" style="margin-bottom: 20px;">
-          <label style="display: block; margin-bottom: 8px; font-size: 14px; color: #333;">聊天模式</label>
-          <select id="watch-together-mode-select" style="width: 100%; padding: 8px; border: 1px solid #d0d0d0; border-radius: 4px;">
-            <option value="online">线上模式（AI可发送多条消息）</option>
-            <option value="offline">线下模式（单条长文本）</option>
-          </select>
-          <p style="font-size: 12px; color: #999; margin-top: 5px;">线上模式类似普通聊天，AI可以发送多条消息；线下模式AI只发送一条完整回复</p>
-        </div>
-        <div class="form-group" style="margin-bottom: 20px;">
-          <label style="display: block; margin-bottom: 8px; font-size: 14px; color: #333;">Gemini Live API Key</label>
-          <input type="text" id="watch-together-gemini-key" placeholder="AIza..." autocomplete="off" style="width: 100%; padding: 8px; border: 1px solid #d0d0d0; border-radius: 4px;">
-          <p style="font-size: 12px; color: #999; margin-top: 5px;">
-            用你自己的 Google AI Studio key。存在本机浏览器里，不上传任何服务器，用谁的算谁的。<br>
-            免费领取：<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:#667eea;">aistudio.google.com/apikey</a>（AIza 开头，不是 sk- 开头那种）
-          </p>
-        </div>
-        </div>
-        <div class="form-group" style="margin-bottom: 20px;">
-          <label style="display: block; margin-bottom: 8px; font-size: 14px; color: #333;">记住最近对话条数</label>
-          <input type="number" id="watch-together-max-messages" min="5" max="100" value="20" style="width: 100%; padding: 8px; border: 1px solid #d0d0d0; border-radius: 4px;">
-          <p style="font-size: 12px; color: #999; margin-top: 5px;">AI能记住的最近对话记录数量，超出部分将被删除</p>
-        </div>
-        <div class="form-group" style="margin-bottom: 20px;">
-          <label style="display: block; margin-bottom: 8px; font-size: 14px; color: #333;">对话框位置</label>
-          <button id="reset-watch-together-position-btn" style="width: 100%; padding: 10px; background: #5a9fd4; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">重置位置</button>
-          <p style="font-size: 12px; color: #999; margin-top: 5px;">如果对话框被拖到屏幕外，点击此按钮可恢复到默认位置</p>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="cancel" id="cancel-watch-together-settings-btn">取消</button>
-        <button class="save" id="save-watch-together-settings-btn">保存</button>
-      </div>
-    </div>
   </div>
   <div id="group-management-modal" class="modal">
     <div class="modal-content" style="height: 60%;">

@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // backup-import-export.js — 备份导入导出 + 数据分布统计
 // 从 script.js 拆分（原始行范围：6093~6974 + 54517~55595）
 // ============================================================
@@ -441,8 +441,7 @@
         funds,
         auctions,
         inventory,
-        emails,
-        watchTogetherPlaylist
+        emails
       ] = await Promise.all([
         db.chats.toArray(),
         db.worldBooks.toArray(),
@@ -490,8 +489,7 @@
         db.funds.toArray(),
         db.auctions.toArray(),
         db.inventory.toArray(),
-        db.emails.toArray(),
-        db.watchTogetherPlaylist.toArray()
+        db.emails.toArray()
       ]);
 
       // 方案3：导出时移除API历史记录
@@ -548,7 +546,6 @@
         auctions,
         inventory,
         emails,
-        watchTogetherPlaylist,
 
         // 扩展设置 localStorage 数据 (情侣空间/悬浮球/生图/MCP 等)
         localStorage: extraLocalStorage
@@ -667,7 +664,6 @@
         auctions: '拍卖',
         inventory: '背包',
         emails: '邮件',
-        watchTogetherPlaylist: '观影播放列表'
       };
 
       // 统计各表数据
@@ -957,7 +953,6 @@
       'auctions': '拍卖记录',
       'inventory': '物品清单',
       'emails': '邮件',
-      'watchTogetherPlaylist': '观影播放列表',
       'localStorage': '扩展设置（情侣空间/悬浮球/生图/MCP 等）'
     };
 
@@ -994,6 +989,16 @@
     };
     document.getElementById('confirm-selective-import-btn').onclick = () => {
       modal.classList.remove('visible');
+      // 2026-10-07: 显式关掉 confirm overlay。这条链路上游跑过
+      // showCustomConfirm / showCustomAlert(如 handleFullImport 的「严重警告」),
+      // 那些弹窗共用 #custom-modal-overlay。若这里只关自己就打开下一步,
+      // 残留的 confirm 黑罩会整个盖住 selective-import-modal,
+      // 表现为「点了选择导入没反应, 关掉上一步才看见」。
+      if (typeof window.hideCustomModal === 'function') {
+        window.hideCustomModal();
+      } else {
+        document.getElementById('custom-modal-overlay')?.classList.remove('visible');
+      }
       openSelectiveImportModal(pendingBackupData.content);
     };
     document.getElementById('cancel-import-options-btn').onclick = () => {
@@ -1118,7 +1123,6 @@
       'auctions': '拍卖记录',
       'inventory': '物品清单',
       'emails': '邮件',
-      'watchTogetherPlaylist': '观影播放列表',
       'localStorage': '扩展设置（情侣空间/悬浮球/生图/MCP 等）'
     };
 
@@ -1160,7 +1164,14 @@
     }
 
 
-    document.getElementById('confirm-merge-import-btn').onclick = () => handleSelectiveImport(pendingBackupData);
+    // 2026-10-07: 点确认合并时必须先关掉「选择要合并的数据」这一层。
+// handleSelectiveImport 内部会 showCustomConfirm, 而本层 .modal 的 z-index
+// 高于 confirm overlay —— 不关掉的话 confirm 被压在本层下面看不见,
+// 表现成「点了确认合并没反应, 关掉选择框它才冒出来」。
+document.getElementById('confirm-merge-import-btn').onclick = () => {
+      modal.classList.remove('visible');
+      handleSelectiveImport(pendingBackupData);
+    };
     document.getElementById('cancel-selective-import-btn').onclick = () => {
       modal.classList.remove('visible');
       pendingBackupData = null;
@@ -1335,7 +1346,6 @@
         if (Array.isArray(backupData.auctions)) await db.auctions.bulkPut(backupData.auctions);
         if (Array.isArray(backupData.inventory)) await db.inventory.bulkPut(backupData.inventory);
         if (Array.isArray(backupData.emails)) await db.emails.bulkPut(backupData.emails);
-        if (Array.isArray(backupData.watchTogetherPlaylist)) await db.watchTogetherPlaylist.bulkPut(backupData.watchTogetherPlaylist);
       });
       
       // 3. 如果备份中有 localStorage 数据，则恢复
@@ -1697,7 +1707,6 @@
       '世界书与预设': ['worldBooks', 'worldBookCategories', 'presets', 'presetCategories', 'personaPresets'],
       'API与配置': ['apiConfig', 'apiPresets', 'soundPresets', 'globalSettings', 'renderingRules', 'naiPresets'],
       '贴纸与表情': ['userStickers', 'stickerCategories', 'stickerVisionCache', 'customAvatarFrames'],
-      '音乐与媒体': ['musicLibrary', 'readingLibrary', 'watchTogetherPlaylist'],
       '记忆与记录': ['memories', 'callRecords', 'favorites'],
       '商城与物品': ['shoppingProducts', 'shoppingCategories', 'inventory', 'auctions'],
       '金融系统': ['userWallet', 'userTransactions', 'funds'],

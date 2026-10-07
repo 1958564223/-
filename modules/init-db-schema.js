@@ -69,10 +69,12 @@ db.version(51).stores({
   });
 });
 
-// 观影播放列表
-db.version(52).stores({
-  watchTogetherPlaylist: '++id, name, timestamp'
-});
+// 观影播放列表: 旧「一起看电影」已于 2026-10-07 连代码带表一起删除。
+// 家庭影院请用 Cinema Room 的 cinemaFilms / cinemaBlobs / cinemaProgress。
+//
+// ⚠️ Dexie 删表的写法是在【更高版本】的 upgrade 里把该表设成 null ——
+// 只从 .stores() 里删掉名字是没用的, 老库里的表会一直留在磁盘上。
+// 下面这个版本专干这件事, 不要删。
 
 // 月经记录相关表
 db.version(53).stores({
@@ -220,6 +222,17 @@ db.version(65).stores({
 // ⚠️ 必须存 Blob 不能转 base64 —— 理由跟 cinemaBlobs 一样, base64 会撑爆内存。
 db.version(66).stores({
   cinemaChars: '&id, updatedAt'                      // { id:'left'|'right', image: Blob, updatedAt }
+});
+
+// 删表: 旧「一起看电影」的观影播放列表 (2026-10-07)
+//
+// 为什么必须专门写一个版本 —— Dexie 里【只从 .stores() 删掉名字是没用的】,
+// 老库的对象仓库会一直留在磁盘上。要真删, 得在更高版本里把名字设成 null。
+//
+// ⚠️ 里面的数据是当年 readAsDataURL 存进去的 base64 影片 (本文件下方注释
+// 记的那个 32MB 内存崩溃), 手机上可能占不少空间, 删掉是好事。
+db.version(67).stores({
+  watchTogetherPlaylist: null
 });
 
 window.db = db;

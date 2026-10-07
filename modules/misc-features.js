@@ -2959,7 +2959,6 @@
 
     'read-together-btn',
     'open-truth-game-btn',
-    'open-watch-together-btn',
     'open-todo-list-btn',
     'open-quick-reply-btn',
     'narration-btn',

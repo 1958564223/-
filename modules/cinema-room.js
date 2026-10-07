@@ -159,6 +159,27 @@
     '      <div class="cinema-source-desc">从手机里选一个视频文件，存进本地片单。选完就能播，进度会自动记住。</div>',
     '      <button class="cinema-source-go" id="cinema-src-local">选择本地视频</button>',
     '    </div>',
+    // ---- 短剧库 (2026-10-07) ----
+    // 电脑上的短剧下载目录, 经自建 https 服务读出。一集一条, 能选集连着看。
+    '    <div class="cinema-source-pane" data-src-pane="series">',
+    '      <div class="cinema-source-desc">读你电脑上的短剧库（需电脑开着、连同一个 WiFi）。支持选集连着看，一集一集自动记剧情。填一次地址就会记住。</div>',
+    '      <div class="cinema-series-addr">',
+    '        <input type="url" id="cinema-series-url" placeholder="" aria-label="短剧库地址" autocapitalize="off" autocorrect="off" spellcheck="false">',
+    '        <button class="cinema-set-save" id="cinema-series-connect">连接</button>',
+    '      </div>',
+    '      <div class="cinema-set-state" id="cinema-series-state"></div>',
+    '      <div class="cinema-series-list" id="cinema-series-list" hidden></div>',
+    '    </div>',
+    // 选集面板: 点某部剧 → 打开这里
+    '  <div class="cinema-episode-sheet" id="cinema-episode-sheet">',
+    '    <div class="cinema-source-head">',
+    '      <span class="cinema-chat-head-title" id="cinema-episode-title">选择集数</span>',
+    '      <button class="cinema-chat-hbtn" id="cinema-episode-close" title="关闭" aria-label="关闭选集面板">',
+    CINEMA_ICON.close, '<span>关闭</span></button>',
+    '    </div>',
+    '    <div class="cinema-episode-meta" id="cinema-episode-meta"></div>',
+    '    <div class="cinema-episode-grid" id="cinema-episode-grid"></div>',
+    '  </div>',
     '  </div>',
 
     // ---- 设置面板 (2026-10-04 新增) ----
@@ -309,6 +330,16 @@
       srcSheet: document.getElementById('cinema-source-sheet'),
       srcClose: document.getElementById('cinema-source-close'),
       srcLocal: document.getElementById('cinema-src-local'),
+      // 短剧库 (2026-10-07)
+      seriesUrl: document.getElementById('cinema-series-url'),
+      seriesConnect: document.getElementById('cinema-series-connect'),
+      seriesState: document.getElementById('cinema-series-state'),
+      seriesList: document.getElementById('cinema-series-list'),
+      episodeSheet: document.getElementById('cinema-episode-sheet'),
+      episodeTitle: document.getElementById('cinema-episode-title'),
+      episodeClose: document.getElementById('cinema-episode-close'),
+      episodeMeta: document.getElementById('cinema-episode-meta'),
+      episodeGrid: document.getElementById('cinema-episode-grid'),
       drawerToggle: document.getElementById('cinema-drawer-toggle'),
       drawer: document.getElementById('cinema-drawer'),
       scrim: document.getElementById('cinema-drawer-scrim'),
@@ -329,6 +360,34 @@
     // addBtn / drawerAdd 的点击绑定在下面「片源」段 (走片源面板, 不是直接选文件)
     els.closeBtn.addEventListener('click', close);
     els.stopBtn.addEventListener('click', function () { stopPlayback(); });
+
+    // ---- 短剧库 (2026-10-07) ----
+    if (els.seriesConnect) {
+      els.seriesConnect.addEventListener('click', function () {
+        setSeriesAddress(els.seriesUrl ? els.seriesUrl.value : '');
+        connectSeriesLibrary();
+      });
+    }
+    if (els.seriesList) {
+      els.seriesList.addEventListener('click', function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest('[data-key]') : null;
+        if (btn) openEpisodeSheet(btn.getAttribute('data-key'));
+      });
+    }
+    if (els.episodeClose) els.episodeClose.addEventListener('click', closeEpisodeSheet);
+    if (els.episodeGrid) {
+      els.episodeGrid.addEventListener('click', function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest('[data-ep]') : null;
+        if (!btn) return;
+        var ep = parseInt(btn.getAttribute('data-ep'), 10);
+        if (ep > 0) playSeriesEpisode(ep);
+      });
+    }
+    // 打开片源面板时, 把上次填的地址带出来并顺手连一次
+    if (els.seriesUrl) {
+      els.seriesUrl.value = getSeriesAddress();
+      if (getSeriesAddress()) setTimeout(function () { connectSeriesLibrary(); }, 260);
+    }
 
     // ---- 聊天 ----
     els.chatToggle.addEventListener('click', function () { setChatPanel(!chatOpen); });
@@ -887,13 +946,21 @@
   // 停止播放
   // 只停片, 不退房间 —— 右上角 ✕ 才是退房间。两者分开是 2026-10-04 用户明确要求的。
   // 进度会先落盘, 之后从片单点"播放"能接着看。
+  //
+  // ⚠️ 2026-10-07 修正: 这里原来调的是 onVideoSourceChanged() (那是"换片"的钩子),
+  // 而那函数内部会 disable() 掉整个 Gemini Live + 清空 currentPlotSummary。
+  // 后果: 用户点【停止】再点【退出】, 退出流程在 runFinalSummaryFlow 的守卫
+  // (if (!S.enabled || ...)) 处直接短路 —— 观影记忆一个字都存不下来,
+  // 连已经攒好的 5 分钟摘要也被一起清了。
+  //
+  // 现在【停止】只做它该做的: 停视频元素 + 停视频帧。
+  // Live 会话和摘要原样保留, 退出时还能正常精炼并写入长期记忆。
   // --------------------------------------------------------------------------
 
   function stopPlayback() {
     ensureDom();
     flushProgress(true);
-    // 停片 = 换源, 让 Gemini 那边作废旧 watch session
-    if (global.CinemaLive) global.CinemaLive.onVideoSourceChanged();
+    if (global.CinemaLive) global.CinemaLive.pauseFrames('用户停止播放');
     destroyHls();
     if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
     els.video.removeAttribute('src');
@@ -926,6 +993,208 @@
   function escHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // ==========================================================================
+  // 短剧库 (2026-10-07)
+  //
+  // 电脑上的短剧下载目录 → 通过自建 https 服务读出 → 手机上选集连着看。
+  //
+  // 为什么不用短剧库自己的播放接口:
+  //   它的 /api/ui/playback/* 要占播放名额(全机 4 个)、断线要重连、已下好的文件
+  //   也照样走流式会话。这里直接读磁盘上完整的 NNN.mp4, 原生支持 Range,
+  //   不占名额、不占手机空间、电脑下完新一集刷新就有。
+  //
+  // ⚠️ 地址存哪: localStorage。不是 IndexedDB —— 换设备/清缓存丢了就再填一次,
+  //    不值得占一张表。
+  // ==========================================================================
+
+  const SERIES_ADDR_KEY = 'cinema-series-address';
+  let seriesLibrary = null;        // { dramas: [...] } —— 拉的片单
+  let seriesPicked = null;         // 当前选中的剧
+  let seriesLastEp = 0;            // 已看到第几集 (决定播完记第几集)
+
+  function getSeriesAddress() {
+    try { return (localStorage.getItem(SERIES_ADDR_KEY) || '').trim(); } catch (e) { return ''; }
+  }
+  function setSeriesAddress(v) {
+    try { localStorage.setItem(SERIES_ADDR_KEY, String(v || '').trim()); } catch (e) { /* 无痕模式 */ }
+  }
+
+  /** 归一化: 去掉尾部 / , 拼出 api 路径 */
+  function seriesApi(path) {
+    var base = getSeriesAddress().replace(/\/+$/, '');
+    if (!base) return '';
+    return base + path;
+  }
+
+  function mediaUrl(key, ep) {
+    // ⚠️ 必须补齐 3 位: 磁盘文件名是 001.mp4, 而片单里的集号是数字 1。
+    //    直接拼 "1.mp4" 服务端 stat 不到 → 404 (踩过: 前 99 集全 404, 100 集往后正常)
+    var n = Number(ep);
+    var name = (n >= 0 && n <= 9999) ? String(n).padStart(3, '0') + '.mp4' : '0.mp4';
+    return seriesApi('/media/' + encodeURIComponent(key) + '/' + name);
+  }
+
+  function setSeriesState(text, kind) {
+    if (!els.seriesState) return;
+    els.seriesState.textContent = text || '';
+    els.seriesState.className = 'cinema-set-state' + (kind ? ' is-' + kind : '');
+  }
+
+  /** 连服务 + 拉片单 */
+  function connectSeriesLibrary() {
+    var url = getSeriesAddress();
+    if (!url) { setSeriesState('还没填地址。先在电脑上跑起来，然后填上面的地址。', 'warn'); return Promise.resolve(false); }
+
+    setSeriesState('连接中…');
+    return fetch(seriesApi('/api/library'), { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        seriesLibrary = data;
+        var n = (data.dramas || []).length;
+        setSeriesState('已连接 · ' + n + ' 部剧 / ' +
+          (data.dramas || []).reduce(function (a, d) { return a + d.count; }, 0) + ' 集', 'ok');
+        renderSeriesList();
+        return true;
+      })
+      .catch(function (err) {
+        seriesLibrary = null;
+        setSeriesState('连不上：' + err.message +
+          '  —— 确认电脑开着、连同一个 WiFi、地址对。', 'err');
+        return false;
+      });
+  }
+
+  function renderSeriesList() {
+    if (!els.seriesList) return;
+    if (!seriesLibrary || !(seriesLibrary.dramas || []).length) {
+      els.seriesList.innerHTML = '<div class="cinema-series-empty">电脑上还没有下好的剧</div>';
+      els.seriesList.hidden = false;
+      return;
+    }
+    els.seriesList.innerHTML = seriesLibrary.dramas.map(function (d) {
+      return '<button class="cinema-series-item" data-key="' + escHtml(d.key) + '">' +
+        '<span class="cinema-series-name">' + escHtml(d.title) + '</span>' +
+        '<span class="cinema-series-count">' + d.count + ' 集</span>' +
+        '</button>';
+    }).join('');
+    els.seriesList.hidden = false;
+  }
+
+  /** 打开选集面板 */
+  function openEpisodeSheet(key) {
+    if (!seriesLibrary) return;
+    seriesPicked = null;
+    for (var i = 0; i < seriesLibrary.dramas.length; i++) {
+      if (seriesLibrary.dramas[i].key === key) { seriesPicked = seriesLibrary.dramas[i]; break; }
+    }
+    if (!seriesPicked) return;
+
+    if (els.episodeTitle) els.episodeTitle.textContent = seriesPicked.title;
+    // 从哪一集接着看: 读本地记录, 没记过就第 1 集
+    var saved = readSeriesProgress(key);
+    var resume = saved > 0 ? saved + 1 : 1;
+    if (resume > seriesPicked.last) resume = seriesPicked.first;
+    seriesLastEp = saved;
+
+    if (els.episodeMeta) {
+      els.episodeMeta.textContent = '共 ' + seriesPicked.count + ' 集（第 ' +
+        seriesPicked.first + '–' + seriesPicked.last + ' 集）' +
+        (saved > 0 ? ' · 上次看到第 ' + saved + ' 集' : '');
+    }
+    renderEpisodeGrid();
+    if (els.episodeSheet) els.episodeSheet.classList.add('open');
+    closeSourceSheet();
+  }
+
+  function renderEpisodeGrid() {
+    if (!els.episodeGrid || !seriesPicked) return;
+    var eps = seriesPicked.episodes || [];
+    var html = eps.map(function (ep) {
+      var watched = ep <= seriesLastEp;
+      var next = (seriesLastEp > 0 && ep === seriesLastEp + 1);
+      return '<button class="cinema-ep' + (watched ? ' watched' : '') + (next ? ' next' : '') +
+        '" data-ep="' + ep + '">' + ep + '</button>';
+    }).join('');
+    els.episodeGrid.innerHTML = html;
+  }
+
+  function closeEpisodeSheet() {
+    if (els.episodeSheet) els.episodeSheet.classList.remove('open');
+  }
+
+  /** 本地记"看到第几集" */
+  function readSeriesProgress(key) {
+    try {
+      var raw = localStorage.getItem('cinema-series-progress');
+      if (!raw) return 0;
+      var map = JSON.parse(raw) || {};
+      return Number(map[key]) || 0;
+    } catch (e) { return 0; }
+  }
+  function writeSeriesProgress(key, ep) {
+    try {
+      var raw = localStorage.getItem('cinema-series-progress');
+      var map = {};
+      try { map = raw ? (JSON.parse(raw) || {}) : {}; } catch (e) { map = {}; }
+      map[key] = ep;
+      // 只留最近 20 部, 别无限长
+      var keys = Object.keys(map);
+      if (keys.length > 20) {
+        keys.sort(function (a, b) { return (map[b] || 0) - (map[a] || 0); });
+        keys.slice(20).forEach(function (k) { delete map[k]; });
+      }
+      localStorage.setItem('cinema-series-progress', JSON.stringify(map));
+    } catch (e) { /* 无痕模式 */ }
+  }
+
+  /**
+   * 播一集。
+   * ⚠️ 关键: 不走 S.addFilm / setVideoSrc 那条路 —— 那条路会把内容当【本地影片】
+   * 存进 IndexedDB, 而短剧是远程的, 存不得也存不下。这里直接给 video.src。
+   */
+  function playSeriesEpisode(ep) {
+    if (!seriesPicked) return;
+    var url = mediaUrl(seriesPicked.key, ep);
+    seriesLastEp = ep - 1;          // 还没看完这一集, 上一集才算看过
+    writeSeriesProgress(seriesPicked.key, ep);
+
+    closeEpisodeSheet();
+
+    // 告诉 Gemini: 这是短剧模式, 后面按集总结
+    if (global.CinemaLive) {
+      global.CinemaLive.setSeries(seriesPicked.key, seriesPicked.title);
+      var st = global.CinemaLive.getSeriesState();
+      global.CinemaLive.setSeriesProgress(seriesPicked.key, seriesPicked.title,
+        Math.max(0, st.lastEp || 0), st.outline || '');
+    }
+
+    // ⚠️ 换集【不清场、不重连】—— 只把这次的播放时长结掉, 让下一集重新起 5 分钟。
+    if (global.CinemaLive) global.CinemaLive.onSeriesEpisodeChanged();
+
+    destroyHls();
+    if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
+
+    currentFilmId = null;           // 不是本地影片 → 不参与本地进度
+    pendingResumeTime = 0;
+    lastSavedAt = 0;
+
+    els.video.src = url;
+    els.idle.hidden = true;
+    els.stopBtn.hidden = false;
+    syncTopbarHeight();
+    setDrawer(false);
+
+    var p = els.video.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(function () { /* 自动播放被拦是正常的, 用户点一下播放 */ });
+    }
+    updateAmbient(true);
+    setTimeout(function () { updateAmbient(true); }, 360);
   }
 
     

@@ -131,7 +131,15 @@
                display: flex;
            }
 
-           /* 导入弹窗需要高于 custom-modal-overlay(z-index:10200) */
+           /* 导入弹窗层级。
+              这两个 .modal 是「备份导入」的多步向导里的中间步骤:
+                ① import-options-modal「发现备份文件」→ 点「选择导入」
+                ② selective-import-modal「选择要合并的数据」→ 点「确认合并」
+              两步的按钮都会接着调 showCustomConfirm, 所以它们【必须低于】
+              #custom-modal-overlay(999999)。否则 confirm 弹出来会被本层盖住,
+              表现成「点了确认没反应, 关掉选择框才看见」。
+              10300 高过 .modal 默认(100) / 悬浮球(9999-10000), 又低于 confirm, 正好。
+              ⚠️ 不要再往上抬 —— 2026-10-07 试过抬到 1000000, 立刻变成反向遮挡。 */
            #import-options-modal,
            #selective-import-modal {
                z-index: 10300;
@@ -594,7 +602,21 @@
                display: none;
                align-items: center;
                justify-content: center;
-               z-index: 10200;
+               /* 🔴 2026-10-07 确认弹窗被当前页面遮挡的全局修复。
+                  本节点是全项目唯一的 confirm/modal 宿主 (modules/ui-modals.js
+                  的 showCustomConfirm / showCustomAlert / showCustomPrompt /
+                  showChoiceModal 共用它), 被 183 处调用。
+                  原来只值 10200, 而当前页面层远高于它:
+                    .cinema-room=99990 / .cinema-room-drawer=99991 /
+                    .cinema-source-sheet=99995 / .cinema-topbar=99996 /
+                    #ai-songs-manager-modal=100000 / Live2D canvas=99999
+                  → 在这些页面里点删除, 弹窗已创建但被整层压住看不见;
+                    退出该页面后 z-index 层一撤走, 弹窗才「突然出现」。
+                  这里提到全项目天花板 999999 (与 update-notification.css 同级,
+                  语义: 只有更新提示能压住确认框), 一处改动覆盖全部调用点。
+                  ⚠️ 不要为了绕开它去改 Cinema / AI 歌曲的 z-index ——
+                     那几个值是 2026-10-06 专门修「页面卡死」调好的。 */
+               z-index: 999999;
                opacity: 0;
                transition: opacity 0.2s ease-in-out;
            }

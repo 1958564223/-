@@ -937,6 +937,15 @@ body.cinema-room-active {
   color: #9fe0a8;
 }
 
+/* 短剧库连接失败 / 没填地址 (2026-10-07) */
+.cinema-set-state.warn {
+  color: #f0c98a;
+}
+
+.cinema-set-state.err {
+  color: #f09a9a;
+}
+
 /* 人物立绘: 左右两个格子并排 */
 .cinema-char-edit-row {
   display: flex;
@@ -1441,6 +1450,148 @@ body.cinema-room-active {
 
 .cinema-source-pane[hidden] {
   display: none;
+}
+
+/* --------------------------------------------------------------------------
+   短剧库 (2026-10-07)
+   选集面板跟片源面板用同一套底部上滑的壳, 手感一致。
+   -------------------------------------------------------------------------- */
+
+/* 地址行: input + 按钮, 必须能塞进 390px 屏 */
+.cinema-series-addr {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cinema-series-addr input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(216, 168, 116, .26);
+  background: rgba(255, 255, 255, .05);
+  color: #f0e3d4;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.cinema-series-addr input::placeholder {
+  color: rgba(240, 220, 196, .30);
+}
+
+.cinema-series-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.cinema-series-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 13px;
+  border-radius: 11px;
+  border: 1px solid rgba(216, 168, 116, .20);
+  background: rgba(255, 255, 255, .04);
+  color: #f0e3d4;
+  text-align: left;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.cinema-series-item:active {
+  background: rgba(216, 168, 116, .18);
+}
+
+.cinema-series-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.cinema-series-count {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: rgba(240, 220, 196, .55);
+}
+
+.cinema-series-empty {
+  padding: 16px 4px;
+  font-size: 12.5px;
+  color: rgba(240, 220, 196, .45);
+  text-align: center;
+}
+
+/* 选集面板 */
+.cinema-episode-sheet {
+  position: absolute;
+  z-index: 99996;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  color: #f0e3d4;
+  background: rgba(22, 15, 12, .97);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  border-top: 1px solid rgba(216, 168, 116, .26);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -14px 44px rgba(0, 0, 0, .7);
+  transform: translateY(100%);
+  transition: transform .28s cubic-bezier(.22, .61, .36, 1);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+}
+
+.cinema-episode-sheet.open {
+  transform: translateY(0);
+}
+
+.cinema-episode-meta {
+  padding: 0 16px 10px;
+  font-size: 12px;
+  color: rgba(240, 220, 196, .55);
+  border-bottom: 1px solid rgba(216, 168, 116, .16);
+}
+
+.cinema-episode-grid {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+.cinema-ep {
+  padding: 10px 0;
+  border-radius: 10px;
+  border: 1px solid rgba(216, 168, 116, .20);
+  background: rgba(255, 255, 255, .04);
+  color: rgba(240, 220, 196, .88);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cinema-ep.watched {
+  color: rgba(240, 220, 196, .38);
+  background: rgba(255, 255, 255, .02);
+}
+
+.cinema-ep.next {
+  border-color: rgba(216, 168, 116, .70);
+  background: linear-gradient(180deg, rgba(216, 168, 116, .30), rgba(180, 128, 80, .20));
+  color: #ffeacd;
 }
 
 .cinema-source-desc {

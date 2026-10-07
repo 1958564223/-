@@ -86,8 +86,75 @@
     finalSummaryText: '',
     chatLog: [],
     closed: false,
-    leavePromise: null
+    leavePromise: null,
+    // 已累计的【视频实际播放】毫秒数, 不是墙上时钟。
+    // 用来实现"暂停时计时也暂停, 回来接着算"(2026-10-07 用户要求)。
+    playedMs: 0,
+    playingSince: 0,          // 正在播放时的起点戳; 暂停时为 0
+    // 本轮摘要计时是什么时候起的 (按 playedMs 坐标系)。暂停不重置它,
+    // 恢复后靠 scheduleStageSummary() 算还差多少。
+    lastSummaryStartedAt: 0,
+    // ---- 短剧专用 (2026-10-07) ----
+    kind: 'film',              // 'film' = 长剧 | 'series' = 短剧
+    seriesKey: null,           // 短剧: 剧名
+    seriesTitle: '',           // 短剧: 剧名(显示用)
+    seriesLastEp: 0,           // 短剧: 已看到第几集
+    seriesOutline: '',         // 短剧: 总纲(每 20 集合并一次, 跨场保留)
+    episodeMemories: []        // 短剧: 本次攒的单集记忆 [{ep, text}]
   };
+
+  /** 当前这次 play 段已跑了多久 (ms); 没在播放时返回 0 */
+  function currentPlaySegmentMs() {
+    if (!watchSession.playingSince) return 0;
+    return Date.now() - watchSession.playingSince;
+  }
+
+  /** 已播放总时长 (ms) —— 暂停期间不算 */
+  function totalPlayedMs() {
+    return watchSession.playedMs + currentPlaySegmentMs();
+  }
+
+  /** 开始累计 (video play 时调) */
+  function markPlaying() {
+    if (!watchSession.playingSince) watchSession.playingSince = Date.now();
+  }
+
+  /** 暂停累计 (video pause / ended 时调) —— 把这一段结算进 playedMs */
+  function markPaused() {
+    if (!watchSession.playingSince) return;
+    watchSession.playedMs += Date.now() - watchSession.playingSince;
+    watchSession.playingSince = 0;
+  }
+
+  /**
+   * 按【已播放时长】重排摘要定时器, 而不是每次都排满 5 分钟。
+   *
+   * 旧写法是 setTimeout(5分钟) 然后 finally 里无条件重排 —— 暂停一次就丢 5 分钟,
+   * 因为定时器在暂停期间照跑, 只是 tick 撞到 video.paused 就 return。
+   * 现在改成: 暂停时把剩余时间原样冻结, 恢复后接着算剩下的那部分。
+   *
+   * ⚠️ 同时必须清掉 watchSession.summaryTimer, 否则旧定时器还在飞,
+   *    会跟新算出来的剩余时间打架 (两套定时器同时 tick)。
+   */
+  function scheduleStageSummary(delayMs) {
+    if (watchSession.summaryTimer) {
+      clearTimeout(watchSession.summaryTimer);
+      watchSession.summaryTimer = null;
+    }
+    var waited = 0;
+    // ⚠️ 必须用 !== null 之类的显式判断, 不能用真值判断 ——
+    // lastSummaryStartedAt 初始就是 0, 用 if (lastSummaryStartedAt) 会把
+    // "本轮起点恰好是 0" 误判成 "本轮还没起表", 于是每次都重排满 5 分钟,
+    // 变成永远等不到那一次。
+    if (watchSession.lastSummaryStartedAt !== null && watchSession.lastSummaryStartedAt !== undefined) {
+      waited = totalPlayedMs() - watchSession.lastSummaryStartedAt;
+      if (waited < 0) waited = 0;          // 换片重置后可能出现负数
+    }
+    var remaining = WATCH_SUMMARY_INTERVAL_MS - waited;
+    if (remaining < 0) remaining = 0;
+    var delay = (delayMs === undefined) ? remaining : delayMs;
+    watchSession.summaryTimer = setTimeout(tickStageSummary, delay);
+  }
 
   function newWatchSession(chatId) {
     watchSession.watchSessionId = 'cr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -103,6 +170,15 @@
     watchSession.chatLog = [];
     watchSession.closed = false;
     watchSession.leavePromise = null;
+    watchSession.playedMs = 0;
+    watchSession.playingSince = 0;
+    watchSession.lastSummaryStartedAt = 0;
+    watchSession.kind = 'film';
+    watchSession.seriesKey = null;
+    watchSession.seriesTitle = '';
+    watchSession.seriesLastEp = 0;
+    watchSession.seriesOutline = '';
+    watchSession.episodeMemories = [];
     log('新的 Cinema watch session:', watchSession.watchSessionId);
     return watchSession.watchSessionId;
   }
@@ -544,6 +620,23 @@
     plotPanelEl = el;
   }
 
+  /** 短剧专属那一块: 总纲 + 本次攒了多少集 (2026-10-07) */
+  function buildSeriesHtml() {
+    var eps = watchSession.episodeMemories || [];
+    var epText = eps.length
+      ? eps.map(function (e) { return '第' + e.ep + '集：' + esc(e.text); }).join('<br>')
+      : '<span class="dim">（还没攒到, 每看完一集自动记一条）</span>';
+    var outlineBlock = watchSession.seriesOutline
+      ? '<div class="cinema-plot-text">' + esc(watchSession.seriesOutline) + '</div>'
+      : '<div class="cinema-plot-text dim">（还没有总纲, 攒够 ' + SERIES_MERGE_AT + ' 集自动合并）</div>';
+
+    return '<div class="cinema-plot-label">总纲（攒够 ' + SERIES_MERGE_AT + ' 集合并一次, 一直保留）</div>' +
+        outlineBlock +
+        '<div class="cinema-plot-label">本次已记 ' + eps.length + ' 集'
+          + (watchSession.seriesLastEp ? ' · 看到第 ' + watchSession.seriesLastEp + ' 集' : '') + '</div>' +
+        '<div class="cinema-plot-text">' + epText + '</div>';
+  }
+
   function buildPlotPanelHtml() {
     var head = 'Gemini 剧情记忆';
     if (!plotPanelOpen) {
@@ -587,6 +680,7 @@
       '<div class="cinema-plot-label">当前剧情摘要</div>' +
       summaryBody +
       busyHtml +
+      (watchSession.kind === 'series' ? buildSeriesHtml() : '') +
       '<div class="cinema-plot-stat">更新 ' + fmtTime(watchSession.summaryUpdatedAt) +
         ' · 次数 ' + watchSession.summaryCount + '</div>' +
       '<div class="cinema-plot-label">最终观影记忆</div>' +
@@ -798,6 +892,14 @@
             watchSession.currentPlotSummary = text.trim();
             watchSession.summaryUpdatedAt = Date.now();
             watchSession.summaryCount++;
+            // ⚠️ 这行必须加 (2026-10-07 用户实测: 摘要出来了, 计数一直 0)。
+            //
+            // 原因: summaryCount++ 跑在【微任务】里 —— onTurnCompleteInternal
+            // 里 p.resolve() 只是把回调排进微任务队列, 同一轮里紧接着的
+            // finishSummary() 已经同步调过 renderPlotPanel() 了, 那次渲染
+            // 读到的还是旧计数。之后再没人触发渲染, 于是计数永远停在 0,
+            // 而摘要正文因为别的路径刷新过又能显示出来。
+            renderPlotPanel();
             log('✅ 阶段剧情摘要已更新 (' + watchSession.summaryCount + ' 次)');
           } else {
             logWarn('阶段摘要返回空, 保留上一版');
@@ -811,16 +913,146 @@
     } catch (e) {
       logWarn('阶段摘要调度异常:', (e && e.message) || e);
     } finally {
-      // 退房/禁用/要生成最终总结时不要再排 —— 那三种情况定时器本来就该停
+      // 本轮 5 分钟已满 → 下一轮从现在重新起算。
+      // 但退房/禁用/要生成最终总结时不要再排 —— 那三种情况定时器本来就该停。
       if (S.enabled && !watchSession.finalSummaryRequested && !S._leaving) {
+        watchSession.lastSummaryStartedAt = totalPlayedMs();
         scheduleStageSummary();
       }
     }
   }
 
-  function scheduleStageSummary() {
-    if (watchSession.summaryTimer) clearTimeout(watchSession.summaryTimer);
-    watchSession.summaryTimer = setTimeout(tickStageSummary, WATCH_SUMMARY_INTERVAL_MS);
+  // ============================================================
+  // 短剧 (2026-10-07 用户设计)
+  //
+  // 长剧 = 一集二三十分钟, 每 5 分钟摘一次, 退出时统一精炼。
+  // 短剧 = 一集一两分钟, 5 分钟的粒度太粗 (一集可能一次都没总结到)。
+  //       改成【一集一记】, 攒够 20 集合并成一条总纲, 单集记忆当场丢掉。
+  //
+  // 为什么必须合并, 不能攒着:
+  //   看到第 300 集时如果把 300 条单集记忆全喂给 Gemini 精炼,
+  //   上下文撑不住 —— 退出时总结必然失败, 整场白看。
+  //   合并后喂的永远是 "一份总纲 + 最多 20 条新单集", 恒定。
+  // ============================================================
+
+  var SERIES_MERGE_AT = 20;          // 攒够多少集合并一次
+  var SERIES_EPISODE_HINT = '一句话, 不超过 40 字。';
+
+  /** 记一次单集剧情。ep = 集号 */
+  function addEpisodeMemory(ep, text) {
+    var t = String(text || '').trim();
+    if (!t) return false;
+    // 同一集重复总结(重播/重复触发) → 覆盖, 别堆两条
+    var exist = null;
+    for (var i = 0; i < watchSession.episodeMemories.length; i++) {
+      if (watchSession.episodeMemories[i].ep === ep) { exist = watchSession.episodeMemories[i]; break; }
+    }
+    if (exist) { exist.text = t; }
+    else { watchSession.episodeMemories.push({ ep: ep, text: t }); }
+    watchSession.episodeMemories.sort(function (a, b) { return a.ep - b.ep; });
+    if (ep > watchSession.seriesLastEp) watchSession.seriesLastEp = ep;
+    log('📺 记下第 ' + ep + ' 集剧情 (累计 ' + watchSession.episodeMemories.length + ' 条)');
+    renderPlotPanel();
+    return true;
+  }
+
+  /** 一集播完 → 要一条单集记忆 */
+  function requestEpisodeSummary(ep) {
+    if (watchSession.finalSummaryRequested || S._leaving) return Promise.resolve('');
+    if (!S.client || !S.client.isReady()) return Promise.resolve('');
+    if (watchSession.pendingSummary) return Promise.resolve('');   // 单通道, 别并发
+
+    var instruction = [];
+    instruction.push('【【后台任务】】这一集刚播完。');
+    instruction.push('根据你刚才连续看到的画面, 用【' + SERIES_EPISODE_HINT + '】');
+    instruction.push('写出这一集讲了什么: 发生了什么、谁做了什么、结尾在哪。');
+    instruction.push('只输出正文, 不要标题、不要客套、不要分析。');
+    if (watchSession.episodeMemories.length) {
+      instruction.push('');
+      instruction.push('前面已经记过的集(不要重复写, 只写这一集):');
+      var recent = watchSession.episodeMemories.slice(-3);
+      for (var i = 0; i < recent.length; i++) {
+        instruction.push('第 ' + recent[i].ep + ' 集：' + recent[i].text);
+      }
+    }
+
+    return requestSummary('episode', instruction.join('\n'))
+      .then(function (text) {
+        var t = (text || '').trim();
+        if (!t) { logWarn('第 ' + ep + ' 集没总结出内容'); return ''; }
+        addEpisodeMemory(ep, t);
+        return t;
+      })
+      .catch(function (err) { logWarn('第 ' + ep + ' 集总结失败:', err.message); return ''; });
+  }
+
+  /**
+   * 攒够 20 集 → 把这批单集记忆合并进总纲, 然后【丢掉单集记忆】。
+   *
+   * 为什么可以放心丢: 合并成功后信息已经进 seriesOutline 了,
+   * 而总纲要一路带到退出时的最终精炼 —— 所以不会丢剧情。
+   */
+  function maybeMergeSeriesOutline() {
+    if (watchSession.episodeMemories.length < SERIES_MERGE_AT) return Promise.resolve(false);
+    var batch = watchSession.episodeMemories.slice(0, SERIES_MERGE_AT);
+    var rest = watchSession.episodeMemories.slice(SERIES_MERGE_AT);
+
+    var title = watchSession.seriesTitle || '这部短剧';
+    var instruction = [];
+    instruction.push('【【后台任务】】你已经看完 ' + title + ' 的前 ' + batch.length + ' 集。');
+    instruction.push('请把这 ' + batch.length + ' 集的剧情, 合并成【一份总纲】。');
+    instruction.push('');
+    if (watchSession.seriesOutline) {
+      instruction.push('# 之前已有的总纲(要接在它后面, 不要重复已有内容)');
+      instruction.push('');
+      instruction.push(watchSession.seriesOutline);
+      instruction.push('');
+    }
+    instruction.push('# 这 ' + batch.length + ' 集各集剧情');
+    instruction.push('');
+    for (var i = 0; i < batch.length; i++) {
+      instruction.push('第 ' + batch[i].ep + ' 集：' + batch[i].text);
+    }
+    instruction.push('');
+    instruction.push('# 总纲怎么写');
+    instruction.push('- 用【连贯的一段话】讲清楚到第 ' + batch[batch.length - 1].ep + ' 集为止的主线剧情');
+    instruction.push('- 保留关键转折和主要人物, 砍掉过场和重复');
+    instruction.push('- 控制在 400 字以内');
+    instruction.push('- 直接写正文, 不要标题、不要分集罗列');
+
+    log('📚 攒够 ' + batch.length + ' 集, 合并成总纲…');
+
+    return requestSummary('merge', instruction.join('\n'))
+      .then(function (text) {
+        var t = (text || '').trim();
+        if (!t) {
+          // 合并失败 → 【绝不能丢单集记忆】, 否则这 20 集真没了
+          logWarn('总纲合并失败, 保留这 ' + batch.length + ' 条单集记忆不丢');
+          return false;
+        }
+        watchSession.seriesOutline = watchSession.seriesOutline
+          ? (watchSession.seriesOutline + '\n' + t)
+          : t;
+        // 记住这批合并到第几集 —— 清掉单集记忆之后, 剩下的 rest 里最大的 ep
+        // 可能小于 batch 末尾, 不显式记录的话"看到第几集"会往回退。
+        var lastMerged = batch[batch.length - 1].ep;
+        if (lastMerged > watchSession.seriesLastEp) watchSession.seriesLastEp = lastMerged;
+        watchSession.episodeMemories = rest;      // ← 只有成功才丢
+        log('✅ 总纲已更新 (第 ' + batch[batch.length - 1].ep + ' 集为止), 剩 ' + rest.length + ' 条单集记忆');
+        renderPlotPanel();
+        return true;
+      })
+      .catch(function (err) {
+        logWarn('总纲合并失败:', err.message);
+        return false;
+      });
+  }
+
+  /** 切到短剧模式 (进剧场时由 cinema-room.js 调) */
+  function setSeries(key, title) {
+    watchSession.kind = 'series';
+    watchSession.seriesKey = key || null;
+    watchSession.seriesTitle = title || '';
   }
 
   function stopStageSummary() {
@@ -838,6 +1070,28 @@
     var lines = [];
     lines.push('【【后台任务】】这次观影要结束了, 请生成【最终观影记忆】。');
     lines.push('');
+
+    // 短剧: 总纲要单独拎出来 (2026-10-07 用户设计)。
+    // 它是"前 N 集合并后的压缩版", 属于跨场资产, 不能跟单集记忆混在一块被丢掉。
+    var outline = (watchSession.seriesOutline || '').trim();
+    if (outline) {
+      lines.push('# 这部剧目前看到哪 (总纲, 之前每 20 集合并过一次)');
+      lines.push('');
+      lines.push(outline);
+      lines.push('');
+    }
+
+    // 短剧: 本次攒下的单集记忆
+    var seriesEp = Array.isArray(watchSession.episodeMemories) ? watchSession.episodeMemories : [];
+    if (seriesEp.length) {
+      lines.push('# 本次看完的各集剧情');
+      lines.push('');
+      for (var e = 0; e < seriesEp.length; e++) {
+        lines.push('第 ' + seriesEp[e].ep + ' 集：' + seriesEp[e].text);
+      }
+      lines.push('');
+    }
+
     lines.push('# 你在这次观影中积累的当前剧情摘要');
     lines.push('');
     lines.push(watchSession.currentPlotSummary || '(这次没有留下剧情摘要)');
@@ -852,6 +1106,16 @@
       lines.push('# 这次观影中你们的聊天');
       lines.push('');
       lines.push(chatLines.join('\n'));
+      lines.push('');
+    }
+
+    // ⚠️ 短剧: 明确禁止回去翻画面 (2026-10-07 用户要求)。
+    // 短剧一集两分钟, 画面帧又碎又密, 让模型"再看一遍画面补细节"只会
+    // 又慢又容易崩。上面的文字已经是它该知道的全���。
+    if (watchSession.kind === 'series') {
+      lines.push('⚠️ 重要: **只根据上面这些文字来写**。');
+      lines.push('不要回头去看视频画面找细节 —— 画面帧碎又密, 翻它们会非常慢而且容易失败。');
+      lines.push('文字里没写的情节, 就当作没看到, 不要自己补。');
       lines.push('');
     }
 
@@ -874,7 +1138,7 @@
     lines.push('- 没有长期价值的普通闲聊和寒暄');
     lines.push('- 重复的描述');
     lines.push('- 技术信息');
-    lines.push('- 你自己的猜测');
+    lines.push('- 你的猜测');
     lines.push('');
     lines.push('写成一段自然的中文回忆, 像你真的记得这件事一样, 第一人称。');
     lines.push('开头写【观影记忆】。');
@@ -1017,6 +1281,10 @@
         newWatchSession(S.chatId);
         appendSystemLine('📖 我会每隔几分钟整理一次剧情，方便待会儿写观影记忆。');
       }
+      // 起播放表。视频此刻可能已经是暂停态(比如进来时没自动播),
+      // 那就不起, 等 play 事件 resumeFrames 再起 —— 免得暂停时也在算时间。
+      var v0 = getVideo();
+      if (v0 && !v0.paused && !v0.ended && !S.paused) markPlaying();
       scheduleStageSummary();
       renderPlotPanel();
     } else if (state === 'closed' && S.autoMode && !S._userDisabled) {
@@ -1126,6 +1394,7 @@
   function disable(reason) {
     log('停用 Gemini Live' + (reason ? ' (' + reason + ')' : ''));
     clearRetry();
+    stopStageSummary();      // 连 Live 都断了, 摘要定时器必须跟着停
     stopFrameLoop();
     if (S.client) {
       try { S.client.close(reason || 'disabled'); } catch (e) { /* noop */ }
@@ -1199,6 +1468,20 @@
     }
     watchSession.finalSummaryRequested = true;
 
+    // ⚠️ 必须在这里就停帧 (2026-10-07 用户发现: 退出总结花很久)。
+    //
+    // 以前帧循环要一直发到 hardLeave() 里的 disable() 才停 —— 也就是
+    // "让 Gemini 写总结" 这整段时间里, 它每秒还在收一张 JPEG。
+    // 用户看到的现象就是: 点退出后卡很久才出结果, 因为模型要先消化
+    // 整场累积的视觉输入, 才能吐出那几百字。
+    stopFrameLoop();
+
+    // 有文字摘要 → 走纯文本精炼 (快); 没有 → 沿用当前会话总结 (慢但至少有画面)。
+    var textMode = !!(watchSession.currentPlotSummary || '').trim();
+    log(textMode
+      ? '退出总结: 已有文字摘要, 走纯文本精炼 (不送视频帧)'
+      : '退出总结: 无文字摘要, 沿用当前会话总结');
+
     renderStatus('connecting');
     appendSystemLine('⏳ 正在整理这次观影记忆，请稍等一下……');
     renderPlotPanel();
@@ -1256,6 +1539,17 @@
   function hardLeave() {
     watchSession.closed = true;
     stopStageSummary();
+    // ⚠️ 退出时自己把这次的播放时间账结清 (2026-10-07)。
+    //
+    // 不加这一行也能跑 —— 因为重连时 onClientState 里那个
+    // "closed || !watchSessionId" 会命中, 由 newWatchSession() 顺手清。
+    // 但那等于【清理依赖下游有人来擦】: 将来任何一条"重连但不清场"的路径
+    // (比如短剧换集连播) 都会把旧时间账带进新会话。
+    //
+    // 语义上也该在这里清: 退出 = 这次会话彻底结束, 账就该当场结掉。
+    markPaused();
+    watchSession.playedMs = 0;
+    watchSession.lastSummaryStartedAt = 0;
     S._leaving = true;
     disable('离开 Cinema Room');
     _autoTried = false;
@@ -1280,6 +1574,10 @@
   function pauseFrames(reason) {
     if (!S.enabled) return;
     S.paused = true;
+    // 计时冻结: 把这段播放时长结算进去, 然后把定时器收掉。
+    // 不清掉的话它会在暂停期间空转到点, 白白吃掉一轮 5 分钟 (用户 2026-10-07 要求)。
+    markPaused();
+    stopStageSummary();
     log('暂停发帧' + (reason ? ' (' + reason + ')' : ''));
     renderStatus('ready');
   }
@@ -1287,6 +1585,11 @@
   function resumeFrames(reason) {
     if (!S.enabled || !S.client || !S.client.isReady()) return;
     S.paused = false;
+    // 计时恢复: 从头起算播放时长, 再按"这一轮还差多少"重新排定时器。
+    markPlaying();
+    if (!watchSession.finalSummaryRequested && !watchSession._leaving) {
+      scheduleStageSummary();
+    }
     log('恢复发帧' + (reason ? ' (' + reason + ')' : ''));
     renderStatus('ready');
   }
@@ -1341,10 +1644,52 @@
     // 一句话跨多个 turn 是常态, 只有用户发新消息才开新气泡。
   }
 
+  /** 短剧换集 → 只结掉本次播放时长, 【不清场、不重连、不清摘要】(2026-10-07)
+   *
+   * 跟 onVideoSourceChanged 的区别: 那个是"换片"= 换了一部完全不同的东西,
+   * 旧摘要作废是对的; 这个是"同一部剧的下一集", 摘要和连接都得留着。
+   */
+  function onSeriesEpisodeChanged() {
+    markPaused();
+    stopStageSummary();
+    watchSession.currentPlotSummary = '';      // 单集记忆才是短剧的载体
+    watchSession.summaryCount = 0;
+    watchSession.summaryUpdatedAt = 0;
+    watchSession.lastSummaryStartedAt = 0;      // 下一集重新起 5 分钟
+    if (S.enabled) {
+      markPlaying();                           // 新片马上要播, 接着起表
+      scheduleStageSummary();
+    }
+    renderPlotPanel();
+  }
+
   /** 自然播放结束 → 停发帧, 不关 Live, 不退出房间, 用户还能继续聊 */
   function onVideoEnded() {
+    // 短剧: 一集播完 → 记这一集剧情 + 看够 20 集就合并 (2026-10-07)
+    if (watchSession.kind === 'series') {
+      var ep = watchSession.seriesLastEp + 1;
+      markPaused();
+      stopStageSummary();
+      log('第 ' + ep + ' 集播完, 记录剧情…');
+      renderStatus('ready');
+      requestEpisodeSummary(ep).then(function () {
+        // 记完这集, "看过"才推进到本集
+        if (ep > watchSession.seriesLastEp) watchSession.seriesLastEp = ep;
+        renderPlotPanel();
+        // 攒够就合并 (失败不丢数据, 逻辑在 maybeMergeSeriesOutline 里)
+        return maybeMergeSeriesOutline();
+      }).catch(function (err) {
+        logWarn('第 ' + ep + ' 集记录失败:', err.message);
+      });
+      return;
+    }
+
     if (!S.enabled) return;
     S.paused = true;
+    // 播完 = 这段播放时长到此为止, 收表 + 收定时器。
+    // 下一轮计时从 resumeFrames 再起 (用户手动重播或换片)。
+    markPaused();
+    stopStageSummary();
     log('视频播放结束, 停止发帧 (session 保留)');
     renderStatus('ready');
   }
@@ -1353,6 +1698,7 @@
   function onVideoSourceChanged() {
     log('视频源已更换, 结束旧 watch session (其剧情摘要不写入长期记忆)');
     stopStageSummary();
+    markPaused();          // 换片时若正在播放, 先把这一段落账, 别留悬空起点
     watchSession.currentPlotSummary = '';
     watchSession.summaryCount = 0;
     watchSession.summaryUpdatedAt = 0;
@@ -1394,6 +1740,30 @@
     handleUserMessage: handleUserMessage,
     onVideoEnded: onVideoEnded,
     onVideoSourceChanged: onVideoSourceChanged,
+
+    // ---- 短剧 (2026-10-07) ----
+    setSeries: setSeries,
+    setSeriesProgress: function (key, title, lastEp, outline) {
+      if (key) watchSession.seriesKey = key;
+      if (title !== undefined) watchSession.seriesTitle = title;
+      if (lastEp !== undefined && lastEp !== null) watchSession.seriesLastEp = Number(lastEp) || 0;
+      if (outline !== undefined && outline !== null) watchSession.seriesOutline = String(outline || '');
+      watchSession.kind = 'series';
+    },
+    requestEpisodeSummary: requestEpisodeSummary,
+    maybeMergeSeriesOutline: maybeMergeSeriesOutline,
+    onSeriesEpisodeChanged: onSeriesEpisodeChanged,
+    getSeriesState: function () {
+      return {
+        kind: watchSession.kind,
+        key: watchSession.seriesKey,
+        title: watchSession.seriesTitle,
+        lastEp: watchSession.seriesLastEp,
+        outline: watchSession.seriesOutline,
+        pending: watchSession.episodeMemories.length,
+        outlineLen: (watchSession.seriesOutline || '').length
+      };
+    },
 
     // 剧情面板
     togglePlotPanel: togglePlotPanel,
