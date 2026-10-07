@@ -73,6 +73,43 @@ body.cinema-room-active {
   width: 100%;
 }
 
+/* --------------------------------------------------------------------------
+   🔴 键盘态: 只在键盘弹起期间关掉影院的毛玻璃 (2026-10-07)
+
+   现象: 影院里聊天输入框 + 短剧地址框, 两个都卡; 输入类型已经排除,
+         瓶颈在【键盘弹出 → .cinema-room 整体 resize】这条共用路径上。
+
+   代价来源: 房间里挂着 4 层【常驻】backdrop-filter(聊天面板 / 片单抽屉 /
+   添加影片 / 设置), 后三个只是被 transform 移出可视区、没有 display:none,
+   一直参与合成。iOS 上 backdrop-filter 每次都要重新采样背后全部内容,
+   房间每变一次高, 这几层就全部重采样一次 —— 键盘动画期间要变几十次。
+
+   所以: 键盘一弹出来就整体关掉, 键盘一收起立刻恢复。
+        平时不打字的时候毛玻璃一点没少, 视觉设计零损失;
+        打字时背后本来就看不清, 关掉反而更清爽、字更好认。
+
+   挂这个类的逻辑见 cinema-room.js initKeyboardMode() (用 focusin/focusout,
+   不用可视视口高度猜阈值 —— 第三方键盘和横竖屏切换会让高度判断失效)。
+   -------------------------------------------------------------------------- */
+.cinema-room.kb-open,
+.cinema-room.kb-open * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 没有模糊的半透明底色会透, 打字时补一点不透明度, 保证字清楚 */
+.cinema-room.kb-open .cinema-chat-panel {
+  background: rgba(22, 15, 12, .93);
+}
+.cinema-room.kb-open .cinema-source-sheet,
+.cinema-room.kb-open .cinema-settings-sheet,
+.cinema-room.kb-open .cinema-episode-sheet {
+  background: #160f0c;
+}
+.cinema-room.kb-open .cinema-room-drawer {
+  background: #18100d;
+}
+
 /* 不支持 webp 的老 WebView 用 jpg 兜底 */
 @supports not (background-image: url('a.webp')) {
   .cinema-room {

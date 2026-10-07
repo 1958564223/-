@@ -1,4 +1,4 @@
-// ============================================================================
+﻿// ============================================================================
 // cinema-room.js — 330 Cinema Room 房间模块 (v0.1.0, 第一阶段最小闭环)
 //
 // 本阶段范围 (只跑通这一条链路, 不接 Gemini 3.8 Live, 不动旧观影):
@@ -362,7 +362,61 @@
       nowPlaying: document.getElementById('cinema-now-playing')
     };
     bindEvents();
+    initKeyboardMode();
     return els;
+  }
+
+  // --------------------------------------------------------------------------
+  // 键盘态: 只在键盘弹起期间关掉影院的 backdrop-filter
+  //
+  // 背景 (2026-10-07 用户真机实测):
+  //   影院里【聊天输入框】和【短剧地址框】两个都卡, 一个 type=text 一个 type=text,
+  //   输入类型已经排除了 → 说明瓶颈不在输入框本身, 而在它们共用的那条路:
+  //   【键盘弹出 → 可视视口变矮 → .cinema-room 整体 resize】。
+  //
+  //   而 .cinema-room 里挂着好几层【常驻】的 backdrop-filter:
+  //     .cinema-chat-panel   blur(22px) saturate(1.2)  ← 聊天面板本体
+  //     .cinema-room-drawer  blur(22px)                ← 片单抽屉(只是 translateX 移出屏幕)
+  //     .cinema-source-sheet blur(22px)                ← 添加影片面板
+  //     .cinema-settings-sheet blur(22px)              ← 设置面板
+  //   后三个都不是 display:none, 只是被 transform 移出可视区, 所以它们一直参与合成。
+  //   iOS 上 backdrop-filter 每次都要重新采样背后的全部内容 —— 房间一变高,
+  //   这几层就得全部重采样一遍, 而键盘动画期间房间要变几十次。
+  //
+  // 为什么不直接把毛玻璃删了:
+  //   那是影院视觉的一部分, 平时看着挺舒服。所以这里只在【键盘弹起时】关掉,
+  //   键盘一收起立刻恢复 —— 打字时本来也看不清背后, 关掉反而更清爽、更不瞎眼。
+  //
+  // 用 focusin/focusout 而不是 visualViewport 高度来判断:
+  //   高度判断要猜阈值(多少 px 算键盘弹了), 遇到第三方键盘/横竖屏切换就失效。
+  //   focus 是确定信号。
+  // --------------------------------------------------------------------------
+  let kbOpen = false;
+
+  function setKeyboardMode(on) {
+    if (kbOpen === on) return;
+    kbOpen = on;
+    if (els && els.root) els.root.classList.toggle('kb-open', !!on);
+  }
+
+  function isTextField(node) {
+    if (!node) return false;
+    var tag = node.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || node.isContentEditable === true;
+  }
+
+  function initKeyboardMode() {
+    if (!els || !els.root || els.root.__kbBound) return;
+    els.root.__kbBound = true;
+    els.root.addEventListener('focusin', function (e) {
+      if (isTextField(e.target)) setKeyboardMode(true);
+    });
+    els.root.addEventListener('focusout', function () {
+      // iOS 是先 blur 再收键盘, 这里等一下再判断, 免得中途把模糊关早了
+      setTimeout(function () {
+        if (!isTextField(document.activeElement)) setKeyboardMode(false);
+      }, 350);
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -2288,7 +2342,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.23.0-probe';
+  global.__CINEMA_VER = '0.24.0';
 
   global.CinemaRoom = {
     open: open,
