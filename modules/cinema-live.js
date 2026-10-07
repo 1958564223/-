@@ -1735,6 +1735,21 @@
     autoConnect: autoConnect,
     onLeaveCinema: onLeaveCinema,
     retryFinalSummary: retryFinalSummary,
+    /**
+     * 放弃这次记忆, 强制走人 (2026-10-07)。
+     *
+     * 为什么需要它: 退出时如果 Gemini 返回空 (常见于 iOS 切后台把 Live 掐断),
+     * 正常流程会一直卡在房间里 —— 用户实测被彻底关住, 重试也没用。
+     * 这个入口让 UI 层能给一条兜底出路: 不保存记忆, 但必须能离开。
+     */
+    forceLeave: function (reason) {
+      log('强制退出(不保存记忆): ' + (reason || '未说明'));
+      watchSession.finalSummaryRequested = false;
+      watchSession.leavePromise = null;
+      S._leaving = false;
+      hardLeave();
+      return true;
+    },
     pauseFrames: pauseFrames,
     resumeFrames: resumeFrames,
     handleUserMessage: handleUserMessage,

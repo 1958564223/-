@@ -164,7 +164,20 @@
     '    <div class="cinema-source-pane" data-src-pane="series">',
     '      <div class="cinema-source-desc">读你电脑上的短剧库（需电脑开着、连同一个 WiFi）。支持选集连着看，一集一集自动记剧情。填一次地址就会记住。</div>',
     '      <div class="cinema-series-addr">',
-    '        <input type="url" id="cinema-series-url" placeholder="" aria-label="短剧库地址" autocapitalize="off" autocorrect="off" spellcheck="false">',
+    // 🔴 2026-10-07 iOS 键盘卡顿修复: type="url" → type="text" + inputmode="url"
+//
+// 现象: 只在这个地址框里打字就整个页面/iOS 键盘卡死, 影院聊天框(type="text")
+//       完全正常 —— 唯一差别就是这个 input 的 type。
+//
+// 原因: iOS 对 type="url" 唤起的是【带域名联想的专用键盘】, 它挂了一个候选弹层,
+//       每敲一个字符就要重算候选 + 重绘弹层。而这个输入框的父容器
+//       .cinema-source-sheet 有 backdrop-filter: blur(22px) (iOS 上最贵的合成操作,
+//       要采样背后全部内容) —— 键盘弹层每重绘一次, 那个 82vh 的毛玻璃层就重采样一次。
+//       两者叠加 = 每敲一个字符全页面重算。
+//
+// inputmode="url" 保留移动端键盘的 URL 布局(斜杠/冒号/点号都在),
+// 但不触发 iOS 的域名联想与候选栏。
+'        <input type="text" inputmode="url" id="cinema-series-url" placeholder="" aria-label="短剧库地址" autocapitalize="off" autocorrect="off" spellcheck="false">',
     '        <button class="cinema-set-save" id="cinema-series-connect">连接</button>',
     '      </div>',
     '      <div class="cinema-set-state" id="cinema-series-state"></div>',
@@ -2120,11 +2133,99 @@
     if (global.CinemaLive && global.CinemaLive.isEnabled()) {
       const r = await global.CinemaLive.onLeaveCinema();
       if (r && r.saved === false && r.error) {
-        // 没保存成功 → 留在房间里, 不假装退出成功
-        reportError('观影记忆没存上', '没能把这次的观影记忆写进长期记忆：' + r.error +
-            '\n\n房间还开着，聊天面板顶上那行「Gemini 剧情记忆」就是这次的摘要，可以先看一眼，或者重新退出试一次。');
+        // ⚠️ 2026-10-07 用户实测被【关在房间里出不来】, 这里必须给兜底。
+        //
+        // 现象: 点退出 → Gemini 返回空 → 弹「观影记忆没存上」→ 房间不关。
+        //      再点退出还是不行 (Live 已经被 stopFrameLoop 停了, 连接是死的),
+        //      用户被彻底困住 —— 记忆没存上变成了【禁止退出】, 这不可接受。
+        //
+        // 记忆存不上是【降级】, 不是【禁止退出】。所以:
+        //   · 弹框给「仍然退出」, 点了直接走人
+        //   · 同时倒计时自动退出, 免得用户看不懂干等着
+        //
+        // 常见触发: iOS 切后台时 Live 被系统掐断, 回来连接已死 → Gemini 返回空
+        //          (用户原话: "没总结可能是我退了一下后台")
+        await showLeaveFallback(r.error);
         return;
       }
+    }
+    finishClose();
+  }
+
+  /** 关掉可能还开着的自定义弹框 (showCustomAlert/Confirm/Choice 共用那一个宿主节点) */
+  function closeAnyModal() {
+    try {
+      var el = document.getElementById('custom-modal-overlay');
+      if (el) el.style.display = 'none';
+      var ch = document.getElementById('custom-chat-overlay');
+      if (ch) ch.style.display = 'none';
+    } catch (e) { /* noop */ }
+  }
+
+  /**
+   * 记忆没存上时的兜底出口: 弹框 + 倒计时 + 「仍然退出」。
+   * 返回的 Promise 一定会 resolve —— 无论用户点哪个按钮、等多久, 保证 close() 不卡死。
+   */
+  function showLeaveFallback(reason) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var tick = null;
+      var hardStop = null;
+
+      function settle(val) {
+        if (done) return;
+        done = true;
+        try { if (tick) clearInterval(tick); } catch (e) { /* noop */ }
+        try { if (hardStop) clearTimeout(hardStop); } catch (e) { /* noop */ }
+        closeAnyModal();
+        resolve(val);
+      }
+
+      var left = 10;
+
+      // 用 showCustomConfirm —— 它才有【标题 + 正文 + 两个按钮】的签名。
+      // ⚠️ 别用 showChoiceModal: 那个是【分页选项列表】(title, options) 返回 Promise,
+      //    语义完全不同, 传三个参数进去等于没给正文 (2026-10-07 一度写错过)。
+      var modalShown = false;
+      if (global.showCustomConfirm) {
+        try {
+          modalShown = true;
+          global.showCustomConfirm(
+            '观影记忆没存上',
+            '没能把这次的观影记忆写进长期记忆：' + (reason || '未知原因') +
+              '<br><br><b>' + left + ' 秒后会自动退出房间，不会把你关在里面。</b>',
+            {
+              confirmText: '仍然退出',
+              cancelText: '再试一次',
+              confirmButtonClass: 'btn-danger'
+            }
+          ).then(function (ok) {
+            // ok=true → 「仍然退出」; null/false → 取消或关掉 → 留在房间
+            settle(ok ? 'leave' : 'retry');
+          }).catch(function () { settle('retry'); });
+        } catch (e) {
+          try { global.alert('观影记忆没存上\n\n' + (reason || '') + '\n\n' + left + ' 秒后自动退出房间。'); } catch (e2) { /* noop */ }
+        }
+      } else {
+        try { global.alert('观影记忆没存上\n\n' + (reason || '') + '\n\n' + left + ' 秒后自动退出房间。'); } catch (e) { /* noop */ }
+      }
+
+      tick = setInterval(function () {
+        left--;
+        if (left <= 0) settle('timeout');
+      }, 1000);
+
+      // 兜底: 无论弹框怎么表现, 15 秒后一律放人
+      hardStop = setTimeout(function () { settle('timeout'); }, 15000);
+      void modalShown;
+    });
+  }
+
+  /** 真正关房间 (从 close() 拆出来, 兜底路径也能调) */
+  function finishClose() {
+    ensureDom();
+    if (global.CinemaLive && global.CinemaLive.forceLeave) {
+      try { global.CinemaLive.forceLeave('用户选择不保存记忆直接退出'); } catch (e) { /* noop */ }
     }
     els.root.classList.remove('open');
     els.root.setAttribute('aria-hidden', 'true');
