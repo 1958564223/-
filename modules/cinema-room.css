@@ -833,8 +833,24 @@ body.cinema-room-active {
   border-top: 1px solid rgba(216, 168, 116, .26);
   border-radius: 18px 18px 0 0;
   box-shadow: 0 -12px 40px rgba(0, 0, 0, .55);
-  /* 收起用 clip + 高度, 不做位移 —— 位移动画在 iOS 上会和键盘打架 */
-  transition: height .28s cubic-bezier(.22, .61, .36, 1), opacity .2s ease;
+  /* 🧪 2026-10-08 诊断实验: 临时去掉 height 过渡, 只留 opacity。
+   *
+   *   原来: transition: height .28s cubic-bezier(...) , opacity .2s ease;
+   *
+   *   要验证的假设: 键盘弹出/收起时, visualViewport 会连续把
+   *   --cinema-vv-height 写进 .cinema-room → 房间高度变 → 这块 flex 子项高度跟着变
+   *   → 因为挂了 height 过渡, 每次变化都被【动画 280ms】,
+   *   而 height 动画走不了 GPU 合成, 只能每帧强制重排(reflow)。
+   *   键盘动画期间视口连续变几十次 = 多轮 280ms 高度动画叠着跑,
+   *   输入框每次字符重绘都得排在这些强制布局后面 → 打字明显变慢,
+   *   收键盘时还能看到「影院整体被带下去、露出半截主聊天框」。
+   *
+   *   去掉 height 过渡后: 高度变化立刻生效(视觉上少了滑入滑出的小动画),
+   *   但不再有每帧强制布局。
+   *   ⚠️ 这只是诊断实验, 不是最终方案 —— 收起/展开聊天面板的手感会变生硬。
+   *   若实验证实有效, 再决定是永久改掉还是换种方式做过渡(比如只过渡 transform)。
+   */
+  transition: opacity .2s ease;
   opacity: 0;
   padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
 }
