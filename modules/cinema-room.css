@@ -17,6 +17,38 @@
      保证任何机型/横竖屏都绝对不会被按钮压住。 */
   --cinema-topbar-h: calc(env(safe-area-inset-top, 0px) + 52px);
 
+  /* 🧪 2026-10-08 · contain: layout paint (Gemini 提议的第 3 条)
+   *
+   * 背景(时间线探针实测, 已把冻结点锁死在 visualViewport.resize 上):
+   *     +12186ms  ● vv.resize #2  →  ⛔ 主线程空转 5187ms
+   *     +25388ms  ● vv.resize #3  →  ⛔ 主线程空转 3893ms
+   *   3 次冻结 3 次都紧跟在 vv.resize 后面, 一次不差; 而打字本身
+   *   (beforeinput/input) 是 1ms 成对出现、完全流畅的。
+   *   同时已排除: 微任务最慢 1ms(队列没被撑爆)、DOM变更 0(不是观察器风暴)。
+   *
+   * 我们对 vv.resize 唯一的响应就是写 --cinema-vv-height / --cinema-vv-top,
+   * 于是 .cinema-room 的 height/top 变了 → 整个房间重排。而这个房间是盖在
+   * 3,500 节点宿主页面上的全屏 fixed 层, 重排时 WebKit 可能要把宿主一起
+   * 重新算一遍 —— 这就是那 4~5 秒。
+   *
+   * contain: layout paint 就是在告诉 WebKit:
+   *     「这个房间的布局和绘制不会影响外面任何东西」
+   * 于是房间自己怎么变, 外面那 3,500 个节点都不用跟着重算。
+   *
+   * ⚠️ 为什么不用 contain: strict / contain: size:
+   *     size 包含性意味着「元素尺寸按没有内容来算」, 而 .cinema-room 正是
+   *     靠 height: var(--cinema-vv-height) + 内部 flex 列撑起来的 ——
+   *     加上 size 会让房间高度塌成 0, 直接消失。
+   *     layout paint 不含 size, 安全。
+   *
+   * 视觉上零变化: 房间本来就有 overflow:hidden; paint 包含性只是把
+   * 「本来就看不见的不画」写明确。里面所有子元素(片单抽屉 / 三个底部面板 /
+   * 人物位 / 大屏)本来也都在房间边界内。
+   *
+   * 回退: _reports/backup/cinema-room.css.20261008-2200.bak
+   */
+  contain: layout paint;
+
   /* 🔴 2026-10-06 iOS 键盘卡顿修复: 可视视口尺寸变量的【作用域只留房间自己】。
      之前 JS 把它们写在 documentElement(:root) 上 → 每次 visualViewport 事件都
      让 WebKit 对整篇 330 文档做样式失效, 而完整 330 有 54 个 .screen 全屏 flex
