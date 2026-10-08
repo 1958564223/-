@@ -42,10 +42,7 @@
   top: var(--cinema-vv-top);
   left: 0;
   right: 0;
-  /* 🧪 2026-10-08 诊断实验 B: 临时用固定 100%, 不再跟随 visualViewport。
-   *   验证「房间高度跟着键盘实时变化」是不是根因。
-   *   恢复 = 把下面这行换回 height: var(--cinema-vv-height); */
-  height: 100%;
+  height: var(--cinema-vv-height);
 
   /* flex 列: 顶栏(固定) → 视频区(自适应) → 聊天区(占满剩余)
      这样视频和聊天之间【不会】出现空洞 —— 2026-10-04 用户反馈中间浪费一大片。 */

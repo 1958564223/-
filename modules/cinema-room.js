@@ -362,7 +362,14 @@
       nowPlaying: document.getElementById('cinema-now-playing')
     };
     bindEvents();
-    initKeyboardMode();
+    // 🧪 2026-10-08 诊断实验 C: 临时不挂 kb-open 的 focusin 监听。
+    //   这是【全项目唯一一处「聚焦瞬间执行的 JS」】—— 搜 focusin/focus/onfocus
+    //   只有这一条, 主聊天页面一个都没有(所以主聊天页不卡)。
+    //   它给 position:fixed + z-index:99990 的整屏房间加 class,
+    //   触发的规则里有 `.cinema-room.kb-open *` 通配选择器,
+    //   等于在 iOS 弹键盘的那一瞬间让整棵子树样式失效 + 重新布局 + 重新绘制。
+    //   恢复 = 删掉下面这行注释。
+    // initKeyboardMode();
     startPerfWatchdog();
     return els;
   }
@@ -2134,10 +2141,11 @@
   let lastVvTop = -1;
 
   // 🧪 2026-10-08 诊断实验 B 总开关 (临时)
-  //   true  = 断开 visualViewport → CSS 变量 → .cinema-room height 这条链
-  //   false = 恢复原逻辑
-  //   测完请告诉我结论, 我按结论决定恢复还是换方案。
-  const VV_DIAG_DISABLE_HEIGHT_SYNC = true;
+  //   实验 B 结论: 断开高度同步后, 「收键盘时影院被带下去」消失,
+  //   但【键盘弹出慢 / 打字慢】完全没变 → 那两个症状与高度同步无关。
+  //   高度同步是功能本身(房间要靠它避让键盘), 打字时看不见画面不可接受, 已恢复。
+  //   现在改成 false = 恢复正常逻辑。要再断开就改回 true。
+  const VV_DIAG_DISABLE_HEIGHT_SYNC = false;
 
   // 只读诊断计数, 给「键盘还卡不卡」做实测用。不影响任何行为。
   const vvDiag = { events: 0, writes: 0 };
@@ -2407,7 +2415,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.27.0';
+  global.__CINEMA_VER = '0.28.0';
 
   global.CinemaRoom = {
     open: open,
