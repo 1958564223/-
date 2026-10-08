@@ -362,7 +362,7 @@
       nowPlaying: document.getElementById('cinema-now-playing')
     };
     bindEvents();
-    // initKeyboardMode();   🧪 实验 C 保持关闭
+    initKeyboardMode();   // 🧪 实验 C 已还原 (2026-10-08): 跟打字卡顿无关
     startPerfWatchdog();
     startIdleProbe();     // 🧪 诊断探针, 见下
     return els;
@@ -579,9 +579,26 @@
     els.chatInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
     });
-    // 聚焦输入框 = 键盘要弹了, 先把可视视口钉住, 否则 iOS 会把页面顶飞
-    els.chatInput.addEventListener('focus', function () { setTimeout(keepViewportPinned, 60); });
-    els.keyInput.addEventListener('focus', function () { setTimeout(keepViewportPinned, 60); });
+    // 🧪 2026-10-08 疑似真凶: 删掉「聚焦后 60ms 强制同步视口」
+    //
+    //   原来这两行是:
+    //     els.chatInput.addEventListener('focus', function () { setTimeout(keepViewportPinned, 60); });
+    //     els.keyInput .addEventListener('focus', function () { setTimeout(keepViewportPinned, 60); });
+    //
+    //   60 毫秒 —— 正好是 iOS 刚开始算「键盘弹多高、页面滚到哪」的那一瞬间,
+    //   我们就把 --cinema-vv-height / --cinema-vv-top 写进 .cinema-room,
+    //   房间高度真的变了 → iOS 算到一半作废重来 → visualViewport 再抛事件
+    //   → 再改一次 → 反复谈判, 表现就是「键盘要等 4~5 秒」。
+    //
+    //   为什么删得放心: keepViewportPinned 原本是配 window.scrollTo(0,0) 用的
+    //   (那行 2026-10-06 就删了), 现在只剩「提前强制同步一次」的作用;
+    //   而 visualViewport 的 resize/scroll 监听本来就会自己触发同步, 这次强制
+    //   同步是多余的 —— 房间照样跟着键盘缩放避让, 只是不再抢在 iOS 前面改高度。
+    //
+    //   ⚠️ A/B/C/D 四个实验期间这两行一直是活的, 这就是四次都没测出来的原因。
+    //   若确认有效就把注释删干净; 若无效, 删掉注释即可回到原样。
+    // els.chatInput.addEventListener('focus', function () { setTimeout(keepViewportPinned, 60); });
+    // els.keyInput.addEventListener('focus', function () { setTimeout(keepViewportPinned, 60); });
 
     // ---- 设置面板 (密钥 + 人物立绘) ----
     // 2026-10-04: 原来聊天头部那个「密钥」按钮和 key-box 一起删了, 收进这里。
@@ -2483,7 +2500,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.29.0';
+  global.__CINEMA_VER = '0.30.0';
 
   global.CinemaRoom = {
     open: open,
