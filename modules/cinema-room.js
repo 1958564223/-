@@ -362,15 +362,9 @@
       nowPlaying: document.getElementById('cinema-now-playing')
     };
     bindEvents();
-    // 🧪 2026-10-08 诊断实验 C: 临时不挂 kb-open 的 focusin 监听。
-    //   这是【全项目唯一一处「聚焦瞬间执行的 JS」】—— 搜 focusin/focus/onfocus
-    //   只有这一条, 主聊天页面一个都没有(所以主聊天页不卡)。
-    //   它给 position:fixed + z-index:99990 的整屏房间加 class,
-    //   触发的规则里有 `.cinema-room.kb-open *` 通配选择器,
-    //   等于在 iOS 弹键盘的那一瞬间让整棵子树样式失效 + 重新布局 + 重新绘制。
-    //   恢复 = 删掉下面这行注释。
-    // initKeyboardMode();
+    // initKeyboardMode();   🧪 实验 C 保持关闭
     startPerfWatchdog();
+    startIdleProbe();     // 🧪 诊断探针, 见下
     return els;
   }
 
@@ -465,6 +459,80 @@
       setTimeout(tick, 1000);
     }
     setTimeout(tick, 1000);
+  }
+
+  // --------------------------------------------------------------------------
+  // 🧪 诊断探针 (2026-10-08) —— 【纯测量, 不改任何行为】
+  //
+  // 为什么做这个:
+  //   四个单变量实验(A 高度过渡 / B 高度同步 / C kb-open / D body:fixed)全部无改善,
+  //   而用户指出关键事实: 剧库地址栏那个输入框在页面最下方, 点它【不会引起任何
+  //   布局变动】, 可键盘照样要等 5 秒。→ 整条"页面变动"理论都排除了。
+  //   与其继续猜, 不如量出来。
+  //
+  // 怎么用 (用户侧, 不用装任何东西、不用连电脑):
+  //   1. 进 Cinema Room, 【什么都别点】, 等 12 秒
+  //   2. ⚙设置 → 「诊断（出问题时展开）」
+  //   3. 看最后两行 [性能] 开头的记录, 截图发我
+  //
+  // 关键: ① 只需要静置, 不用点任何输入框 —— 所以不会触发那个 5 秒卡顿, 手机不烫。
+  //
+  // 结果怎么读:
+  //   ① 静置就 >100ms 很多 → 房间本身在持续烧 CPU, 跟输入框无关, 方向全错
+  //   ① 静置很流畅 + ② 点输入框后才卡 → 确认是键盘定位阶段的事
+  // --------------------------------------------------------------------------
+  function sampleFrames(ms) {
+    return new Promise(function (resolve) {
+      var gaps = [], last = performance.now(), t0 = last;
+      (function tick(now) {
+        gaps.push(now - last);
+        last = now;
+        if (now - t0 < ms) { requestAnimationFrame(tick); return; }
+        gaps.sort(function (a, b) { return a - b; });
+        var over = 0, i;
+        for (i = 0; i < gaps.length; i++) if (gaps[i] > 100) over++;
+        resolve({
+          n: gaps.length,
+          med: Math.round(gaps[Math.floor(gaps.length / 2)] || 0),
+          p95: Math.round(gaps[Math.floor(gaps.length * 0.95)] || 0),
+          max: Math.round(gaps[gaps.length - 1] || 0),
+          over: over
+        });
+      })(performance.now());
+    });
+  }
+
+  function fmtProbe(tag, r) {
+    return '[性能] ' + tag + ' → 帧数=' + r.n + ' 中位=' + r.med + 'ms p95=' + r.p95 +
+      'ms 最长=' + r.max + 'ms 卡顿帧(>100ms)=' + r.over;
+  }
+
+  function startIdleProbe() {
+    if (!els || !els.root) return;
+    var didFocus = false;
+    var t0 = Date.now();
+
+    // ① 进房后静置 6 秒 —— 什么都不用点
+    setTimeout(function () {
+      sampleFrames(6000).then(function (r) {
+        diagLogPush(fmtProbe('① 静置6秒(什么都没点) 房间高度=' +
+          Math.round(els.root.getBoundingClientRect().height) + 'px 节点=' +
+          els.root.getElementsByTagName('*').length, r));
+      });
+    }, 2000);
+
+    // ② 第一次点到输入框后再量 6 秒
+    els.root.addEventListener('focusin', function () {
+      if (didFocus) return;
+      didFocus = true;
+      setTimeout(function () {
+        sampleFrames(6000).then(function (r) {
+          diagLogPush(fmtProbe('② 点输入框后6秒', r));
+        });
+      }, 400);
+    });
+
+    global.__cinemaIdleProbeAt = t0;
   }
 
   // --------------------------------------------------------------------------
@@ -2415,7 +2483,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.28.0';
+  global.__CINEMA_VER = '0.29.0';
 
   global.CinemaRoom = {
     open: open,
