@@ -364,7 +364,7 @@
     bindEvents();
     initKeyboardMode();   // 🧪 实验 C 已还原 (2026-10-08): 跟打字卡顿无关
     startPerfWatchdog();
-    startIdleProbe();     // 🧪 诊断探针, 见下
+    startTimelineProbe();  // 🧪 诊断探针 v2 (时间线)
     return els;
   }
 
@@ -461,78 +461,159 @@
     setTimeout(tick, 1000);
   }
 
+  // 🧪 诊断探针 v2 (2026-10-08) —— 时间线记录器
+  //
+  // 上一版有两个硬伤, 害我下了错结论:
+  //   ① 采样从 focusin 之后 400ms 才开始, 把「点击 → 冻结」整段漏掉了。
+  //      实测真值: 6 秒窗口只跑出 8 帧 = 主线程冻了约 9 秒。
+  //   ② 只记帧数, 看不到「卡死前最后一个事件是什么」。
+  //
+  // 这版重做(三条都来自 Gemini 的建议):
+  //   A. 日志极轻 —— 热路径里只往扁平数组 push「时间戳 + 事件名」,
+  //      一个字符都不打。iOS Safari 往 console 打对象本身就可能阻塞,
+  //      所以一律不在事件里 console.log, 全攒着, 结束后一次性 dump。
+  //   B. 从 touchstart 就开始记, 不等 focus —— 这才看得到点击到卡死的完整链路。
+  //   C. 同时量四样, 一眼分清是「同步宏任务卡死」还是「微任务队列被撑爆」:
+  //        帧间隔       : rAF 实际间隔, 超过阈值就是主线程被占住
+  //        宏任务延迟   : setTimeout(0) 的排队延迟 = 事件循环被长任务堵住
+  //        微任务延迟   : rAF 里排一个微任务, 量它多久才轮到
+  //        DOM 变更次数 : MutationObserver 回调次数
+  //
+  // 用法(用户侧, 不装任何东西):
+  //   进影院 → 正常操作 → 复现卡顿 → ⚙设置 →「诊断(出问题时展开)」→ 截图
+  //   冻结超过 2 秒会自动 dump 一次, 也会在每次开设置面板时 dump。
   // --------------------------------------------------------------------------
-  // 🧪 诊断探针 (2026-10-08) —— 【纯测量, 不改任何行为】
-  //
-  // 为什么做这个:
-  //   四个单变量实验(A 高度过渡 / B 高度同步 / C kb-open / D body:fixed)全部无改善,
-  //   而用户指出关键事实: 剧库地址栏那个输入框在页面最下方, 点它【不会引起任何
-  //   布局变动】, 可键盘照样要等 5 秒。→ 整条"页面变动"理论都排除了。
-  //   与其继续猜, 不如量出来。
-  //
-  // 怎么用 (用户侧, 不用装任何东西、不用连电脑):
-  //   1. 进 Cinema Room, 【什么都别点】, 等 12 秒
-  //   2. ⚙设置 → 「诊断（出问题时展开）」
-  //   3. 看最后两行 [性能] 开头的记录, 截图发我
-  //
-  // 关键: ① 只需要静置, 不用点任何输入框 —— 所以不会触发那个 5 秒卡顿, 手机不烫。
-  //
-  // 结果怎么读:
-  //   ① 静置就 >100ms 很多 → 房间本身在持续烧 CPU, 跟输入框无关, 方向全错
-  //   ① 静置很流畅 + ② 点输入框后才卡 → 确认是键盘定位阶段的事
-  // --------------------------------------------------------------------------
-  function sampleFrames(ms) {
-    return new Promise(function (resolve) {
-      var gaps = [], last = performance.now(), t0 = last;
-      (function tick(now) {
-        gaps.push(now - last);
-        last = now;
-        if (now - t0 < ms) { requestAnimationFrame(tick); return; }
-        gaps.sort(function (a, b) { return a - b; });
-        var over = 0, i;
-        for (i = 0; i < gaps.length; i++) if (gaps[i] > 100) over++;
-        resolve({
-          n: gaps.length,
-          med: Math.round(gaps[Math.floor(gaps.length / 2)] || 0),
-          p95: Math.round(gaps[Math.floor(gaps.length * 0.95)] || 0),
-          max: Math.round(gaps[gaps.length - 1] || 0),
-          over: over
-        });
-      })(performance.now());
-    });
+  var TL = [];                 // [相对毫秒, 事件名] —— 扁平, 不存对象
+  var TL_T0 = 0, TL_MAX = 120;
+  var tlLast = 0, tlMicroAt = 0, tlMacroAt = 0;
+  var tlFrames = 0, tlMut = 0;
+  var tlGapMax = 0, tlGapN = 0;
+  var tlMicroMax = 0, tlMacroMax = 0;
+  var tlDumped = false, tlDumping = false;
+
+  function tlMark(name, prio) {
+    if (prio) { if (TL.length >= TL_MAX) TL.shift(); }
+    else if (TL.length >= TL_MAX) return;
+    TL.push([Math.round(performance.now() - TL_T0), name]);
   }
 
-  function fmtProbe(tag, r) {
-    return '[性能] ' + tag + ' → 帧数=' + r.n + ' 中位=' + r.med + 'ms p95=' + r.p95 +
-      'ms 最长=' + r.max + 'ms 卡顿帧(>100ms)=' + r.over;
+  // 时间线正文单独存一份, 由 renderDiagBox 一并渲染。
+  // ⚠️ 不逐条走 diagLogPush: 那会 120 次重渲染 + 120 次 console.log,
+  //    iOS Safari 往 console 打东西本身就可能阻塞 —— 那探针就自己制造卡顿了。
+  var TL_TEXT = '';
+
+  function tlDump(reason) {
+    if (tlDumping) return;
+    tlDumping = true;
+    try {
+      var head = '[时间线] ' + reason +
+        ' | 帧数=' + tlFrames +
+        ' 最长帧=' + tlGapMax + 'ms(×' + tlGapN + ')' +
+        ' 微任务最慢=' + tlMicroMax + 'ms' +
+        ' 宏任务最慢=' + tlMacroMax + 'ms' +
+        ' DOM变更=' + tlMut;
+      var lines = ['  ' + head];
+      for (var i = 0; i < TL.length; i++) {
+        lines.push('  +' + TL[i][0] + 'ms  ' + TL[i][1]);
+      }
+      lines.push('  [时间线] ---- 共 ' + TL.length + ' 条记录, 结束 ----');
+      TL_TEXT = lines.join('\n');
+      diagLogPush(head);          // 一次进日志, 顺带触发一次 renderDiagBox
+      tlDumped = true;
+    } catch (e) { /* 诊断绝不能影响主流程 */ }
+    tlDumping = false;
   }
 
-  function startIdleProbe() {
+  function startTimelineProbe() {
     if (!els || !els.root) return;
-    var didFocus = false;
-    var t0 = Date.now();
+    TL_T0 = performance.now();
+    tlLast = TL_T0;
+    tlMark('探针启动, 房间已打开');
 
-    // ① 进房后静置 6 秒 —— 什么都不用点
-    setTimeout(function () {
-      sampleFrames(6000).then(function (r) {
-        diagLogPush(fmtProbe('① 静置6秒(什么都没点) 房间高度=' +
-          Math.round(els.root.getBoundingClientRect().height) + 'px 节点=' +
-          els.root.getElementsByTagName('*').length, r));
+    // C1. 帧循环: 量帧间隔 + 每帧排一个微任务量它的延迟
+    requestAnimationFrame(function loop(now) {
+      tlFrames++;
+      var gap = now - tlLast;
+      tlLast = now;
+      if (gap > 200) {
+        tlGapN++;
+        if (gap > tlGapMax) tlGapMax = Math.round(gap);
+        tlMark('⛔ 主线程空转 ' + Math.round(gap) + 'ms', true);
+        // 冻过 2 秒就自动 dump 一次(冻结期间的事件补记在后面)
+        if (gap > 2000) setTimeout(function () { tlDump('检测到 ' + Math.round(gap / 100) / 10 + 's 冻结'); }, 300);
+      }
+      // 微任务: 每帧只排一个, 不会自己撑爆队列
+      var m0 = performance.now();
+      Promise.resolve().then(function () {
+        var d = performance.now() - m0;
+        if (d > tlMicroMax) tlMicroMax = Math.round(d);
+        if (d > 50) tlMark('微任务延迟 ' + Math.round(d) + 'ms', true);
       });
-    }, 2000);
-
-    // ② 第一次点到输入框后再量 6 秒
-    els.root.addEventListener('focusin', function () {
-      if (didFocus) return;
-      didFocus = true;
+      // 宏任务: setTimeout(0) 多久才轮到 = 事件循环有没有被长任务堵住
+      var t0 = performance.now();
       setTimeout(function () {
-        sampleFrames(6000).then(function (r) {
-          diagLogPush(fmtProbe('② 点输入框后6秒', r));
-        });
-      }, 400);
+        var d2 = performance.now() - t0;
+        if (d2 > tlMacroMax) tlMacroMax = Math.round(d2);
+      }, 0);
+      requestAnimationFrame(loop);
     });
 
-    global.__cinemaIdleProbeAt = t0;
+    // B. 从 touchstart 就开始记(捕获阶段), 不等 focus
+    var EV = ['touchstart', 'touchend', 'mousedown', 'click',
+              'focus', 'blur', 'focusin', 'focusout',
+              'input', 'beforeinput', 'compositionstart', 'compositionend'];
+    for (var i = 0; i < EV.length; i++) {
+      (function (name) {
+        document.addEventListener(name, function (e) {
+          var extra = '';
+          if (name === 'focusin' || name === 'focus') {
+            var t = e.target;
+            extra = ' → ' + (t && (t.id || t.className || t.tagName) || '?');
+          }
+          tlMark('◆ ' + name + extra);
+        }, true);
+      })(EV[i]);
+    }
+
+    // visualViewport 事件也记(只记次数, 不打对象)
+    try {
+      var vv = global.visualViewport;
+      if (vv) {
+        var vvn = { resize: 0, scroll: 0 };
+        vv.addEventListener('resize', function () {
+          vvn.resize++; tlMark('● vv.resize #' + vvn.resize);
+        });
+        vv.addEventListener('scroll', function () {
+          vvn.scroll++; tlMark('● vv.scroll #' + vvn.scroll);
+        });
+        global.__cinemaVVCount = vvn;
+      }
+    } catch (e) { /* noop */ }
+
+    // DOM 变更次数 —— 观察器风暴的信号
+    // ⚠️ 只看 body 的【直接子级】, 不开 subtree。
+    //    开 subtree 的话每次任何深层 DOM 变动都会回调, 那它自己就成了开销,
+    //    探针反而制造问题(Gemini 提醒过: 探针必须极轻)。直接子级已经够
+    //    捕捉「影院被挂进/移出 body」这类关键变化。
+    try {
+      var mo = new MutationObserver(function (list) {
+        tlMut += list.length;
+        if (tlMut <= 20) tlMark('◇ body 子级变动 #' + tlMut);
+      });
+      mo.observe(document.body, { childList: true });
+      global.__cinemaTLMut = mo;
+    } catch (e) { /* noop */ }
+
+    // 开设置面板时也 dump 一次(用户主动来看的时刻)
+    if (els.diagToggle) {
+      els.diagToggle.addEventListener('click', function () {
+        if (tlDumped) return;
+        tlDump('打开诊断面板时手动采集');
+      });
+    }
+
+    global.__cinemaTL = function () { tlDump('手动触发'); };
+    global.__cinemaTLMark = tlMark;
   }
 
   // --------------------------------------------------------------------------
@@ -1822,7 +1903,8 @@
 
   function renderDiagBox() {
     if (!els.diagBox) return;
-    if (!diagLog.length) { els.diagBox.textContent = '（暂无记录）'; return; }
+    var tail = TL_TEXT ? ('\n\n' + TL_TEXT) : '';
+    if (!diagLog.length) { els.diagBox.textContent = '（暂无记录）' + tail; return; }
     // 顶上带一行环境信息 —— 出问题时第一眼就能知道是什么浏览器在跑
     var ua = '';
     try {
@@ -1830,7 +1912,7 @@
       ua = m ? m[0] : (navigator.userAgent.slice(0, 40) || '?');
     } catch (e) { ua = '?'; }
     var head = '浏览器: ' + ua + '  ·  ' + (global.CinemaStorage ? '存储层已就绪' : '存储层未加载');
-    els.diagBox.textContent = head + '\n' + '─'.repeat(20) + '\n' + diagLog.join('\n');
+    els.diagBox.textContent = head + '\n' + '─'.repeat(20) + '\n' + diagLog.join('\n') + tail;
   }
 
   // 看门狗: iOS 上偶尔 change 就是不来 (选择器弹了又关 / 系统弹窗抢焦点 /
