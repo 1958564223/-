@@ -69,7 +69,14 @@
 body.cinema-room-active {
   overflow: hidden;
   /* iOS 上聚焦输入框会滚文档, fixed 元素跟着飘 —— 一并锁住 */
-  position: fixed;
+  /* 🧪 2026-10-08 诊断实验 D: 临时去掉 body 的 position: fixed。
+   *   它是「影院 vs 主聊天页」仅剩的、能一行测完的结构差异 ——
+   *   主聊天页 body 永远是 static, 而这里开房时被改成 fixed。
+   *   iOS 上 fixed body 里的输入框获得焦点是已知病态路径:
+   *   body 固定后文档没法正常滚动, iOS 只能反复重试把输入框滚进视野,
+   *   表现就是「键盘要等 4~5 秒 + 手机发烫」(重试本身在烧 CPU)。
+   *   恢复 = 删掉下面这一行 position: fixed;。 */
+  /* position: fixed; */
   width: 100%;
 }
 
