@@ -2133,6 +2133,12 @@
   let lastVvHeight = -1;    // 上次真正写进 DOM 的值 (去重用)
   let lastVvTop = -1;
 
+  // 🧪 2026-10-08 诊断实验 B 总开关 (临时)
+  //   true  = 断开 visualViewport → CSS 变量 → .cinema-room height 这条链
+  //   false = 恢复原逻辑
+  //   测完请告诉我结论, 我按结论决定恢复还是换方案。
+  const VV_DIAG_DISABLE_HEIGHT_SYNC = true;
+
   // 只读诊断计数, 给「键盘还卡不卡」做实测用。不影响任何行为。
   const vvDiag = { events: 0, writes: 0 };
   global.__cinemaVVDiag = vvDiag;
@@ -2140,6 +2146,19 @@
 
   // 真正写 DOM 的那一步。rAF 合帧和值去重都收敛在这里。
   function applyVisualViewport() {
+    // 🧪 2026-10-08 诊断实验 B —— 临时总开关【不要删, 测完要恢复】
+    //
+    //   要验证的假设: 「Cinema Room 高度跟着 visualViewport 实时变化」是不是根因。
+    //   现象: 键盘弹出要等 4~5 秒; 收键盘时影院整体被带下去、露出半截主聊天框。
+    //   上一轮实验(去掉 .cinema-chat-panel 的 height 过渡)完全无改善, 说明不是动画。
+    //
+    //   这里把【所有】写入 --cinema-vv-height / --cinema-vv-top 的入口一刀切掉:
+    //   visualViewport 监听、首帧同步、keepViewportPinned 全部从这里过, 一行就断干净。
+    //   initVisualViewport 里的 addEventListener 也一并注释, 免得事件还在空跑 rAF 排队。
+    //
+    //   ⚠️ 诊断用, 不是最终方案。恢复 = 删掉这一个 if。
+    if (VV_DIAG_DISABLE_HEIGHT_SYNC) return;
+
     const vv = global.visualViewport;
     const root = els && els.root;
     if (!vv || !root) return;
@@ -2173,6 +2192,11 @@
     const vv = global.visualViewport;
     if (!vv) return;
     vvFrame = 0;   // 进房间先清一次排队状态, 防止上次残留的陈旧帧挡住首次同步
+
+    // 🧪 2026-10-08 诊断实验 B: 临时不挂 visualViewport 监听, 也不做首帧同步。
+    //    恢复 = 删掉这个 if 块。(下面的代码就是原来的逻辑, 一行没改)
+    if (VV_DIAG_DISABLE_HEIGHT_SYNC) return;
+
     if (vv.__cinemaBound) { applyVisualViewport(); return; }
     vv.__cinemaBound = true;
     vv.addEventListener('resize', syncVisualViewport);
@@ -2383,7 +2407,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.26.0';
+  global.__CINEMA_VER = '0.27.0';
 
   global.CinemaRoom = {
     open: open,
