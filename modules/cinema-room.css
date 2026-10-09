@@ -199,7 +199,7 @@ body.cinema-room-active {
 }
 
 /* --------------------------------------------------------------------------
-   隐藏旧影院入口 (2026-10-09)
+   隐藏旧影院入口 (2026-10-09, 2026-10-09 再加一道)
 
    同一个 cinema-room.js, 装在 3,552 节点的宿主里 → 点输入框主线程冻 4~5 秒;
    装在 187 节点的 cinema-sandbox/index.html(iframe)里 → 完全不卡。
@@ -207,6 +207,18 @@ body.cinema-room-active {
 
    ⚠️ 这里只【隐藏】不删按钮, 随时把 display 去掉就能恢复。
       模块文件一行没动 —— 两条入口用的是同一份代码。
+
+   ⚠️⚠️ 这条 CSS 规则【不够】, index.html 里还额外写了 inline
+      style="display: none !important"。原因 (2026-10-09 实测踩到):
+      角色的 chat.settings.customCss 会被 applyScopedCss() 原样注入
+      <style id="custom-bubble-style">, 而它只给 .message-bubble 加
+      #chat-messages 前缀, 其余选择器【原样全页生效】。
+      某次给某个角色修影院时写进去的 CSS 就一直压着这条规则,
+      导致同一个 PWA 里「只有那个角色」显示两个影院入口, 换个角色就正常。
+
+      优先级: inline + !important > stylesheet 里的 !important。
+      所以 inline 那道谁都盖不过 —— customCss / globalCss 都白搭。
+      恢复办法: 把 index.html 里那个 style="display: none !important" 删掉。
    -------------------------------------------------------------------------- */
 #open-cinema-room-btn {
   display: none !important;
@@ -1515,6 +1527,40 @@ body.cinema-room-active {
 .cinema-plot-btn.ghost {
   background: transparent;
   color: rgba(240, 220, 196, .58);
+}
+
+/* --------------------------------------------------------------------------
+   单集记忆的手动修正 (2026-10-07)
+   之前每集记忆是纯只读的一行文字, 模型写错了用户只能干看着。
+   现在每行右边有颗「改」, 点开就是 textarea + 保存/取消。
+   -------------------------------------------------------------------------- */
+.cinema-plot-ep {
+  position: relative;
+  padding: 7px 46px 7px 9px;
+  margin: 4px 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .035);
+  line-height: 1.7;
+  font-size: 13px;
+}
+
+.cinema-plot-ep.editing {
+  padding-right: 9px;
+  background: rgba(216, 168, 116, .10);
+}
+
+.cinema-plot-ep.editing .cinema-plot-edit {
+  min-height: 96px;
+}
+
+/* 「改」按钮贴在每行右上角, 不用用户去找 */
+.cinema-plot-btn.tiny {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  padding: 3px 9px;
+  font-size: 11px;
+  border-radius: 999px;
 }
 
 .cinema-plot-hint {

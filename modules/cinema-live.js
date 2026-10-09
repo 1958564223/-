@@ -572,7 +572,8 @@
   // ============================================================
   var plotPanelEl = null;
   var plotPanelOpen = false;
-  var plotEditing = false;
+  // 正在编辑哪一块: null = 没在编辑 | 'summary' = 当前剧情摘要 | 'ep:N' = 短剧第 N 集
+  var plotEditing = null;
   var plotDraft = '';
 
   function plotPanelVisible() {
@@ -623,12 +624,44 @@
     plotPanelEl = el;
   }
 
-  /** 短剧专属那一块: 总纲 + 本次攒了多少集 (2026-10-07) */
+  /** 编辑用的 textarea + 保存/取消 (2026-10-07: 长剧摘要 + 短剧每集 共用) */
+  function editBoxHtml(id, val) {
+    return '<textarea class="cinema-plot-edit" id="' + id + '">' + esc(val) + '</textarea>' +
+      '<div class="cinema-plot-edit-bar">' +
+      '<button class="cinema-plot-btn" data-plot="save">保存</button>' +
+      '<button class="cinema-plot-btn ghost" data-plot="cancel">取消</button>' +
+      '</div>';
+  }
+
+  /**
+   * 短剧专属那一块: 总纲 + 本次攒了多少集 (2026-10-07)
+   *
+   * 2026-10-07 补: 每集记忆都可以手动改。
+   *   为什么这个最有用: 退出时的【最终观影记忆】是拿
+   *   「当前剧情摘要 + 各集剧情」重新写的, 所以把每集改对,
+   *   最终存进长期记忆的那条自然就跟着对了。
+   */
   function buildSeriesHtml() {
     var eps = watchSession.episodeMemories || [];
-    var epText = eps.length
-      ? eps.map(function (e) { return '第' + e.ep + '集：' + esc(e.text); }).join('<br>')
-      : '<span class="dim">（还没攒到, 每看完一集自动记一条）</span>';
+    var epText;
+    if (!eps.length) {
+      epText = '<span class="dim">（还没攒到, 每看完一集自动记一条）</span>';
+    } else {
+      var rows = eps.map(function (e) {
+        var tag = 'ep:' + e.ep;
+        if (plotEditing === tag) {
+          return '<div class="cinema-plot-ep editing">第' + e.ep + '集：' +
+            editBoxHtml('cinema-plot-ep-edit', e.text) +
+            '<div class="cinema-plot-hint">改完保存, 退出时的最终观影记忆会按你改过的内容重新写。</div>' +
+            '</div>';
+        }
+        return '<div class="cinema-plot-ep">第' + e.ep + '集：' + esc(e.text) +
+          '<button class="cinema-plot-btn tiny" data-plot="edit:' + tag + '">改</button>' +
+          '</div>';
+      });
+      epText = rows.join('');
+    }
+
     var outlineBlock = watchSession.seriesOutline
       ? '<div class="cinema-plot-text">' + esc(watchSession.seriesOutline) + '</div>'
       : '<div class="cinema-plot-text dim">（还没有总纲, 攒够 ' + SERIES_MERGE_AT + ' 集自动合并）</div>';
@@ -636,8 +669,9 @@
     return '<div class="cinema-plot-label">总纲（攒够 ' + SERIES_MERGE_AT + ' 集合并一次, 一直保留）</div>' +
         outlineBlock +
         '<div class="cinema-plot-label">本次已记 ' + eps.length + ' 集'
-          + (watchSession.seriesLastEp ? ' · 看到第 ' + watchSession.seriesLastEp + ' 集' : '') + '</div>' +
-        '<div class="cinema-plot-text">' + epText + '</div>';
+          + (watchSession.seriesLastEp ? ' · 看到第 ' + watchSession.seriesLastEp + ' 集' : '')
+          + (eps.length ? ' · 点「改」可以自己修正' : '') + '</div>' +
+        epText;
   }
 
   /**
@@ -688,20 +722,14 @@
 
     // 剧情摘要正文: 折叠时只读; 展开且点编辑时给 textarea
     var summaryBody;
-    if (plotEditing) {
-      summaryBody =
-        '<textarea class="cinema-plot-edit" id="cinema-plot-edit">' +
-        esc(plotDraft) + '</textarea>' +
-        '<div class="cinema-plot-edit-bar">' +
-        '<button class="cinema-plot-btn" data-plot="save">保存</button>' +
-        '<button class="cinema-plot-btn ghost" data-plot="cancel">取消</button>' +
-        '</div>' +
-        '<div class="cinema-plot-hint">编辑只改本次观影的临时摘要，不影响长期记忆。</div>';
+    if (plotEditing === 'summary') {
+      summaryBody = editBoxHtml('cinema-plot-edit', plotDraft) +
+        '<div class="cinema-plot-hint">改这里没用, 退出时的最终观影记忆会按你改过的内容重新写一遍。</div>';
     } else if (watchSession.currentPlotSummary) {
       summaryBody =
         '<div class="cinema-plot-text">' + esc(watchSession.currentPlotSummary) + '</div>' +
         '<div class="cinema-plot-edit-bar">' +
-        '<button class="cinema-plot-btn" data-plot="edit">编辑</button>' +
+        '<button class="cinema-plot-btn" data-plot="edit:summary">编辑</button>' +
         '</div>';
     } else {
       // 短剧是【按集】记忆的, 不是按 5 分钟。照抄普通观影那句"约 5 分钟后生成第一份"
@@ -731,23 +759,57 @@
 
   function togglePlotPanel() {
     plotPanelOpen = !plotPanelOpen;
-    plotEditing = false;
+    plotEditing = null;
     plotDraft = watchSession.currentPlotSummary || '';
     renderPlotPanel();
   }
 
-  function startEditSummary() {
-    plotDraft = watchSession.currentPlotSummary || '';
-    plotEditing = true;
+  /** 开始编辑某一块。target: 'summary' 或 'ep:N' */
+  function startEditSummary(target) {
+    var eps = watchSession.episodeMemories || [];
+    if (String(target).indexOf('ep:') === 0) {
+      var ep = parseInt(String(target).slice(3), 10);
+      for (var i = 0; i < eps.length; i++) {
+        if (eps[i].ep === ep) { plotDraft = eps[i].text || ''; break; }
+      }
+      plotEditing = 'ep:' + ep;
+    } else {
+      plotDraft = watchSession.currentPlotSummary || '';
+      plotEditing = 'summary';
+    }
     renderPlotPanel();
   }
 
   function saveEditedSummary() {
+    var eps = watchSession.episodeMemories || [];
+
+    if (String(plotEditing).indexOf('ep:') === 0) {
+      var ep = parseInt(String(plotEditing).slice(3), 10);
+      var taEp = document.getElementById('cinema-plot-ep-edit');
+      var vEp = taEp ? taEp.value : plotDraft;
+      var newText = String(vEp || '').trim();
+      for (var i = 0; i < eps.length; i++) {
+        if (eps[i].ep === ep) {
+          // 存空会让那一行变成「第N集：」什么都没有, 看着像坏了 —— 留原文并提示
+          if (!newText) {
+            log('第 ' + ep + ' 集没填内容, 已保留原文');
+          } else {
+            eps[i].text = newText;
+            log('用户手动修正了第 ' + ep + ' 集剧情');
+          }
+          break;
+        }
+      }
+      plotEditing = null;
+      renderPlotPanel();
+      return;
+    }
+
     var ta = document.getElementById('cinema-plot-edit');
     var val = ta ? ta.value : plotDraft;
     watchSession.currentPlotSummary = String(val || '').trim();
     if (watchSession.summaryUpdatedAt === 0) watchSession.summaryUpdatedAt = Date.now();
-    plotEditing = false;
+    plotEditing = null;
     log('用户手动编辑了本次剧情摘要');
     renderPlotPanel();
   }
@@ -759,9 +821,9 @@
     var panel = t.closest('#' + PLOT_PANEL_ID);
     if (!panel) return;
     var act = t.getAttribute && t.getAttribute('data-plot');
-    if (act === 'edit') { startEditSummary(); return; }
+    if (act && act.indexOf('edit') === 0) { startEditSummary(act.slice(5)); return; }
     if (act === 'save') { saveEditedSummary(); return; }
-    if (act === 'cancel') { plotEditing = false; renderPlotPanel(); return; }
+    if (act === 'cancel') { plotEditing = null; renderPlotPanel(); return; }
     if (t.closest('[data-noscroll]')) return;
     togglePlotPanel();
   }, true);
@@ -807,6 +869,9 @@
     if (!text) return;
     if (watchSession.pendingSummary) {
       var p = watchSession.pendingSummary;
+      // ⚠️ gotText = 「这次摘要真的开始吐字了」, 是 onTurnCompleteInternal 敢收它的前提。
+      // 见下面那段竞态说明。
+      p.gotText = true;
       p.buffer += takeDelta(p.lastText, text);   // 摘要同样要去重, 否则整段是重复堆的
       p.lastText = text;
       return;   // ⬅ 关键: 摘要文字绝不进聊天气泡
@@ -830,7 +895,13 @@
     if (watchSession.pendingSummary) return Promise.reject(new Error('已有摘要请求在进行中'));
     if (!S.client || !S.client.isReady()) return Promise.reject(new Error('Live 未就绪'));
 
-    var p = { kind: kind, buffer: '', resolve: null, timer: null };
+    var p = {
+      kind: kind, buffer: '', lastText: '',
+      resolve: null, timer: null,
+      // gotText: 见 handleModelText / onTurnCompleteInternal 的竞态说明。
+      // 摘要请求发出去之后, 必须【真的收到模型的字】才允许被 turnComplete 收走。
+      gotText: false
+    };
     var promise = new Promise(function (resolve) { p.resolve = resolve; });
 
     watchSession.pendingSummary = p;
@@ -1695,8 +1766,36 @@
   }
 
   function onTurnCompleteInternal() {
-    if (watchSession.pendingSummary) {
-      var p = watchSession.pendingSummary;
+    // ══════════════════════════════════════════════════════════════════════
+    // ⚠️⚠️ 2026-10-09 竞态修复 (用户实测症状: 「总结记忆的时候总是写进聊天框里」)
+    //
+    // 【怎么坏的】
+    //   观影时 1 FPS 一直在送视频帧, TURN_COVERAGE=ALL_VIDEO → 帧会不断推进回合。
+    //   live-client.js 收到 serverContent.turnComplete 时, 会【先】把最后一段转写
+    //   以 final=true 再抛一次, 【然后】才调 onTurnComplete()。
+    //
+    //   摘要请求发出去的那一瞬间, 只要正好撞上一个正在收尾的回合:
+    //     ① onModelText(旧对话的尾巴)  → buffer 被上一轮对话污染
+    //     ② onTurnComplete()           → 这里把空的/脏的 buffer resolve 掉,
+    //                                      finishSummary() 把 pendingSummary 置 null
+    //     ③ 模型真正的总结文本这时才到 → pendingSummary 已是 null
+    //                                  → 走正常分支 → 【打进聊天气泡】
+    //   结果: 记忆一个字没存, 整段总结出现在聊天框里。
+    //
+    // 【为什么只有部分角色犯】
+    //   观影时会跟角色搭话的那个角色, Live 一直有回合在跑 → 撞上的概率高;
+    //   安静看片的角色几乎撞不上。跟代码版本、跟设备新旧【完全无关】。
+    //
+    // 【怎么修的】
+    //   gotText 标记: 没吐过字的摘要不许被回合收尾收走, 继续等真正的摘要。
+    //   模型真的一句话都不说的话, 由 requestSummary 里的定时器兜底 resolve('')。
+    // ══════════════════════════════════════════════════════════════════════
+    var p = watchSession.pendingSummary;
+    if (p) {
+      if (!p.gotText) {
+        log('[摘要] 回合收尾但摘要还没吐字, 不收 (继续等真正的摘要输出)');
+        return;
+      }
       var buf = (p.buffer || '').trim();
       p.resolve(buf);
       finishSummary(p);
@@ -1769,7 +1868,7 @@
     watchSession.finalSummaryRequested = false;
     watchSession.chatLog = [];
     plotPanelOpen = false;
-    plotEditing = false;
+    plotEditing = null;
     S.canvas = null;
     S.ctx = null;
     S.framesSent = 0;
