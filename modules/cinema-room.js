@@ -2632,13 +2632,81 @@
     sbtn.__sandboxBound = true;
 
     let frame = null;
-    sbtn.addEventListener('click', function () {
-      if (frame) {                     // 已在沙盒里 → 再点一次关掉
-        frame.remove();
-        frame = null;
-        if (document.body) document.body.classList.remove('cinema-room-active');
-        return;
+    let ready = false;
+
+    // ---- 把当前活跃聊天打包给沙盒(只要 Gemini Live 需要的那几项) ----
+    function currentChatPayload() {
+      try {
+        if (typeof state === 'undefined' || !state || !state.activeChatId) return null;
+        const c = state.chats && state.chats[state.activeChatId];
+        if (!c) return null;
+        return {
+          id: c.id,
+          name: c.name || '',
+          originalName: c.originalName || c.name || '',
+          settings: {
+            aiPersona: (c.settings && c.settings.aiPersona) || '',
+            myPersona: (c.settings && c.settings.myPersona) || '',
+            myNickname: (c.settings && c.settings.myNickname) || '我'
+          },
+          watchTogetherSettings: {
+            geminiApiKey: (c.watchTogetherSettings && c.watchTogetherSettings.geminiApiKey) || ''
+          },
+          longTermMemory: Array.isArray(c.longTermMemory) ? c.longTermMemory.slice(-5) : []
+        };
+      } catch (e) { return null; }
+    }
+
+    function sendChat() {
+      const payload = currentChatPayload();
+      if (!payload || !frame) return;
+      try { frame.contentWindow.postMessage({ type: 'cinema:init', chat: payload }, '*'); } catch (e) {}
+    }
+
+    function closeSandbox() {
+      if (!frame) return;
+      try { frame.remove(); } catch (e) {}
+      frame = null; ready = false;
+      if (document.body) document.body.classList.remove('cinema-room-active');
+    }
+
+    window.addEventListener('message', function (e) {
+      if (!frame) return;
+      var d = e.data || {};
+      if (e.source !== frame.contentWindow) return;
+      if (d.type === 'cinema:needChat') sendChat();
+      else if (d.type === 'cinema:ready') { ready = true; sendChat(); }
+      else if (d.type === 'cinema:closed') closeSandbox();
+      else if (d.type === 'cinema:keyChanged') {
+        // 用户在影院设置面板里改了 key → 写回当前聊天记录
+        try {
+          if (typeof state !== 'undefined' && state && state.activeChatId && state.chats) {
+            const c = state.chats[state.activeChatId];
+            if (c) {
+              c.watchTogetherSettings = c.watchTogetherSettings || {};
+              c.watchTogetherSettings.geminiApiKey = d.key || '';
+              if (typeof db !== 'undefined' && db && db.chats && db.chats.put) db.chats.put(c);
+            }
+          }
+        } catch (err) { /* 存不上也不能影响影院 */ }
       }
+      else if (d.type === 'cinema:memory' && d.text) {
+        // 沙盒里存了记忆 → 合并进当前聊天记录的长期记忆
+        try {
+          if (typeof state !== 'undefined' && state && state.activeChatId && state.chats) {
+            const c = state.chats[state.activeChatId];
+            if (c) {
+              c.longTermMemory = Array.isArray(c.longTermMemory) ? c.longTermMemory : [];
+              c.longTermMemory.push(String(d.text));
+              if (typeof db !== 'undefined' && db && db.chats && db.chats.put) db.chats.put(c);
+            }
+          }
+        } catch (err) { /* noop */ }
+      }
+    });
+
+    sbtn.addEventListener('click', function () {
+      if (frame) { closeSandbox(); return; }   // 再点一次 = 退出沙盒
       if (document.body) document.body.classList.add('cinema-room-active');
       frame = document.createElement('iframe');
       frame.id = 'cinema-sandbox-frame';
@@ -2648,6 +2716,7 @@
         'position:fixed;inset:0;width:100%;height:100%;border:0;z-index:2147483647;' +
         'background:#16111a;';
       document.body.appendChild(frame);
+      frame.addEventListener('load', sendChat);
     });
   }
 

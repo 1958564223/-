@@ -3,224 +3,249 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Cinema 沙盒验证 (iframe 测试)</title>
+<title>Cinema Room (iframe 沙盒)</title>
 <!--
   ============================================================================
-  🧪 Cinema 沙盒验证页 (2026-10-09) —— 临时, 验证完整个删掉
+  Cinema Room · iframe 沙盒 (2026-10-09)
 
-  目的: 验证「把影院放进一个只有约 150 节点的纯净 iframe 文档」能不能根治
-        iOS 点击输入框时主线程冻结 4~5 秒的问题。
+  这个页面【就是】影院本体, 跑的是和生产完全相同的模块文件:
+    ../modules/cinema-room.css
+    ../modules/live-client.js
+    ../modules/cinema-storage.js
+    ../modules/cinema-img.js
+    ../modules/cinema-room.js
+    ../modules/cinema-live.js
 
-  为什么会有这个页面:
-    实测排除了一堆东西 —— 毛玻璃、抽帧 toDataURL、input 事件处理、
-    height 过渡动画、kb-open 焦点监听、body:fixed、宿主 display:none(反而慢一倍)、
-    甚至完全断开 visualViewport 同步(仍然 5,072ms 冻结)……
-    全部不是元凶。
+  为什么它不卡、集成进 330 之后卡:
+    本页整个文档只有约 54 个 DOM 节点; 完整 330 宿主有 3,552 个。
+    代码一模一样, 差别只有宿主。iframe 就是把这个差别彻底隔开。
 
-    剩下唯一还没验的假设: 【房间所在的宿主页面越大, WebKit 算 Focus Rect
-    越慢】。证据是: 独立测试页(本文件的原型)从来没卡过, 而它和 330 用的是
-    同一份 cinema-room.js、同样有 fixed 覆盖层 —— 唯一差别是它底下只有
-    约 150 个节点, 330 有 3,552 个。
+  和宿主的通信 (postMessage):
+    宿主 → 本页  { type:'cinema:init', chat:{ id, name, originalName,
+                                            settings:{aiPersona,myPersona,myNickname},
+                                            watchTogetherSettings:{geminiApiKey},
+                                            longTermMemory:[] } }
+    本页 → 宿主  { type:'cinema:ready' }        模块都就绪了
+                  { type:'cinema:needChat' }     缺聊天数据, 请再发一次
+                  { type:'cinema:memory', text }  最终观影记忆写好了
+                  { type:'cinema:closed' }      用户退出了影院
 
-  所以: 把这个页面用全屏 <iframe> 嵌进完整 330 里, 点输入框试一下。
-    · 不卡   → 假设成立, iframe 重构有依据
-    · 照样卡 → 假设不成立, 换思路
-
-  ⚠️ 这不是成品: 设置弹窗 / 人物拖拽 / 剧情记忆那些依赖 330 宿主的
-     showCustomAlert 等函数, 在这个沙盒里是没有的。只测输入框响应速度。
+  单独在浏览器里直接打开本页(不在 iframe 里)时, 走本地兜底数据,
+  方便开发时单独调试。
   ============================================================================ -->
-<link rel="stylesheet" href="../modules/cinema-room.css">
 <style>
-  body {
-    margin: 0; background: #16111a; color: #f0e3d4;
-    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
-    padding: calc(env(safe-area-inset-top, 0px) + 18px) 16px 40px;
-  }
-  .wrap { max-width: 560px; margin: 0 auto; }
-  h1 { font-size: 18px; letter-spacing: .12em; margin: 0 0 4px; color: #f0dcc4; }
-  .sub { font-size: 12px; color: rgba(240,220,196,.55); line-height: 1.7; margin-bottom: 16px; }
-  .card {
-    background: rgba(255,255,255,.05); border: 1px solid rgba(216,168,116,.18);
-    border-radius: 12px; padding: 13px; margin-bottom: 10px;
-  }
-  .card h2 { margin: 0 0 8px; font-size: 13.5px; color: #ffd9a8; font-weight: 700; }
-  label { display: block; font-size: 11.5px; color: rgba(240,220,196,.62); margin: 8px 0 4px; }
-  input, textarea, select {
-    width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 9px;
-    border: 1px solid rgba(216,168,116,.28); background: rgba(0,0,0,.34);
-    color: #f0e3d4; font-size: 13.5px; font-family: inherit;
-  }
-  textarea { min-height: 84px; resize: vertical; }
-  button {
-    padding: 11px 18px; border-radius: 999px; margin-top: 10px; margin-right: 8px;
-    border: 1px solid rgba(216,168,116,.38);
-    background: linear-gradient(180deg, rgba(216,168,116,.30), rgba(180,128,80,.20));
-    color: #ffeacd; font-size: 14px; font-weight: 600; cursor: pointer;
-  }
-  button.ghost { background: transparent; color: rgba(240,220,196,.62); }
-  .log {
-    font: 11.5px/1.6 ui-monospace, Menlo, monospace; white-space: pre-wrap;
-    background: #000; border-radius: 9px; padding: 9px; max-height: 190px; overflow: auto;
-    border: 1px solid rgba(216,168,116,.2);
-  }
-  .stat { font-size: 12px; color: rgba(240,220,196,.62); margin-top: 6px; line-height: 1.8; }
-  .warn { color: #ffcf9c; }
+  html,body{margin:0;height:100%;background:#16111a;color:#f0e3d4;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;}
+  #boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:14px;padding:24px;text-align:center;}
+  #boot .t{font-size:16px;font-weight:600;letter-spacing:.1em}
+  #boot .s{font-size:12px;color:rgba(240,220,196,.55);line-height:1.8;max-width:320px}
+  #boot button{margin-top:6px;padding:10px 22px;border-radius:999px;font:inherit;
+    font-size:13px;background:#2a4a7c;color:#fff;border:0}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>Cinema Room 独立测试</h1>
-  <div class="sub">
-    这个页面只加载观影房自己的模块（不拉整套 330），所以秒开。<br>
-    Live 要走 http(s)，<b>不能用 file:// 打开</b>，必须走局域网地址。
-  </div>
 
-  <div class="card">
-    <h2>1 · 你的角色（就是这台 PWA 在跑的那个人设）</h2>
-    <label>角色名</label>
-    <input id="f-name" value="张怀瑾">
-    <label>人设（AI 性格设定，和主聊天是同一份）</label>
-    <textarea id="f-persona">你是一个温柔、体贴、会陪用户一起看电影的伙伴。说话自然简洁，中文。</textarea>
-    <label>你的称呼</label>
-    <input id="f-nick" value="我">
-  </div>
-
-  <div class="card">
-    <h2>2 · Gemini Live 密钥</h2>
-    <label>API Key（只存在这台手机的 localStorage 里）</label>
-    <input id="f-key" type="password" placeholder="粘贴你的 Gemini API Key" autocomplete="off">
-    <div class="stat">存在浏览器本地，不上传。填好后播片就会自动连。</div>
-  </div>
-
-  <div class="card">
-    <h2>3 · 进房间</h2>
-    <button id="btn-save">保存设置</button>
-    <button class="ghost" id="btn-open">打开 Cinema Room</button>
-    <div class="stat" id="stat">状态：未初始化</div>
-    <div class="stat">
-      <button class="ghost" id="btn-clearsession" style="margin-top:8px">清除断线存档点（连上秒断时点这个）</button>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>运行日志</h2>
-    <div class="log" id="log"></div>
-  </div>
+<div id="boot">
+  <div class="t">Cinema Room</div>
+  <div class="s" id="bootMsg">正在连接 330 宿主…</div>
+  <button id="bootBtn" style="display:none">用本机数据进入</button>
 </div>
 
+<!-- 三张影片表用【真 Dexie】, 和生产完全一致。Blob 没法 JSON 序列化, 必须 IndexedDB。 -->
 <script src="./dexie.js"></script>
 <script>
-// ---- db ----
-// 三张 Cinema 表用【真 Dexie】, 和生产环境完全一致。
-// ⚠️ 之前这里图省事用 localStorage 桩, 结果没有 cinemaFilms/cinemaBlobs/cinemaProgress,
-//    上传视频直接报"数据表缺失"。Blob 根本没法 JSON 序列化, 必须用 IndexedDB。
-// chat 表则是 localStorage 桩 —— Cinema Live 只会 db.chats.put() 存记忆, 不需要 Dexie。
-var cdb = new Dexie('CinemaStandaloneDB');
-cdb.version(65).stores({
-  cinemaFilms: '&id, name, addedAt, size',
-  cinemaBlobs: '&id',
-  cinemaProgress: '&filmId, updatedAt'
-});
+(function () {
+  'use strict';
 
-var KEY_CHAT = 'cinema_test_chat';
-var KEY_KEY  = 'cinema_test_apikey';
-
-var chat = {
-  id: 'cinema-local',
-  name: '张怀瑾',
-  originalName: '张怀瑾',
-  settings: { aiPersona: '', myPersona: '', myNickname: '我' },
-  watchTogetherSettings: { geminiApiKey: '' },
-  longTermMemory: []
-};
-try { var saved = JSON.parse(localStorage.getItem(KEY_CHAT) || 'null'); if (saved) chat = saved; } catch (e) {}
-chat.settings.aiPersona = document.getElementById('f-persona').value;
-chat.name = chat.originalName = document.getElementById('f-name').value;
-chat.settings.myNickname = document.getElementById('f-nick').value;
-chat.watchTogetherSettings.geminiApiKey = localStorage.getItem(KEY_KEY) || '';
-document.getElementById('f-key').value = chat.watchTogetherSettings.geminiApiKey;
-
-// chats 用 localStorage; 其余三张表直接用 Dexie
-cdb.chats = {
-  put: function (c) { localStorage.setItem(KEY_CHAT, JSON.stringify(c)); return Promise.resolve(); },
-  get: function (id) { return Promise.resolve(chat); },
-  delete: function (id) { return Promise.resolve(); }
-};
-
-window.db = cdb;
-window.dbReadyPromise = cdb.open();
-window.state = { activeChatId: 'cinema-local', chats: { 'cinema-local': chat } };
-
-// ---- UI ----
-var logEl = document.getElementById('log');
-function log(m) {
-  var d = document.createElement('div');
-  d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + m;
-  logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
-}
-window.__testLog = log;
-var origWarn = console.warn, origErr = console.error;
-console.warn = function () { log('WARN ' + [].join.call(arguments, ' ')); origWarn.apply(console, arguments); };
-console.error = function () { log('ERR  ' + [].join.call(arguments, ' ')); origErr.apply(console, arguments); };
-
-function refreshStat() {
-  var s = document.getElementById('stat');
-  var hasKey = !!chat.watchTogetherSettings.geminiApiKey;
-  var yn = function (b) { return b ? '<span style="color:#7ee787">就绪</span>' : '<span class="warn">缺</span>'; };
-  s.innerHTML = '状态：<br>' +
-    '　角色「' + chat.name + '」　密钥 ' +
-      (hasKey ? '<span style="color:#7ee787">已填</span>' : '<span class="warn">未填</span>') + '<br>' +
-    '　CinemaRoom ' + yn(!!window.CinemaRoom) +
-    '　CinemaStorage ' + yn(!!window.CinemaStorage) +
-    '　CinemaLive ' + yn(!!window.CinemaLive) +
-    '　LiveClient ' + yn(!!window.LiveClient) + '<br>' +
-    '　数据表 ' + yn(!!(window.db && window.db.cinemaFilms && window.db.cinemaBlobs && window.db.cinemaProgress)) +
-    '　长期记忆 ' + chat.longTermMemory.length + ' 条';
-}
-
-document.getElementById('btn-save').addEventListener('click', function () {
-  chat.name = chat.originalName = document.getElementById('f-name').value.trim() || '角色';
-  chat.settings.aiPersona = document.getElementById('f-persona').value;
-  chat.settings.myNickname = document.getElementById('f-nick').value.trim() || '我';
-  chat.watchTogetherSettings.geminiApiKey = document.getElementById('f-key').value.trim();
-  localStorage.setItem(KEY_KEY, chat.watchTogetherSettings.geminiApiKey);
-  window.state.chats['cinema-local'] = chat;
-  window.db.chats.put(chat);
-  log('设置已保存到本机 localStorage');
-  refreshStat();
-});
-
-document.getElementById('btn-clearsession').addEventListener('click', function () {
-  var n = 0;
-  ['cinema_gemini_live_resume_handle', 'wt_gemini_live_resume_handle'].forEach(function (k) {
-    if (localStorage.getItem(k)) { localStorage.removeItem(k); n++; }
+  // ===================== 1. IndexedDB: 影片 / 进度 / 道具 =====================
+  var cdb = new Dexie('CinemaSandboxDB');
+  cdb.version(65).stores({
+    cinemaFilms: '&id, name, addedAt, size',
+    cinemaBlobs: '&id',
+    cinemaProgress: '&filmId, updatedAt'
   });
-  log(n ? ('已清除 ' + n + ' 个存档点。下次播放会用全新会话。') : '本来就没有存档点');
-});
 
-document.getElementById('btn-open').addEventListener('click', function () {
-  if (window.CinemaRoom) { window.CinemaRoom.open(); log('已打开 Cinema Room'); }
-  else log('CinemaRoom 没加载');
-});
+  // ===================== 2. 和宿主对话 =====================
+  var IN_IFRAME = (window.parent && window.parent !== window);
+  var booted = false;
 
-setInterval(refreshStat, 800);
-refreshStat();
-window.addEventListener('load', function () { log('页面资源加载完成'); });
+  function post(msg) {
+    if (!IN_IFRAME) return;
+    try { window.parent.postMessage(msg, '*'); } catch (e) { /* noop */ }
+  }
+
+  function log() {
+    // 沙盒里不刷屏, 只在控制台留一行
+    try { console.log.apply(console, ['[CinemaSandbox]'].concat([].slice.call(arguments))); }
+    catch (e) { /* noop */ }
+  }
+
+  // ===================== 3. 本机兜底数据(不在 iframe 里时用) =====================
+  var LS_CHAT = 'cinema_sandbox_chat_fallback';
+  function fallbackChat() {
+    var c = {
+      id: 'cinema-local',
+      name: '本地', originalName: '本地',
+      settings: { aiPersona: '', myPersona: '', myNickname: '我' },
+      watchTogetherSettings: { geminiApiKey: '' },
+      longTermMemory: []
+    };
+    try { var s = JSON.parse(localStorage.getItem(LS_CHAT) || 'null'); if (s && s.id) c = s; } catch (e) {}
+    return c;
+  }
+
+  // ===================== 4. 聊天表 =====================
+  // 生产环境里 chat 表在宿主 Dexie 里; 沙盒里收不到那个库,
+  // 所以 put 走 postMessage 交给宿主写, 同时本地留一份兜底。
+  var currentChat = null;
+  cdb.chats = {
+    put: function (c) {
+      currentChat = c;
+      try { localStorage.setItem(LS_CHAT, JSON.stringify(c)); } catch (e) {}
+      post({ type: 'cinema:memory', text: (c && (c.cinemaFinalMemory || (c.longTermMemory && c.longTermMemory.slice(-1)[0]))) || '' });
+      return Promise.resolve();
+    },
+    get: function () { return Promise.resolve(currentChat || fallbackChat()); },
+    delete: function () { return Promise.resolve(); }
+  };
+  window.db = cdb;
+  window.dbReadyPromise = cdb.open();
+
+  // ===================== 5. 本地 UI 函数(替代宿主的同名函数) =====================
+  // 影院模块会调 window.showCustomAlert / showCustomConfirm / showToast,
+  // 这三个在宿主里存在, 但 iframe 里拿不到, 这里自己实现一份最小可用的。
+  function simpleBox(html, buttons) {
+    return new Promise(function (resolve) {
+      var ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.62);' +
+        'display:flex;align-items:center;justify-content:center;padding:24px;';
+      var box = document.createElement('div');
+      box.style.cssText = 'max-width:360px;width:100%;background:#221a16;color:#f0e3d4;' +
+        'border:1px solid rgba(216,168,116,.24);border-radius:14px;padding:18px;line-height:1.7;font-size:14px;';
+      box.innerHTML = html;
+      var bar = document.createElement('div');
+      bar.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:16px;';
+      buttons.forEach(function (b) {
+        var el = document.createElement('button');
+        el.textContent = b.label;
+        el.style.cssText = 'padding:9px 18px;border-radius:999px;border:0;font:inherit;font-size:13px;' +
+          'background:' + (b.primary ? '#8a5a2e' : '#3a2f28') + ';color:#fff;';
+        el.onclick = function () { ov.remove(); resolve(b.value); };
+        bar.appendChild(el);
+      });
+      box.appendChild(bar);
+      ov.appendChild(box);
+      document.body.appendChild(ov);
+    });
+  }
+
+  window.showCustomAlert = function (title, body) {
+    return simpleBox('<div style="font-weight:600;margin-bottom:8px">' + (title || '提示') + '</div>' +
+      '<div style="white-space:pre-wrap">' + (body || '') + '</div>',
+      [{ label: '知道了', value: true, primary: true }]).then(function () { return true; });
+  };
+
+  window.showCustomConfirm = function (title, body, opts) {
+    opts = opts || {};
+    return simpleBox('<div style="font-weight:600;margin-bottom:8px">' + (title || '确认') + '</div>' +
+      '<div style="white-space:pre-wrap">' + (body || '') + '</div>',
+      [{ label: opts.cancelText || '取消', value: false },
+       { label: opts.confirmText || '确定', value: true, primary: true }]);
+  };
+
+  window.showToast = function (text) {
+    var t = document.createElement('div');
+    t.textContent = text;
+    t.style.cssText = 'position:fixed;left:50%;bottom:14%;transform:translateX(-50%);z-index:2147483646;' +
+      'background:rgba(0,0,0,.86);color:#fff;padding:10px 16px;border-radius:999px;font-size:13px;max-width:80%;';
+    document.body.appendChild(t);
+    setTimeout(function () { t.remove(); }, 2600);
+  };
+
+  // ===================== 6. 进房 =====================
+  function boot(chat) {
+    if (booted) return;
+    booted = true;
+    currentChat = chat || fallbackChat();
+    window.state = { activeChatId: currentChat.id, chats: {} };
+    window.state.chats[currentChat.id] = currentChat;
+    try { document.getElementById('boot').style.display = 'none'; } catch (e) {}
+    try {
+      window.CinemaRoom.open();
+      post({ type: 'cinema:ready' });
+    } catch (e) {
+      log('开房失败', e && e.message);
+    }
+  }
+
+  // ===================== 7. 收宿主的 init =====================
+  window.addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (d.type === 'cinema:init' && d.chat) {
+      boot(d.chat);
+    } else if (d.type === 'cinema:key') {
+      // 单独补一个 key(用户在影院设置面板里改了也能同步回去)
+      if (currentChat) {
+        currentChat.watchTogetherSettings = currentChat.watchTogetherSettings || {};
+        currentChat.watchTogetherSettings.geminiApiKey = d.key || '';
+        post({ type: 'cinema:keyChanged', key: d.key || '' });
+      }
+    }
+  });
+
+  // ===================== 8. 退出影院 → 告诉宿主把 iframe 收掉 =====================
+  // 影院关闭时 body 会摘掉 cinema-room-active, 这里盯着这个 class。
+  (function watchClose() {
+    if (!document.body) return;
+    var onClass = function () {
+      if (!document.body.classList.contains('cinema-room-active')) {
+        post({ type: 'cinema:closed' });
+      }
+    };
+    try {
+      new MutationObserver(onClass).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    } catch (e) {
+      setInterval(onClass, 500);   // 兜底
+    }
+  })();
+
+  // ===================== 9. 启动 =====================
+  function start() {
+    if (IN_IFRAME) {
+      // 在 iframe 里: 向宿主要聊天数据; 2 秒还没来就走本机兜底
+      post({ type: 'cinema:needChat' });
+      var btn = document.getElementById('bootBtn');
+      var msg = document.getElementById('bootMsg');
+      setTimeout(function () {
+        if (!booted) {
+          if (msg) msg.textContent = '没收到 330 的聊天数据，可以先用本机数据进入影院。';
+          if (btn) btn.style.display = 'inline-block';
+        }
+      }, 2000);
+      var b = document.getElementById('bootBtn');
+      if (b) b.addEventListener('click', function () { boot(fallbackChat()); });
+    } else {
+      boot(fallbackChat());   // 直接在浏览器里打开 → 本机数据
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () {
+      Promise.resolve(window.dbReadyPromise).then(start).catch(start);
+    });
+  } else {
+    Promise.resolve(window.dbReadyPromise).then(start).catch(start);
+  }
+})();
 </script>
 
-<!-- 协议层 + 桥接层 + 房间 + 存储 (只有这四个, 不含 330 其他任何东西) -->
+<!-- 协议层 + 桥接层 + 房间 + 存储 + 图片压缩 (和生产完全同一批文件) -->
 <script src="../modules/live-client.js"></script>
 <script src="../modules/cinema-storage.js"></script>
+<script src="../modules/cinema-img.js"></script>
 <script src="../modules/cinema-room.js"></script>
 <script src="../modules/cinema-live.js"></script>
-<script>
-window.addEventListener('load', function () {
-  setTimeout(function () {
-    refreshStat();
-    log('模块就绪：CinemaRoom=' + !!window.CinemaRoom + ' CinemaStorage=' + !!window.CinemaStorage +
-        ' CinemaLive=' + !!window.CinemaLive + ' LiveClient=' + !!window.LiveClient);
-  }, 120);
-});
-</script>
+
 </body>
 </html>
