@@ -82,6 +82,9 @@
     summaryCount: 0,
     pendingSummary: null,
     summaryBusy: false,
+    // 摘要被强行丢弃后的"迟到文本"静默窗口 (毫秒时间戳)。
+    // 丢弃之后模型可能还在把这半句吐完, 那段字绝不能进下一次摘要的 buffer。
+    summaryGhostUntil: 0,
     summaryTimer: null,
     queuedUserText: null,
     finalSummaryRequested: false,
@@ -867,6 +870,16 @@
 
   function handleModelText(text, isFinal) {
     if (!text) return;
+
+    // ⚠️ 2026-10-09: 摘要被【强行丢弃】后的迟到文本窗口。
+    //   退出时如果上一条摘要还在跑, 我们会掐掉它换发最终总结;
+    //   但模型那半句还在往回吐。这些迟到的字属于【已经作废的那次请求】,
+    //   一旦被新请求的 buffer 收下, 最终观影记忆就又变成半截单集剧情。
+    //   这段时间内一律丢弃, 也不置 gotText。
+    if (watchSession.summaryGhostUntil && Date.now() < watchSession.summaryGhostUntil) {
+      return;
+    }
+
     if (watchSession.pendingSummary) {
       var p = watchSession.pendingSummary;
       // ⚠️ gotText = 「这次摘要真的开始吐字了」, 是 onTurnCompleteInternal 敢收它的前提。
@@ -895,6 +908,20 @@
     if (watchSession.pendingSummary) return Promise.reject(new Error('已有摘要请求在进行中'));
     if (!S.client || !S.client.isReady()) return Promise.reject(new Error('Live 未就绪'));
 
+    // ⚠️⚠️ 2026-10-09 必须先排掉上一回合残留的转写全文 (用户实测: 看两集短剧,
+    //   退出后的「最终观影记忆」整段变成了某一集的单集剧情原文)。
+    //
+    //   live-client.js 的 _lastTranscription 收到新转写就赋值, turnComplete 时又重抛它,
+    //   但【从头到尾没有任何地方清空过它】(只在构造函数初始化为 '')。
+    //   所以上一回合的全文会一直挂着, 之后任何一个 turnComplete 都会把它再喂一遍。
+    //
+    //   对正常聊天无害 (bubbleText 有 takeDelta 去重), 但摘要请求换人时是致命的:
+    //   新的 p 的 lastText 是空的, takeDelta 去不了重 → 上一集的单集记忆全文
+    //   被当成这次最终总结的内容收走, gotText 也被置 true, 竞态门形同虚设。
+    //
+    //   这里主动清一次, 让"这次摘要"只可能收到这次之后的文本。
+    try { S.client._lastTranscription = ''; } catch (e) { /* noop */ }
+
     var p = {
       kind: kind, buffer: '', lastText: '',
       resolve: null, timer: null,
@@ -914,6 +941,13 @@
       watchSession.pendingSummary = null;
       watchSession.summaryBusy = false;
       logWarn('[摘要] ' + kind + ' 请求超时 (' + SUMMARY_REQUEST_TIMEOUT_MS + 'ms)');
+      // 超时作废后, 已经吐出来的那半句可能还在继续流 —— 开静默窗口把它们丢掉,
+      // 免得流进下一次摘要的 buffer (同 waitForNoPendingSummary 里的说明)。
+      // 只在真的吐过字时才开, 免得连正常聊天都被误吞三秒。
+      if (p.gotText) {
+        watchSession.summaryGhostUntil = Date.now() + 3000;
+        try { if (S.client) S.client._lastTranscription = ''; } catch (e) { /* noop */ }
+      }
       renderStatus('ready');
       renderPlotPanel();
       p.resolve('');
@@ -936,6 +970,11 @@
     if (p.timer) clearTimeout(p.timer);
     if (watchSession.pendingSummary === p) watchSession.pendingSummary = null;
     watchSession.summaryBusy = false;
+    // 摘要收尾后同样排掉 _lastTranscription, 免得这一整段全文在之后的
+    // turnComplete 上被重抛, 混进下一次摘要 (同 requestSummary 里的说明)。
+    // 正常聊天气泡有自己的 takeDelta, 清掉不影响连续性 ——
+    // 下一次增量到达时 t !== '' 会正常重新赋值。
+    try { if (S.client) S.client._lastTranscription = ''; } catch (e) { /* noop */ }
     renderStatus('ready');
     renderPlotPanel();
   }
@@ -1650,17 +1689,28 @@
   }
 
   function waitForNoPendingSummary() {
+    // ⚠️⚠️ 2026-10-09: 上限从 3000ms 提到 20000ms。
+    //
+    //   短剧一集 1~2 分钟就要出一份 300~400 字的单集记忆, 生成十几秒很正常。
+    //   以前只等 3 秒就强行掐掉换发最终总结 —— 用户点退出时如果刚好撞上
+    //   某一集的单集记忆还在生成, 那半句就会流进最终总结的 buffer。
+    //   反正退出流程本来就必须等最终总结生成完 (常常十几秒), 多等这点不亏。
+    //
+    //   真的超时了也不能就这么算了: 开一个静默窗口, 把掐掉之后迟到的文本丢掉。
     var waited = 0;
     return new Promise(function (resolve) {
       var iv = setInterval(function () {
         waited += 200;
-        if (!watchSession.pendingSummary || waited > 3000) {
+        if (!watchSession.pendingSummary || waited > 20000) {
           if (watchSession.pendingSummary) {
-            log('等待阶段摘要超时, 强制继续');
+            log('等待在途摘要超时 (' + waited + 'ms), 强制继续');
             var p = watchSession.pendingSummary;
             watchSession.pendingSummary = null;
             if (p.timer) clearTimeout(p.timer);
             watchSession.summaryBusy = false;
+            // 作废这次请求后, 它剩下的字一律不许进下一次摘要
+            watchSession.summaryGhostUntil = Date.now() + 3000;
+            try { if (S.client) S.client._lastTranscription = ''; } catch (e) { /* noop */ }
           }
           clearInterval(iv);
           resolve();
