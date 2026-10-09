@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -195,11 +195,14 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="src/lib/tts/adapters/fishAudio.js?v=0.0.37" defer></script>
   <script src="src/lib/tts/adapters/openaiCompatible.js?v=0.0.37" defer></script>
   <!-- 2026-10-01 TTS 音色选择: 按 speechText 自动选中文/日语/英文 voice_id (resolveVoiceId) -->
-  <script src="src/lib/tts/index.js?v=0.0.39" defer></script>
-  <script src="src/lib/tts/settings-ui.js?v=0.0.37" defer></script>
+  <script src="src/lib/tts/index.js?v=0.0.40" defer></script>
+  <script src="src/lib/tts/settings-ui.js?v=0.0.38" defer></script>
   <!-- 2026-09-30 TTS 表达层: [[语音:emotion]] 解析 + MiniMax 2.8-HD interjection 白名单 -->
   <script src="modules/tts-expression.js?v=0.0.3" defer></script>
-  <script src="modules/tts-audio.js?v=0.0.44" defer></script>
+  <!-- 2026-10-09 双耳空间音频: HRIR 数据层必须在播放层之前加载(播放层要读它的 POSITIONS) -->
+  <script src="src/lib/tts/binaural/hrir-data.js?v=0.0.1" defer></script>
+  <script src="src/lib/tts/binaural/spatial-audio.js?v=0.0.1" defer></script>
+  <script src="modules/tts-audio.js?v=0.0.45" defer></script>
   <script src="modules/appearance-theme.js?v=0.0.87" defer></script>
   <script src="modules/hot-news.js?v=0.1.2" defer></script>
   <script src="modules/runtime-diagnostics.js?v=0.0.38" defer></script>
@@ -2250,6 +2253,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
                     </div>
                 </div>
                 <div id="tts-provider-form"></div>
+                <div id="tts-spatial-form"></div>
             </div>
         </div>
 

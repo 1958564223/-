@@ -180,6 +180,9 @@
       ttsAbortController.abort();
       ttsAbortController = null;
     }
+    // 2026-10-09: 空间音频播放也属于"聊天语音条", 必须一起停,
+    //   否则切走聊天后声音还在响。注意不要动 stopTtsQueue —— 那是通话队列。
+    stopSpatialTts();
     currentTtsMessageKey = '';
     currentTtsLoading = false;
     const ttsPlayer = document.getElementById('tts-audio-player');
@@ -735,7 +738,103 @@
     }
   }
 
+  // ============================================================
+  // 双耳空间音频 (2026-10-09) —— 只作用于聊天语音条
+  // ------------------------------------------------------------
+  // 边界 (刻意与通话链路完全隔离):
+  //   - 通话队列 processNextTts() 不经过本段任何一行, 视频/语音通话的播放、
+  //     队列推进、call-lip-sync 口型分析链一律不受影响。
+  //   - 聊天原本是纯 <audio>, 空间音频才引入 Web Audio; 引擎建/借的节点都是
+  //     本模块自己 create 的, 结束即 disconnect, 从不碰别人的 ctx。
+  //   - 任何一步失败一律回退 <audio> 原路径, 绝不出现"既没空间音频也没声音"。
+  // ============================================================
+  var spatialTtsHandle = null;      // TtsSpatialAudio.play() 返回的句柄
+  var spatialTtsMessageKey = '';    // 当前空间播放对应的消息 key
+
+  function spatialAvailable() {
+    return typeof window.TtsSpatialAudio !== 'undefined'
+      && typeof window.TtsSpatialAudio.isEnabled === 'function'
+      && typeof window.TtsSpatialAudio.play === 'function'
+      && window.TtsSpatialAudio.isSupported()
+      && window.TtsSpatialAudio.isEnabled();
+  }
+
+  function stopSpatialTts() {
+    if (typeof window.TtsSpatialAudio !== 'undefined'
+      && typeof window.TtsSpatialAudio.stop === 'function') {
+      try { window.TtsSpatialAudio.stop(); } catch (e) { /* ignore */ }
+    }
+    spatialTtsHandle = null;
+    spatialTtsMessageKey = '';
+  }
+
+  /** 把 dataURL / blobURL / Blob 统一变成 Blob。dataURL 手工拆, 不依赖 fetch 对 data: 的支持。 */
+  function sourceToBlob(src) {
+    if (src instanceof Blob) return Promise.resolve(src);
+    var s = String(src == null ? '' : src);
+    if (s.slice(0, 5) === 'data:') {
+      var comma = s.indexOf(',');
+      if (comma < 0) return Promise.reject(new Error('spatial_bad_data_url'));
+      var head = s.slice(5, comma);
+      var isBase64 = /;base64/i.test(head);
+      var mime = head.replace(/;base64/i, '').trim() || 'application/octet-stream';
+      var body = s.slice(comma + 1);
+      try {
+        if (isBase64) {
+          var bin = atob(body);
+          var buf = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+          return Promise.resolve(new Blob([buf], { type: mime }));
+        }
+        return Promise.resolve(new Blob([decodeURIComponent(body)], { type: mime }));
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    }
+    return fetch(s).then(function (res) {
+      if (!res.ok) throw new Error('spatial_src_http_' + res.status);
+      return res.blob();
+    });
+  }
+
+  /**
+   * 空间音频播放。resolve 语义与 <audio> 分支一致 —— "已经开始放" 就 resolve,
+   * 播完走 onended, 这样上层的 spinner/按钮/缓存写入时序完全不变。
+   */
+  function playAudioSpatially(audioSrc, bodyElement, messageKey, onEndedCallback, sourceBlob) {
+    var button = bodyElement.querySelector('.voice-play-btn');
+    var settings = window.TtsSpatialAudio.getSettings();
+
+    return sourceToBlob(sourceBlob || audioSrc)
+      .then(function (blob) {
+        return window.TtsSpatialAudio.play({
+          blob: blob,
+          azimuthDeg: settings.azimuthDeg,
+          distanceM: settings.distanceM,
+          onended: function () {
+            if (button) button.textContent = '▶';
+            if (typeof onEndedCallback === 'function') onEndedCallback();
+          }
+        });
+      })
+      .then(function (handle) {
+        spatialTtsHandle = handle;
+        spatialTtsMessageKey = messageKey || '';
+        if (button) button.textContent = '❚❚';
+        return handle;
+      });
+  }
+
   async function playTtsAudio(bodyElement) {
+    // ⚠️ 必须放在函数最开头、同步执行: iOS/Safari 要求 AudioContext 在 user gesture
+    //   内创建并 resume。后面要 await 网络 + decodeAudioData, 等那时手势早就过了,
+    //   ctx 会被系统挂起 -> 有缓存有接口但就是没声音 (tts-audio.js 通话链路的同款教训)。
+    //   prepare() 本身不吃 await, 只是建 ctx 并发起 resume。
+    var spatialOn = spatialAvailable();
+    if (spatialOn) {
+      try { window.TtsSpatialAudio.prepare(); } catch (e) { /* 后续 play() 会兜底 */ }
+    }
+
     const bubble = bodyElement.closest('.message-bubble');
     const messageKey = (state.activeChatId || '') + '_' + (bubble?.dataset?.timestamp || '');
 
@@ -801,6 +900,15 @@
 
     // 同一条消息点第二次：正在播放则暂停，正在请求则取消
     if (messageKey && messageKey === currentTtsMessageKey) {
+      // 空间音频分支: <audio> 元素全程 paused, 上面的判断对它恒不成立,
+      // 所以必须单独判。语义与 <audio> 分支保持一致 —— 再点一次是"停止",
+      // 而不是"继续"; 第三次点击重新走完整路径(命中缓存, 瞬间重播)。
+      if (spatialOn && messageKey === spatialTtsMessageKey && spatialTtsHandle) {
+        stopSpatialTts();
+        currentTtsMessageKey = '';
+        if (button) button.textContent = '▶';
+        return;
+      }
       if (!ttsPlayer.paused && ttsPlayer.dataset.currentMessageKey === messageKey) {
         ttsPlayer.pause();
         currentTtsMessageKey = '';
@@ -878,7 +986,9 @@
       const audioType = result.mimeType || audioBlob.type || 'audio/mpeg';
       const audioUrl = URL.createObjectURL(audioBlob);
 
-      await playAudioFromData(audioUrl, audioType, text, resolvedVoiceId, bodyElement, messageKey, () => { currentTtsMessageKey = ''; });
+      // 2026-10-09: 末尾多传 audioBlob —— 空间音频分支直接吃 Blob,
+      //   不用再把 blobURL fetch 回来一遍。走 <audio> 分支时这个参数被忽略。
+      await playAudioFromData(audioUrl, audioType, text, resolvedVoiceId, bodyElement, messageKey, () => { currentTtsMessageKey = ''; }, audioBlob);
 
       // 写入缓存
       const reader = new FileReader();
@@ -903,7 +1013,29 @@
   }
 
 
-  function playAudioFromData(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback) {
+  /**
+   * 播放分发器 (2026-10-09)。
+   * 开关关闭 → 原样走 <audio>; 开关打开 → 先试空间音频, 任何失败都落回 <audio>。
+   * 两边的 resolve 语义都是"已开始播放", onEnded 语义都是"播完了", 上层无感。
+   */
+  function playAudioFromData(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback, sourceBlob) {
+    if (spatialAvailable()) {
+      return playAudioSpatially(audioSrc, bodyElement, messageKey, onEndedCallback, sourceBlob)
+        .catch(function (error) {
+          console.warn('[聊天TTS] 空间音频不可用, 已回退原播放器:', error);
+          if (typeof window.TtsSpatialAudio?._setLastError === 'function') {
+            window.TtsSpatialAudio._setLastError(String((error && error.message) || error));
+          }
+          // 关键: 先把可能已经半启动的空间播放彻底拆干净, 再走 <audio>,
+          // 否则会出现两段音频同时响, 或空间音频吞掉却不出声。
+          stopSpatialTts();
+          return playAudioViaElement(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback);
+        });
+    }
+    return playAudioViaElement(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback);
+  }
+
+  function playAudioViaElement(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback) {
     return new Promise((resolve, reject) => {
       const ttsPlayer = document.getElementById('tts-audio-player');
 

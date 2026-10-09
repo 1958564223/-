@@ -1,0 +1,38 @@
+hrir-ku100-nf.bin — 双耳空间音频 HRIR 数据
+=========================================
+
+用途
+----
+330 PWA 聊天语音条的「双耳空间音频」功能所需的头部相关脉冲响应(HRIR)数据。
+运行时由 src/lib/tts/binaural/hrir-data.js 解析。
+
+数据来源与许可
+--------------
+本文件中的测量数据来自:
+
+  J. M. Arend, A. Neidhardt, C. Pörschmann.
+  "Spherical Near-Field (NF) HRIR Compilation of the Neumann KU100."
+  Zenodo, 2020.
+  DOI:  https://doi.org/10.5281/zenodo.4297951
+  许可: CC BY 4.0 (Creative Commons Attribution 4.0 International)
+        https://creativecommons.org/licenses/by/4.0/
+
+本项目所做的改动仅限于「格式转换」, 测量数据本身未做任何修改:
+
+  1. 取其中的 NFHRIR_CIRC360_SOFA —— 水平面, 1° 间隔,
+     距离 0.25 / 0.5 / 0.75 / 1.0 / 1.5 m, 48 kHz, 每条 128 点;
+  2. 方位由 360 (1°) 抽样为 72 (5°), 距离/抽头/耳道维度全部保留;
+  3. 乘回数据集官方距离增益表 [1.00, 0.33, 0.25, 0.16, 0.095]
+     —— SOFA 各距离各自做过归一化, 不乘回去远近就没有自然的音量差;
+  4. 转成 int16 定长二进制 (仅整体尺度归一化, 不改变任何相对关系)。
+
+生成方式
+--------
+  python tools/build_hrir_bin.py <ku100_nearfield_circ360.npz> assets/audio/hrir-ku100-nf.bin
+
+上游仓库与算法参考
+------------------
+  https://github.com/frerkn/binaural-voice   (fork 自 Saekisui/binaural-voice)
+  —— MIT 许可, 仅覆盖其 Python 代码, 不覆盖 HRIR 数据本身。
+  该项目的离线渲染脚本 binaural_voice.py 是本功能算法思路的来源;
+  本项目改为在浏览器里用 Web Audio 的 ConvolverNode 做同样的卷积。

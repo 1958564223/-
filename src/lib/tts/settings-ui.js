@@ -154,6 +154,107 @@
     }
   }
 
+  // ============================================================
+  // 双耳空间音频 (2026-10-09)
+  // ------------------------------------------------------------
+  // 独立于 provider 表单渲染 —— 换服务商时它不该被重建掉,
+  // 所以放在自己的容器里, 只在 renderTtsProviderSettings 末尾调一次。
+  // ============================================================
+  function getBinauralSettings(ttsConfig) {
+    var raw = (ttsConfig && ttsConfig.binaural) || {};
+    var api = window.TtsSpatialAudio;
+    var positions = (api && api.POSITIONS) || {};
+    var distances = (api && api.DISTANCES) || {};
+    return {
+      enabled: raw.enabled === true,
+      position: positions[raw.position] ? raw.position : 'right',
+      distance: distances[raw.distance] ? raw.distance : 'near'
+    };
+  }
+
+  function getBinauralAttribution() {
+    if (window.TtsSpatialAudio && window.TtsSpatialAudio.ATTRIBUTION) return window.TtsSpatialAudio.ATTRIBUTION;
+    if (window.TtsBinauralHrir && window.TtsBinauralHrir.ATTRIBUTION) return window.TtsBinauralHrir.ATTRIBUTION;
+    return null;
+  }
+
+  function renderSpatialForm() {
+    var ttsConfig = getTtsConfig();
+    var host = document.getElementById('tts-spatial-form');
+    if (!host || !ttsConfig) return;
+
+    var api = window.TtsSpatialAudio;
+    if (!api || typeof api.isSupported !== 'function' || !api.isSupported()) {
+      host.innerHTML = '<p class="settings-description" style="padding:0 15px 10px;color:#888;font-size:12px;">'
+        + '当前浏览器不支持 Web Audio 空间渲染，双耳空间音频不可用（语音播报本身不受影响）。</p>';
+      return;
+    }
+
+    var s = getBinauralSettings(ttsConfig);
+    var attribution = getBinauralAttribution();
+
+    var posOptions = Object.keys(api.POSITIONS).map(function (key) {
+      var p = api.POSITIONS[key];
+      return '<option value="' + escapeHtml(key) + '"' + (key === s.position ? ' selected' : '') + '>'
+        + escapeHtml(p.label) + '</option>';
+    }).join('');
+
+    var distOptions = Object.keys(api.DISTANCES).map(function (key) {
+      var d = api.DISTANCES[key];
+      return '<option value="' + escapeHtml(key) + '"' + (key === s.distance ? ' selected' : '') + '>'
+        + escapeHtml(d.label) + '</option>';
+    }).join('');
+
+    var credit = '';
+    if (attribution) {
+      credit = '<p class="settings-description" style="padding:0 15px 12px;color:#999;font-size:11px;line-height:1.6;">'
+        + '空间音频数据：' + escapeHtml(attribution.dataset) + '<br>'
+        + escapeHtml(attribution.authors) + '. ' + escapeHtml(attribution.source) + '. '
+        + '<a href="' + escapeHtml(attribution.url) + '" target="_blank" rel="noopener noreferrer">'
+        + escapeHtml(attribution.doi) + '</a><br>'
+        + '许可：' + escapeHtml(attribution.license) + '。' + escapeHtml(attribution.note)
+        + '</p>';
+    }
+
+    host.innerHTML = `
+      <div class="settings-item">
+        <label>双耳空间音频</label>
+        <label class="toggle-switch">
+          <input type="checkbox" id="tts-binaural-switch"${s.enabled ? ' checked' : ''}>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div id="tts-binaural-details" style="${s.enabled ? '' : 'display:none;'}">
+        <div class="settings-item">
+          <label>声音位置</label>
+          <div class="settings-right">
+            <select id="tts-binaural-position" class="settings-select">${posOptions}</select>
+          </div>
+        </div>
+        <div class="settings-item">
+          <label>距离</label>
+          <div class="settings-right">
+            <select id="tts-binaural-distance" class="settings-select">${distOptions}</select>
+          </div>
+        </div>
+      </div>
+      <p class="settings-description" style="padding:0 15px 10px;color:#888;font-size:12px;line-height:1.6;">
+        只作用于<b>聊天语音条</b>，视频 / 语音通话与口型不受影响。<br>
+        需要戴耳机才有空间感；外放时双耳差异会互相抵消。<br>
+        关闭开关即刻恢复原始播放效果。
+      </p>
+      ${credit}
+    `;
+
+    var toggle = document.getElementById('tts-binaural-switch');
+    var details = document.getElementById('tts-binaural-details');
+    if (toggle && details) {
+      toggle.onchange = function () {
+        details.style.display = toggle.checked ? '' : 'none';
+      };
+    }
+  }
+
   function renderTtsProviderSettings() {
     const ttsConfig = getTtsConfig();
     if (!ttsConfig) return;
@@ -179,6 +280,8 @@
     };
 
     renderProviderForm();
+    // 空间音频独立于 provider, 每次进来都重画一次(确保与已保存配置同步)
+    renderSpatialForm();
   }
 
   function readInput(id) {
@@ -193,6 +296,19 @@
     const provider = document.getElementById('tts-provider-select')?.value || 'minimax';
     ttsConfig.ttsEnabled = enabled;
     ttsConfig.currentProvider = provider;
+
+    // 双耳空间音频: 只在 DOM 里真的渲染出来时才读, 否则保留原值。
+    //   (语音总开关关掉时 details 虽然还在, 但我们仍然要保住用户已选的
+    //    位置/距离, 所以这里只判断开关元素本身存在与否。)
+    const spatialToggle = document.getElementById('tts-binaural-switch');
+    if (spatialToggle) {
+      const prev = ttsConfig.binaural || {};
+      ttsConfig.binaural = {
+        enabled: spatialToggle.checked === true,
+        position: document.getElementById('tts-binaural-position')?.value || prev.position || 'right',
+        distance: document.getElementById('tts-binaural-distance')?.value || prev.distance || 'near'
+      };
+    }
 
     if (enabled && provider === 'minimax') {
       const cfg = ttsConfig.providers.minimax;
@@ -246,6 +362,8 @@
 
   window.renderTtsProviderSettings = renderTtsProviderSettings;
   window.renderTtsProviderForm = renderProviderForm;
+  window.renderTtsSpatialForm = renderSpatialForm;
+  window.getTtsBinauralSettings = getBinauralSettings;
   window.saveTtsSettingsFromDom = saveTtsSettingsFromDom;
   window.TTS_PROVIDER_LABELS = providerLabels;
 })();

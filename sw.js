@@ -3,7 +3,15 @@
 // CACHE_VERSION bump 强制清缓存
 // 关键约束: URLS_TO_CACHE 增删需同步 sw.js 注释 + ?v= 版本号
 
-const CACHE_VERSION = 'v0.2.39.0';
+// v0.2.40.0 (2026-10-09): 双耳空间音频上线。
+//   ⚠️ 新增的 src/lib/tts/binaural/*.js 与 assets/audio/hrir-ku100-nf.bin
+//      **故意不进 URLS_TO_CACHE**:
+//        - 两个 JS 走 ?v= 版本号 + 浏览器 HTTP 缓存即可, 进预缓存纯属浪费;
+//        - HRIR 有 180KB, install 期预缓存会挤占 iOS PWA 安装配额
+//          (sw.js 下方 Cinema Room 那条注释记的就是这个坑: 大二进制双份占空间、
+//           撑爆安装期缓存)。它按需加载, 由浏览器 HTTP 缓存自然复用。
+//   本次 bump 只是为了让 index.html 里新增的 <script> 标签生效(它是被预缓存的)。
+const CACHE_VERSION = 'v0.2.40.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
