@@ -100,12 +100,33 @@
   // ===================== 4. 聊天表 =====================
   // 生产环境里 chat 表在宿主 Dexie 里; 沙盒里收不到那个库,
   // 所以 put 走 postMessage 交给宿主写, 同时本地留一份兜底。
+  //
+  // ⚠️ 长期记忆条目的格式(整个 330 都是这一种, 见 cinema-live.js:1193):
+  //     { content: '...', timestamp: 1730000000000, source: 'cinema_watch_summary' }
+  //   —— 是【对象】不是字符串。
+  //   之前这里直接取 longTermMemory.slice(-1)[0] 就往宿主发, 宿主那边
+  //   String() 一转, 记忆库就被写成了 7 个 "[object Object]",
+  //   记忆首页还显示 7 条, 点进去却一条都渲染不出来。
   var currentChat = null;
+  var lastSentMemory = '';
+  function extractMemoryText(c) {
+    if (!c) return '';
+    var mem = c.longTermMemory;
+    if (!Array.isArray(mem) || !mem.length) return '';
+    var last = mem[mem.length - 1];
+    if (last && typeof last === 'object') return String(last.content || '');
+    return String(last || '');   // 兼容万一存成了字符串
+  }
   cdb.chats = {
     put: function (c) {
       currentChat = c;
       try { localStorage.setItem(LS_CHAT, JSON.stringify(c)); } catch (e) {}
-      post({ type: 'cinema:memory', text: (c && (c.cinemaFinalMemory || (c.longTermMemory && c.longTermMemory.slice(-1)[0]))) || '' });
+      // 只在真的有【新的】最终记忆时才通知宿主, 免得每存一次进度就多写一条
+      var text = extractMemoryText(c);
+      if (text && text !== lastSentMemory) {
+        lastSentMemory = text;
+        post({ type: 'cinema:memory', text: text });
+      }
       return Promise.resolve();
     },
     get: function () { return Promise.resolve(currentChat || fallbackChat()); },
@@ -172,6 +193,16 @@
     currentChat = chat || fallbackChat();
     window.state = { activeChatId: currentChat.id, chats: {} };
     window.state.chats[currentChat.id] = currentChat;
+
+    // ★ 让房间【不要】自己读 visualViewport。
+    //   iframe 里的 visualViewport 反映不了 iOS 键盘, 房间拿它算出来的
+    //   --cinema-vv-height 是错的, 还会把宿主转发来的正确值覆盖掉。
+    //   这里直接让它读不到 → 影院内部的 initVisualViewport 会 early-return,
+    //   于是房间里那两个 CSS 变量【只由宿主的数据驱动】。
+    try {
+      Object.defineProperty(window, 'visualViewport', { get: function () { return null; }, configurable: true });
+    } catch (e) { /* 老浏览器读不到就认了, 顶多是房间自己那份不准 */ }
+
     try { document.getElementById('boot').style.display = 'none'; } catch (e) {}
     try {
       window.CinemaRoom.open();
@@ -186,6 +217,12 @@
     var d = e.data || {};
     if (d.type === 'cinema:init' && d.chat) {
       boot(d.chat);
+    } else if (d.type === 'cinema:vv') {
+      // ★ 宿主转发的键盘视口。
+      //   iframe 里的 window.visualViewport 不会反映 iOS 键盘(键盘压的是顶层视口),
+      //   所以房间在自己这儿永远算不出该让多少 → 打字时键盘直接盖住播放器。
+      //   宿主在顶层能正确读到, 通过 postMessage 告诉我们, 这里写进 CSS 变量。
+      applyViewport(d.height, d.offsetTop);
     } else if (d.type === 'cinema:key') {
       // 单独补一个 key(用户在影院设置面板里改了也能同步回去)
       if (currentChat) {
@@ -195,6 +232,22 @@
       }
     }
   });
+
+  // ===================== 7b. 应用宿主给的可视视口 =====================
+  var lastVV = { h: -1, t: -1 };
+  function applyViewport(h, t) {
+    if (typeof h !== 'number' || h <= 0) return;
+    if (h === lastVV.h && t === lastVV.t) return;   // 没变就不碰 DOM
+    lastVV = { h: h, t: t };
+    var room = document.getElementById('cinema-room');
+    if (!room) return;
+    try {
+      room.style.setProperty('--cinema-vv-height', h + 'px');
+      room.style.setProperty('--cinema-vv-top', Math.max(0, t || 0) + 'px');
+      // 顶栏高度也随布局变, 让影院自己重新量一次(它内部有 syncTopbarHeight)
+      if (typeof global.CinemaRoom === 'undefined' && window.CinemaRoom) { /* noop */ }
+    } catch (e) { /* noop */ }
+  }
 
   // ===================== 8. 退出影院 → 告诉宿主把 iframe 收掉 =====================
   // 影院关闭时 body 会摘掉 cinema-room-active, 这里盯着这个 class。

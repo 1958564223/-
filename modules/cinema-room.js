@@ -2633,6 +2633,43 @@
 
     let frame = null;
     let ready = false;
+    let vvRelay = null;
+
+    // ---- 键盘视口转发 ----
+    // iframe 里的 window.visualViewport【不会反映 iOS 键盘】(键盘影响的是顶层
+    // 视口, iframe 拿不到 inset)。所以房间在 iframe 里不知道要让多少,
+    // 结果打字时键盘直接盖住播放器。
+    //
+    // 解法: 宿主在【顶层】监听 visualViewport(这里能正确读到键盘压了多少),
+    // 把 height/offsetTop 用 postMessage 告诉 iframe, 由 iframe 写进 CSS 变量。
+    function pushViewport() {
+      const vv = global.visualViewport;
+      if (!frame || !vv) return;
+      try {
+        frame.contentWindow.postMessage({
+          type: 'cinema:vv',
+          height: Math.round(vv.height),
+          offsetTop: Math.max(0, Math.round(vv.offsetTop))
+        }, '*');
+      } catch (e) { /* noop */ }
+    }
+
+    function bindViewportRelay() {
+      const vv = global.visualViewport;
+      if (!vv || vvRelay) return;
+      vvRelay = { vv: vv, fn: pushViewport };
+      vv.addEventListener('resize', pushViewport);
+      vv.addEventListener('scroll', pushViewport);
+    }
+
+    function unbindViewportRelay() {
+      if (!vvRelay) return;
+      try {
+        vvRelay.vv.removeEventListener('resize', vvRelay.fn);
+        vvRelay.vv.removeEventListener('scroll', vvRelay.fn);
+      } catch (e) { /* noop */ }
+      vvRelay = null;
+    }
 
     // ---- 把当前活跃聊天打包给沙盒(只要 Gemini Live 需要的那几项) ----
     function currentChatPayload() {
@@ -2667,6 +2704,7 @@
       if (!frame) return;
       try { frame.remove(); } catch (e) {}
       frame = null; ready = false;
+      unbindViewportRelay();
       if (document.body) document.body.classList.remove('cinema-room-active');
     }
 
@@ -2675,7 +2713,7 @@
       var d = e.data || {};
       if (e.source !== frame.contentWindow) return;
       if (d.type === 'cinema:needChat') sendChat();
-      else if (d.type === 'cinema:ready') { ready = true; sendChat(); }
+      else if (d.type === 'cinema:ready') { ready = true; sendChat(); pushViewport(); }
       else if (d.type === 'cinema:closed') closeSandbox();
       else if (d.type === 'cinema:keyChanged') {
         // 用户在影院设置面板里改了 key → 写回当前聊天记录
@@ -2691,14 +2729,29 @@
         } catch (err) { /* 存不上也不能影响影院 */ }
       }
       else if (d.type === 'cinema:memory' && d.text) {
-        // 沙盒里存了记忆 → 合并进当前聊天记录的长期记忆
+        // 沙盒里存了最终观影记忆 → 按【对象】格式并进当前聊天记录的长期记忆。
+        // ⚠️ 格式必须和 cinema-live.js:1193 的 saveToLongTermMemory 完全一致:
+        //     { content, timestamp, source }
+        //   之前这里写成 c.longTermMemory.push(String(d.text)),
+        //   而沙盒发过来的是个对象 → String() 之后变成 "[object Object]",
+        //   记忆首页显示 7 条, 点进去一条都渲染不出来。
         try {
           if (typeof state !== 'undefined' && state && state.activeChatId && state.chats) {
             const c = state.chats[state.activeChatId];
             if (c) {
-              c.longTermMemory = Array.isArray(c.longTermMemory) ? c.longTermMemory : [];
-              c.longTermMemory.push(String(d.text));
-              if (typeof db !== 'undefined' && db && db.chats && db.chats.put) db.chats.put(c);
+              if (!Array.isArray(c.longTermMemory)) c.longTermMemory = [];
+              const text = String(d.text);
+              // 同一条别重复写(沙盒每次存进度都会 put)
+              const last = c.longTermMemory[c.longTermMemory.length - 1];
+              const lastText = last && typeof last === 'object' ? String(last.content || '') : String(last || '');
+              if (lastText !== text) {
+                c.longTermMemory.push({
+                  content: text,
+                  timestamp: Date.now(),
+                  source: 'cinema_watch_summary'
+                });
+                if (typeof db !== 'undefined' && db && db.chats && db.chats.put) db.chats.put(c);
+              }
             }
           }
         } catch (err) { /* noop */ }
@@ -2708,6 +2761,7 @@
     sbtn.addEventListener('click', function () {
       if (frame) { closeSandbox(); return; }   // 再点一次 = 退出沙盒
       if (document.body) document.body.classList.add('cinema-room-active');
+      bindViewportRelay();
       frame = document.createElement('iframe');
       frame.id = 'cinema-sandbox-frame';
       frame.src = 'cinema-sandbox/index.html';
@@ -2716,7 +2770,7 @@
         'position:fixed;inset:0;width:100%;height:100%;border:0;z-index:2147483647;' +
         'background:#16111a;';
       document.body.appendChild(frame);
-      frame.addEventListener('load', sendChat);
+      frame.addEventListener('load', function () { sendChat(); pushViewport(); });
     });
   }
 

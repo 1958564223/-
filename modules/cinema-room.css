@@ -198,6 +198,20 @@ body.cinema-room-active {
   -webkit-backdrop-filter: none;
 }
 
+/* --------------------------------------------------------------------------
+   隐藏旧影院入口 (2026-10-09)
+
+   同一个 cinema-room.js, 装在 3,552 节点的宿主里 → 点输入框主线程冻 4~5 秒;
+   装在 187 节点的 cinema-sandbox/index.html(iframe)里 → 完全不卡。
+   所以正式入口只剩沙盒那一个。
+
+   ⚠️ 这里只【隐藏】不删按钮, 随时把 display 去掉就能恢复。
+      模块文件一行没动 —— 两条入口用的是同一份代码。
+   -------------------------------------------------------------------------- */
+#open-cinema-room-btn {
+  display: none !important;
+}
+
 /* 不支持 webp 的老 WebView 用 jpg 兜底 */
 @supports not (background-image: url('a.webp')) {
   .cinema-room {
