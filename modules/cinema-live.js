@@ -53,8 +53,11 @@
 
   // ---- 阶段剧情摘要 (与旧文件一致) ----
   var WATCH_SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
-  var PLOT_SUMMARY_MAX_CHARS = 1500;
-  var FINAL_MEMORY_TARGET_CHARS = 1000;
+  // 2026-10-09 放宽: 原来 1500 / 1000 / 400 三处都偏紧。
+  // 文字几乎不占空间, 而这些数字一旦卡死, 模型只能写废话 —— 那才是真丢信息。
+  var PLOT_SUMMARY_MAX_CHARS = 2000;      // 长剧: 每 5 分钟滚动摘要
+  var FINAL_MEMORY_TARGET_CHARS = 1500;   // 退出时的最终观影记忆
+  var SERIES_OUTLINE_MAX_CHARS = 1500;    // 短剧: 每 20 集合并出的总纲
   var SUMMARY_REQUEST_TIMEOUT_MS = 45000;
 
   // 恢复 handle 单独存一个 key —— 不跟旧观影的 wt_ 那个互相覆盖
@@ -974,7 +977,20 @@
   // ============================================================
 
   var SERIES_MERGE_AT = 20;          // 攒够多少集合并一次
-  var SERIES_EPISODE_HINT = '一句话, 不超过 40 字。';
+
+  // ⚠️ 2026-10-09 改: 原来是「一句话, 不超过 40 字。」
+  //
+  //   问题: 短剧一集 1~2 分钟, 有完整的起承转合。40 字装不下,
+  //         模型只能写成"主角通过伪装接近那位大人"这种废话 ——
+  //         不是模型降智, 是提示词在逼它糊弄。
+  //
+  //   为什么这一处该放开、而阶段摘要(1500字)和最终记忆(1000字)不该动:
+  //     · 单集总结的职责是【记录】"这集演了什么"  → 要装得下
+  //     · 阶段/最终总结的职责是【压缩】成长文      → 短才对
+  //   三个数字本来就该是三种量级, 之前误用了同一个思路。
+  var SERIES_EPISODE_HINT =
+    '用 300~400 字写完整, 不要压缩成一句话短评或一句评语。' +
+    '这一集的剧情以后还要当成长期记忆用, 写漏了后面就补不回来。';
 
   /** 记一次单集剧情。ep = 集号 */
   function addEpisodeMemory(ep, text) {
@@ -1002,9 +1018,17 @@
 
     var instruction = [];
     instruction.push('【【后台任务】】这一集刚播完。');
-    instruction.push('根据你刚才连续看到的画面, 用【' + SERIES_EPISODE_HINT + '】');
-    instruction.push('写出这一集讲了什么: 发生了什么、谁做了什么、结尾在哪。');
-    instruction.push('只输出正文, 不要标题、不要客套、不要分析。');
+    instruction.push('根据你刚才连续看到的画面, 写出这一集讲了什么。');
+    instruction.push('');
+    instruction.push('必须写清这四件事:');
+    instruction.push('1. 这一集出场的人物是谁(用画面里能认出来的称呼或身份, 不要叫"那位大人");');
+    instruction.push('2. 发生了什么关键事件, 谁对谁做了什么;');
+    instruction.push('3. 有什么冲突或转折;');
+    instruction.push('4. 这一集结尾停在哪里。');
+    instruction.push('');
+    instruction.push(SERIES_EPISODE_HINT);
+    instruction.push('');
+    instruction.push('只输出正文, 不要标题、不要客套、不要分析、不要"根据我的观察"这种说法。');
     if (watchSession.episodeMemories.length) {
       instruction.push('');
       instruction.push('前面已经记过的集(不要重复写, 只写这一集):');
@@ -1055,7 +1079,7 @@
     instruction.push('# 总纲怎么写');
     instruction.push('- 用【连贯的一段话】讲清楚到第 ' + batch[batch.length - 1].ep + ' 集为止的主线剧情');
     instruction.push('- 保留关键转折和主要人物, 砍掉过场和重复');
-    instruction.push('- 控制在 400 字以内');
+    instruction.push('- 控制在 ' + SERIES_OUTLINE_MAX_CHARS + ' 字以内');
     instruction.push('- 直接写正文, 不要标题、不要分集罗列');
 
     log('📚 攒够 ' + batch.length + ' 集, 合并成总纲…');
