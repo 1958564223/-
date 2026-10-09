@@ -138,9 +138,25 @@
   // ===================== 5. 本地 UI 函数(替代宿主的同名函数) =====================
   // 影院模块会调 window.showCustomAlert / showCustomConfirm / showToast,
   // 这三个在宿主里存在, 但 iframe 里拿不到, 这里自己实现一份最小可用的。
+  //
+  // ⚠️ 返回值必须跟宿主一致, 否则调用方的判断会全部落空:
+  //     showCustomConfirm(...) → Promise<true|false>
+  //   影院里 deleteFilm 和 showLeaveFallback 都是按 true/false 判断的。
+  //
+  // ⚠️ 影院自己的 closeAnyModal() 找的是宿主的 #custom-modal-overlay,
+  //   在 iframe 里那个节点根本不存在 → 关不掉我们这里的框。
+  //   所以这里记下当前弹层, 由 8 节「房间关闭」监听负责清掉。
+  var sandboxModal = null;
+  function closeSandboxModal() {
+    if (sandboxModal && sandboxModal.parentNode) sandboxModal.remove();
+    sandboxModal = null;
+  }
+
   function simpleBox(html, buttons) {
     return new Promise(function (resolve) {
+      closeSandboxModal();
       var ov = document.createElement('div');
+      sandboxModal = ov;
       ov.style.cssText = 'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.62);' +
         'display:flex;align-items:center;justify-content:center;padding:24px;';
       var box = document.createElement('div');
@@ -154,7 +170,7 @@
         el.textContent = b.label;
         el.style.cssText = 'padding:9px 18px;border-radius:999px;border:0;font:inherit;font-size:13px;' +
           'background:' + (b.primary ? '#8a5a2e' : '#3a2f28') + ';color:#fff;';
-        el.onclick = function () { ov.remove(); resolve(b.value); };
+        el.onclick = function () { closeSandboxModal(); resolve(b.value); };
         bar.appendChild(el);
       });
       box.appendChild(bar);
@@ -255,6 +271,11 @@
     if (!document.body) return;
     var onClass = function () {
       if (!document.body.classList.contains('cinema-room-active')) {
+        // 房间关了 → 顺手把还开着的弹框收掉。
+        // 影院自己的 closeAnyModal() 找的是宿主的 #custom-modal-overlay,
+        // 在 iframe 里那个节点不存在, 不在这里清的话, 「10 秒自动退出」
+        // 走完之后弹框会留在屏幕上不走。
+        closeSandboxModal();
         post({ type: 'cinema:closed' });
       }
     };

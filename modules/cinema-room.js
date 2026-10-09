@@ -996,7 +996,7 @@
         return;
       }
     } else {
-      els.video.src = url;
+      setVideoSrc(url);
     }
     els.idle.hidden = true;
     // 片名: 用户 2026-10-04 反馈"上方多了一个文件名, 其实可以不要显示" → 永久隐藏。
@@ -1317,6 +1317,53 @@
     return seriesApi('/media/' + encodeURIComponent(key) + '/' + name);
   }
 
+  // --------------------------------------------------------------------------
+  // 跨源视频能不能抽帧 —— 这决定 Gemini 看不看得见短剧
+  //
+  // 现象 (2026-10-07/08 用户真机):
+  //   本地视频 → 剧情记忆正常。
+  //   短剧     → Gemini 回答「我没有接收到这部剧的视频画面数据」,
+  //              硬逼它写就开始编。
+  //
+  // 原因: canvas 污染的铁律 —— <video> 不带 crossorigin 时, drawImage 到 canvas
+  //   一定污染画布, toDataURL 直接抛 SecurityError, 帧一帧都发不出去。
+  //   本地片是 IDB 里的 blob(同源) 所以没事; 短剧是 http://<你电脑>/media/...
+  //   跨源, 于是全部拿不到。
+  //
+  // 解法: 加 crossorigin="anonymous" 让浏览器按 CORS 模式取流, 画布就不脏。
+  //
+  // ⚠️ 但如果 bridge 没发 Access-Control-Allow-Origin, 加了 crossorigin
+  //   浏览器会【直接拒绝播放】, 比现在还糟。
+  //   所以这里做了自动回退: 先带 crossorigin 试, 一旦 video 报错就摘掉重试一次,
+  //   并记住这台 bridge 不支持, 后面不再折腾 —— 最差也只是退回"能播但没画面",
+  //   绝不会比现在更差。
+  // --------------------------------------------------------------------------
+  let bridgeCorsOk = true;
+
+  function setVideoSrc(url) {
+    var v = els.video;
+    var remote = /^https?:\/\//i.test(String(url || ''));
+    if (!remote || !bridgeCorsOk) {
+      v.removeAttribute('crossorigin');
+      v.src = url;
+      return;
+    }
+    v.setAttribute('crossorigin', 'anonymous');
+    var retried = false;
+    v.onerror = function () {
+      v.onerror = null;
+      if (retried) return;
+      retried = true;
+      // 这台 bridge 没有 CORS 头 → 摘掉 crossorigin 重来, 保住"能播"
+      bridgeCorsOk = false;
+      diagLogPush('短剧库没发 CORS 头, 已降级为「能播放但 Gemini 看不到画面」');
+      v.removeAttribute('crossorigin');
+      v.src = url;
+      v.load();
+    };
+    v.src = url;
+  }
+
   function setSeriesState(text, kind) {
     if (!els.seriesState) return;
     els.seriesState.textContent = text || '';
@@ -1491,7 +1538,7 @@
     pendingResumeTime = 0;
     lastSavedAt = 0;
 
-    els.video.src = url;
+    setVideoSrc(url);
     els.idle.hidden = true;
     els.stopBtn.hidden = false;
     syncTopbarHeight();
@@ -2472,6 +2519,15 @@
         // 常见触发: iOS 切后台时 Live 被系统掐断, 回来连接已死 → Gemini 返回空
         //          (用户原话: "没总结可能是我退了一下后台")
         await showLeaveFallback(r.error);
+        // ⚠️⚠️ 2026-10-07 的「兜底」漏了这一行, 结果兜底本身变成了陷阱。
+        //   showLeaveFallback() 里的 settle() 只做三件事:
+        //     清定时器 → 关弹框 → resolve()
+        //   它【不会】去关房间。原来的代码 await 完直接 return,
+        //   finishClose() 从头到尾没被调用过 ——
+        //   所以点「仍然退出」弹框消失、10 秒倒计时走完, 房间依然开着;
+        //   再点退出还是走那条被缓存的 leavePromise, 于是永远出不去。
+        //   记忆存不上是【降级】, 绝不能变成【禁止退出】。
+        finishClose();
         return;
       }
     }
@@ -2519,14 +2575,18 @@
           global.showCustomConfirm(
             '观影记忆没存上',
             '没能把这次的观影记忆写进长期记忆：' + (reason || '未知原因') +
-              '<br><br><b>' + left + ' 秒后会自动退出房间，不会把你关在里面。</b>',
+              '<br><br>记忆没存上只是这一次看不到了，房间照常退出，不会把你关在里面。' +
+              '<br><b>' + left + ' 秒后会自动退出。</b>',
             {
+              // ⚠️ 两个按钮现在【都会退出】。
+              //   原来第二个按钮叫「再试一次」, 听着像能重试, 其实做不到 ——
+              //   CinemaLive 的 leavePromise 是缓存的, 再点退出走的是同一条
+              //   已 reject 的结果, 于是永远出不去。按钮文案不能骗人。
               confirmText: '仍然退出',
-              cancelText: '再试一次',
+              cancelText: '退出房间',
               confirmButtonClass: 'btn-danger'
             }
           ).then(function (ok) {
-            // ok=true → 「仍然退出」; null/false → 取消或关掉 → 留在房间
             settle(ok ? 'leave' : 'retry');
           }).catch(function () { settle('retry'); });
         } catch (e) {
