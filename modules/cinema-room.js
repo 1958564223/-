@@ -2314,13 +2314,10 @@
   //     但那次用的是探针 v1 —— 它从 focusin 之后 400ms 才开始采样,
   //     把真正的事件漏掉了, 所以「还是卡」只知道结果, 不知道冻结卡在哪。
   //
-  //   第 2 次 (10/9 上午): Gemini 提出要回答一个我们当时没答案的问题 ——
-  //     【完全脱离 JS 视口干预后, 纯原生聚焦行为在 330 里是否仍有 4 秒级冻结】
-  //     现在有时间线探针了, 重做一次就能直接回答:
-  //       · 冻结还在 → 元凶不是我们的 vv 同步, 是底层 DOM/合成层的问题
-  //       · 冻结消失 → 就是 applyVisualViewport 写变量触发的重排
-  //     true = 断开(本次), 测完把这里改回 false 即可恢复。
-  const VV_DIAG_DISABLE_HEIGHT_SYNC = true;
+  //   第 2 次 (10/9 上午): 已做完。断开后真机仍是 5,072ms 冻结(基线 4,841ms),
+  //     和断开前基本一样 → 【JS 视口同步彻底排除, 不是元凶】。
+  //     高度同步是「打字时房间避让键盘」这个功能本身, 必须开着, 所以恢复成 false。
+  const VV_DIAG_DISABLE_HEIGHT_SYNC = false;
 
   // 只读诊断计数, 给「键盘还卡不卡」做实测用。不影响任何行为。
   const vvDiag = { events: 0, writes: 0 };
@@ -2610,6 +2607,48 @@
       btn.__cinemaBound = true;
       btn.addEventListener('click', function () { open(); });
     }
+    bindSandboxEntry();
+  }
+
+  // ------------------------------------------------------------------------
+  // 🧪 影院沙盒验证入口 (2026-10-09, 临时)
+  //
+  // 目的: 验证「把影院塞进一个只有约 150 节点的纯净 iframe 文档」能不能根治
+  //       iOS 点输入框时主线程冻结 4~5 秒。
+  //
+  // 背景 (已实测排除的一堆): 毛玻璃、抽帧 toDataURL、input 事件处理、
+  //   height 过渡动画、kb-open 焦点监听、body:fixed、宿主 display:none
+  //   (反而慢一倍)、甚至完全断开 visualViewport 同步(仍 5,072ms 冻结)。
+  //   唯一还没验的假设 = 宿主文档越大, WebKit 算 Focus Rect 越慢。
+  //   而独立测试页从来没卡过 —— 同样的 cinema-room.js, 底下只有约 150 节点。
+  //
+  // ⚠️ 这不是成品: 沙盒页里没有宿主的 showCustomAlert / showCustomConfirm,
+  //   所以设置弹窗、人物拖拽、剧情记忆那些都用不了。只测输入框响应速度。
+  //   测完把这个按钮 + cinema-sandbox/ 目录一起删掉。
+  // ------------------------------------------------------------------------
+  function bindSandboxEntry() {
+    const sbtn = document.getElementById('open-cinema-sandbox-btn');
+    if (!sbtn || sbtn.__sandboxBound) return;
+    sbtn.__sandboxBound = true;
+
+    let frame = null;
+    sbtn.addEventListener('click', function () {
+      if (frame) {                     // 已在沙盒里 → 再点一次关掉
+        frame.remove();
+        frame = null;
+        if (document.body) document.body.classList.remove('cinema-room-active');
+        return;
+      }
+      if (document.body) document.body.classList.add('cinema-room-active');
+      frame = document.createElement('iframe');
+      frame.id = 'cinema-sandbox-frame';
+      frame.src = 'cinema-sandbox/index.html';
+      frame.setAttribute('allow', 'autoplay; encrypted-media; fullscreen');
+      frame.style.cssText =
+        'position:fixed;inset:0;width:100%;height:100%;border:0;z-index:2147483647;' +
+        'background:#16111a;';
+      document.body.appendChild(frame);
+    });
   }
 
   if (document.readyState === 'loading') {

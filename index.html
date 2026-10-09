@@ -252,7 +252,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 图片压缩 (2026-10-05): 上传房间背景时把 3~5MB 的 iPhone 照片压到 ~100KB。
        必须在 cinema-room.js 之前 —— 它在加载时就要拿到 window.CinemaImage。 -->
   <script src="modules/cinema-img.js?v=1.0.1" defer></script>
-  <script src="modules/cinema-room.js?v=0.34.0" defer></script>
+  <script src="modules/cinema-room.js?v=0.35.0" defer></script>
   <link rel="stylesheet" href="modules/cinema-room.css?v=0.34.0">
   <!-- Cinema Room 的 Gemini 3.8 Live 桥接层 (协议层仍是 live-client.js)。
        必须在 cinema-room.js 之后加载 —— cinema-room.js 打开房间时才会调它。 -->
@@ -3696,6 +3696,12 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
         <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
         <path d="M7 4v16M17 4v16"></path>
         <path d="M2 9h5M2 15h5M17 9h5M17 15h5"></path>
+    </svg>
+</button> <button id="open-cinema-sandbox-btn" class="chat-action-icon-btn action-button" title="影院·沙盒(临时验证)" style="border:1px solid #ffcf9c;box-shadow:0 0 0 1px rgba(255,207,156,.25)">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffcf9c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
+    <path d="M2 9h5M2 15h5M17 9h5M17 15h5"></path>
+    <rect x="9" y="8" width="6" height="8" rx="1" ry="1"></rect>
     </svg>
 </button> <button id="open-sticker-panel-btn" class="chat-action-icon-btn action-button" title="表情面板">
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
