@@ -132,6 +132,28 @@ function loadApp({ binauralEnabled = false, sampleRate = 48000, sharedCtx = null
     'tts-minimax-model': { value: 'speech-2.6-hd', checked: false, style: {}, addEventListener() {} }
   };
 
+  // 空间音频设置的宿主。渲染是 innerHTML 字符串赋值, 假 DOM 得在赋值时
+  // "变出"子元素, 否则后面的 getElementById 拿不到开关。
+  const spatialHost = { style: {}, _html: '' };
+  Object.defineProperty(spatialHost, 'innerHTML', {
+    get() { return this._html; },
+    set(html) {
+      this._html = html;
+      if (String(html).indexOf('tts-binaural-switch') >= 0) {
+        audioElements['tts-binaural-switch'] = { checked: false, style: {}, onchange: null };
+        audioElements['tts-binaural-details'] = { style: {} };
+        audioElements['tts-binaural-position'] = { value: 'right', style: {} };
+        audioElements['tts-binaural-distance'] = { value: 'near', style: {} };
+      } else {
+        delete audioElements['tts-binaural-switch'];
+        delete audioElements['tts-binaural-details'];
+        delete audioElements['tts-binaural-position'];
+        delete audioElements['tts-binaural-distance'];
+      }
+    }
+  });
+  audioElements['tts-spatial-form'] = spatialHost;
+
   const createdCtx = [];
   let binBytes = null;
 
@@ -149,7 +171,22 @@ function loadApp({ binauralEnabled = false, sampleRate = 48000, sharedCtx = null
   sandbox.atob = atob;
   sandbox.isFinite = isFinite;
   sandbox.parseInt = parseInt;
-  sandbox.FileReader = class { readAsDataURL() { if (this.onloadend) this.onloadend(); } };
+  // 真实 FileReader.readAsDataURL 会把 Blob 转成 dataURL 并填进 .result,
+  // tts-audio.js 正是靠它写 ttsCache。假实现不填 result 会让缓存里存进 undefined,
+  // 后面缓存命中路径就会莫名其妙地回退到 <audio> —— 那是 fake 的锅, 不是代码的。
+  sandbox.FileReader = class {
+    readAsDataURL(blob) {
+      const self = this;
+      Promise.resolve(blob.arrayBuffer()).then((ab) => {
+        const bytes = new Uint8Array(ab);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        const b64 = Buffer.from(bin, 'binary').toString('base64');
+        self.result = 'data:' + ((blob && blob.type) || 'application/octet-stream') + ';base64,' + b64;
+        if (self.onloadend) self.onloadend();
+      });
+    }
+  };
 
   sandbox.AudioContext = function (opts) {
     const ctx = new FakeAudioContext(opts);
@@ -715,6 +752,44 @@ async function testChatIntegration() {
   check('F16 关闭开关时 speechText 不变', off.ttsCalls[0].text.indexOf('你好呀') >= 0, true);
   check('F17 关闭开关时 emotion 空串经 normalizeEmotion 归零',
     off.sandbox.TTSService.normalizeEmotion(off.ttsCalls[0].emotion), undefined);
+
+  // ---- 连续播放 ----
+  // F18 自然播完后再点同一条 → 能重新播放(不能卡在"已停止"的空档里)
+  const e18 = loadApp({ binauralEnabled: true });
+  e18.setBin(readBin());
+  const b18 = makeBody('第一条', 'zh_voice_test', 'm1');
+  await e18.sandbox.playTtsAudio(b18.el);
+  await tick();
+  const ectx = e18.sandbox.TtsSpatialAudio.getContext();
+  checkTrue('F18 首次播放中', e18.sandbox.TtsSpatialAudio.isPlaying());
+  // 模拟自然播放结束: BufferSource.onended 由浏览器在源读完时触发
+  ectx.sources[ectx.sources.length - 1].onended();
+  await tick(20);
+  check('F18b 自然结束后不再播放', e18.sandbox.TtsSpatialAudio.isPlaying(), false);
+  check('F18c 自然结束后按钮复位', b18.button.textContent, '▶');
+  await e18.sandbox.playTtsAudio(b18.el);
+  await tick();
+  checkTrue('F18d 播完再点可重新播放', e18.sandbox.TtsSpatialAudio.isPlaying());
+  check('F18e 重播后按钮显示暂停符', b18.button.textContent, '❚❚');
+
+  // F19 播 A 未完时播 B → A 必须停掉, 不能两段叠着响
+  const c19 = loadApp({ binauralEnabled: true });
+  c19.setBin(readBin());
+  const a19 = makeBody('第一条', 'zh_voice_test', 'm1');
+  const b19 = makeBody('第二条', 'zh_voice_test', 'm2');
+  await c19.sandbox.playTtsAudio(a19.el);
+  await tick();
+  const cctx = c19.sandbox.TtsSpatialAudio.getContext();
+  const srcA = cctx.sources[cctx.sources.length - 1];
+  await c19.sandbox.playTtsAudio(b19.el);
+  await tick();
+  check('F19 播 B 后 A 的源已停止', srcA.didStop, true);
+  check('F19b A 的源已断开', srcA.disconnected, true);
+  const srcB = cctx.sources[cctx.sources.length - 1];
+  checkTrue('F19c B 的源是活的', srcB && !srcB.didStop);
+  check('F19d 同一时刻只有一个 ConvolverNode', cctx.convolvers.length, 2);  // A 的已被 B 的替换
+  checkTrue('F19e 当前只跟踪一个播放', c19.sandbox.TtsSpatialAudio.isActive());
+  check('F19f B 按钮显示暂停符', b19.button.textContent, '❚❚');
 }
 
 // ============================================================
@@ -737,6 +812,67 @@ async function testCallIsolation() {
 }
 
 // ============================================================
+// H. 设置项往返 —— 验证"关闭开关恢复原始播放"这个回退手段真的成立
+// ============================================================
+function testSettingsRoundTrip() {
+  const app = loadApp({ binauralEnabled: true });
+  app.setBin(readBin());
+  const sb = app.sandbox;
+
+  // 1) 读配置
+  const s = sb.getTtsBinauralSettings(sb.TTSService.normalizeTtsConfig(sb.state.apiConfig));
+  check('H1 读取 enabled', s.enabled, true);
+  check('H2 读取 position', s.position, 'right');
+  check('H3 读取 distance', s.distance, 'near');
+
+  // 2) 渲染: 必须画出开关 + 位置/距离 + CC BY 署名
+  sb.renderTtsSpatialForm();
+  const html = app.audioElements['tts-spatial-form'].innerHTML;
+  checkTrue('H4 渲染出双耳空间音频开关', html.indexOf('tts-binaural-switch') >= 0);
+  checkTrue('H5 渲染出位置选择', html.indexOf('tts-binaural-position') >= 0);
+  checkTrue('H6 渲染出距离选择', html.indexOf('tts-binaural-distance') >= 0);
+  checkTrue('H7 渲染含 CC BY 4.0 署名', html.indexOf('CC BY 4.0') >= 0, html.slice(0, 200));
+  checkTrue('H8 渲染含数据 DOI', html.indexOf('zenodo.4297951') >= 0);
+  checkTrue('H9 渲染含"关闭即恢复原始播放"说明', html.indexOf('关闭开关即刻恢复原始播放') >= 0);
+  checkTrue('H10 渲染含"只作用于聊天语音条"边界说明', html.indexOf('只作用于') >= 0 && html.indexOf('通话') >= 0);
+  checkTrue('H11 四个位置预设齐全',
+    ['left', 'right', 'behind', 'front'].every(k => sb.TtsSpatialAudio.POSITIONS[k]));
+  checkTrue('H12 四个距离档齐全',
+    Object.keys(sb.TtsSpatialAudio.DISTANCES).length === 3, JSON.stringify(Object.keys(sb.TtsSpatialAudio.DISTANCES)));
+
+  // 3) 存配置: 改开关 + 改位置距离, 走真实的 saveTtsSettingsFromDom
+  const sw = app.audioElements['tts-binaural-switch'];
+  const pos = app.audioElements['tts-binaural-position'];
+  const dist = app.audioElements['tts-binaural-distance'];
+  sw.checked = false;
+  pos.value = 'behind';
+  dist.value = 'far';
+  const saved = sb.saveTtsSettingsFromDom({ silent: true });
+  check('H13 保存返回 true', saved, true);
+  const after = sb.state.apiConfig.tts.binaural;
+  check('H14 关闭开关被存下', after.enabled, false);
+  check('H15 位置改动被存下', after.position, 'behind');
+  check('H16 距离改动被存下', after.distance, 'far');
+  check('H17 关闭后 isEnabled 为假', sb.TtsSpatialAudio.isEnabled(), false);
+
+  // 4) 关闭状态在播放链路上确实生效 (回退手段的核心保证)
+  const b18 = makeBody('你好', 'zh_voice_test', 'm1');
+  return sb.playTtsAudio(b18.el).then(() => new Promise(r => setTimeout(r, 40))).then(() => {
+    check('H18 关闭后走 <audio> 而非空间音频', app.audioElements['tts-audio-player'].playCount > 0, true);
+    check('H19 关闭后不建 ConvolverNode', app.createdCtx.length, 0);
+
+    // 5) 没渲染过(DOM 里没有开关)时, 保存不得把用户已选的配置抹掉
+    const app2 = loadApp({ binauralEnabled: true });
+    app2.sandbox.state.apiConfig.tts.binaural = { enabled: true, position: 'left', distance: 'mid' };
+    delete app2.audioElements['tts-binaural-switch'];
+    app2.sandbox.saveTtsSettingsFromDom({ silent: true });
+    const kept = app2.sandbox.state.apiConfig.tts.binaural;
+    check('H20 未渲染时保留原 enabled', kept.enabled, true);
+    check('H21 未渲染时保留原 position', kept.position, 'left');
+    check('H22 未渲染时保留原 distance', kept.distance, 'mid');
+  });
+}
+// ============================================================
 // 跑
 // ============================================================
 (async function main() {
@@ -752,7 +888,8 @@ async function testCallIsolation() {
     ['D 重采样器', testResampler],
     ['E 引擎', testEngine],
     ['F 聊天链路集成', testChatIntegration],
-    ['G 通话链路隔离', testCallIsolation]
+    ['G 通话链路隔离', testCallIsolation],
+    ['H 设置项往返', testSettingsRoundTrip]
   ];
 
   for (const [name, fn] of suites) {
