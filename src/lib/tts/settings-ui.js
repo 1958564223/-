@@ -160,15 +160,22 @@
   // 独立于 provider 表单渲染 —— 换服务商时它不该被重建掉,
   // 所以放在自己的容器里, 只在 renderTtsProviderSettings 末尾调一次。
   // ============================================================
+  function getBinauralTrajectories() {
+    return (window.TtsBinauralTrajectory && window.TtsBinauralTrajectory.TRAJECTORIES)
+      || { static: { label: '静态固定', mode: 'none', hint: '' } };
+  }
+
   function getBinauralSettings(ttsConfig) {
     var raw = (ttsConfig && ttsConfig.binaural) || {};
     var api = window.TtsSpatialAudio;
     var positions = (api && api.POSITIONS) || {};
     var distances = (api && api.DISTANCES) || {};
+    var trajectories = getBinauralTrajectories();
     return {
       enabled: raw.enabled === true,
       position: positions[raw.position] ? raw.position : 'right',
-      distance: distances[raw.distance] ? raw.distance : 'near'
+      distance: distances[raw.distance] ? raw.distance : 'near',
+      trajectory: trajectories[raw.trajectory] ? raw.trajectory : 'static'
     };
   }
 
@@ -205,6 +212,16 @@
         + escapeHtml(d.label) + '</option>';
     }).join('');
 
+    // 动态空间轨迹 (2026-10-10)
+    var trajectories = getBinauralTrajectories();
+    var trajOptions = Object.keys(trajectories).map(function (key) {
+      var t = trajectories[key];
+      return '<option value="' + escapeHtml(key) + '"' + (key === s.trajectory ? ' selected' : '') + '>'
+        + escapeHtml(t.label) + '</option>';
+    }).join('');
+    var isDynamic = s.trajectory !== 'static';
+    var trajHint = escapeHtml(trajectories[s.trajectory].hint || '');
+
     var credit = '';
     if (attribution) {
       credit = '<p class="settings-description" style="padding:0 15px 12px;color:#999;font-size:11px;line-height:1.6;">'
@@ -226,7 +243,16 @@
       </div>
       <div id="tts-binaural-details" style="${s.enabled ? '' : 'display:none;'}">
         <div class="settings-item">
-          <label>声音位置</label>
+          <label>空间轨迹</label>
+          <div class="settings-right">
+            <select id="tts-binaural-trajectory" class="settings-select">${trajOptions}</select>
+          </div>
+        </div>
+        <p class="settings-description" id="tts-binaural-traj-hint" style="padding:0 15px 8px;color:#888;font-size:11px;">
+          ${trajHint}
+        </p>
+        <div class="settings-item">
+          <label>起始位置</label>
           <div class="settings-right">
             <select id="tts-binaural-position" class="settings-select">${posOptions}</select>
           </div>
@@ -241,6 +267,7 @@
       <p class="settings-description" style="padding:0 15px 10px;color:#888;font-size:12px;line-height:1.6;">
         只作用于<b>聊天语音条</b>，视频 / 语音通话与口型不受影响。<br>
         需要戴耳机才有空间感；外放时双耳差异会互相抵消。<br>
+        动态轨迹只在<b>有声音的区间</b>推进，换气停顿期间方位冻结，不会瞬移。<br>
         关闭开关即刻恢复原始播放效果。
       </p>
       ${credit}
@@ -253,6 +280,17 @@
         details.style.display = toggle.checked ? '' : 'none';
       };
     }
+
+    // 轨迹切换时同步刷新说明文案
+    var trajSelect = document.getElementById('tts-binaural-trajectory');
+    var trajHintEl = document.getElementById('tts-binaural-traj-hint');
+    if (trajSelect && trajHintEl) {
+      trajSelect.onchange = function () {
+        var d = trajectories[trajSelect.value];
+        trajHintEl.textContent = (d && d.hint) || '';
+      };
+    }
+    void isDynamic;
   }
 
   function renderTtsProviderSettings() {
@@ -305,6 +343,7 @@
       const prev = ttsConfig.binaural || {};
       ttsConfig.binaural = {
         enabled: spatialToggle.checked === true,
+        trajectory: document.getElementById('tts-binaural-trajectory')?.value || prev.trajectory || 'static',
         position: document.getElementById('tts-binaural-position')?.value || prev.position || 'right',
         distance: document.getElementById('tts-binaural-distance')?.value || prev.distance || 'near'
       };

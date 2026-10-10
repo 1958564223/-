@@ -30,10 +30,13 @@
       //   改变所有人的听感, 且任何时候都能一键关掉回到原始播放。
       //   position: left/right/behind/front (见 binaural/spatial-audio.js 的 POSITIONS)
       //   distance: near/mid/far                       (同上 DISTANCES)
+      //   trajectory: static(默认, 整条固定) / whisper / orbit / approach
+      //               (见 binaural/trajectory.js 的 TRAJECTORIES)
       binaural: {
         enabled: false,
         position: 'right',
-        distance: 'near'
+        distance: 'near',
+        trajectory: 'static'
       },
       providers: {
         [PROVIDERS.MINIMAX]: {

@@ -152,16 +152,24 @@
   function getSettings() {
     var tts = (window.state && window.state.apiConfig && window.state.apiConfig.tts) || {};
     var raw = tts.binaural || {};
+    var trajApi = window.TtsBinauralTrajectory;
+    var trajectories = (trajApi && trajApi.TRAJECTORIES) || { static: { label: '静态固定', mode: 'none' } };
     var settings = {
       enabled: raw.enabled === true,
       position: POSITIONS[raw.position] ? raw.position : DEFAULT_SETTINGS.position,
-      distance: DISTANCES[raw.distance] ? raw.distance : DEFAULT_SETTINGS.distance
+      distance: DISTANCES[raw.distance] ? raw.distance : DEFAULT_SETTINGS.distance,
+      // 2026-10-10: 动态轨迹。默认 static, 保持改造前行为逐字一致。
+      trajectory: trajectories[raw.trajectory] ? raw.trajectory : 'static'
     };
     var pos = POSITIONS[settings.position];
     var dist = DISTANCES[settings.distance];
     settings.azimuthDeg = pos.azimuthDeg;
     settings.distanceM = dist.distanceM;
-    settings.label = pos.label + ' · ' + dist.label;
+    settings.isDynamic = !!(trajectories[settings.trajectory]
+      && trajectories[settings.trajectory].mode
+      && trajectories[settings.trajectory].mode !== 'none');
+    settings.label = (settings.isDynamic ? trajectories[settings.trajectory].label + ' · ' : '')
+      + pos.label + ' · ' + dist.label;
     return settings;
   }
 
@@ -223,7 +231,12 @@
     var st = active;
     active = null;
     teardownSource(st);
-    try { st.convolver.disconnect(); } catch (e) { /* ignore */ }
+    if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+    // chain 里是本模块自己创建的节点 (动态路径有 conv+gain 共 4 个),
+    // 只 disconnect 自己的, 绝不碰借来的 ctx 上的其他节点。
+    for (var i = 0; i < (st.chain || []).length; i++) {
+      try { st.chain[i].disconnect(); } catch (e) { /* ignore */ }
+    }
     if (st.onstate) {
       try { st.onstate('stopped'); } catch (e) { /* ignore */ }
     }
@@ -239,11 +252,142 @@
     }
   }
 
+  // ============================================================
+  // 音频链构造
+  // ------------------------------------------------------------
+  // 一条链 = ConvolverNode -> GainNode -> destination
+  //   静态路径只用一条; 动态路径用 A/B 两条并联, 靠两个 GainNode 交叉淡化换方位。
+  //
+  // 为什么用【互补线性】而不是等功率(cos/sin)淡化:
+  //   两个 Convolver 吃的是【同一个输入】, 输出高度相关。等功率淡化会让
+  //   中间总功率鼓出 +3dB; 互补线性因为两路相关, 反而是平的。
+  //   同理, 换 buffer 必须先装到【增益为 0】的那条上, 换的瞬间听不到, 不会有咔哒声。
+  // ============================================================
+  function makeConvChain(ctx, ir, gainValue) {
+    var conv = ctx.createConvolver();
+    // 自己做响度对齐(见 hrir-data.getStereoIr), 关掉浏览器内置归一化,
+    // 避免"归一化 × 我的增益"两次缩放。不认这个属性的实现默认 true, 语义一致。
+    try { conv.normalize = false; } catch (e) { /* 老实现忽略 */ }
+    conv.buffer = ir;
+    var gain = ctx.createGain();
+    gain.gain.value = gainValue;
+    conv.connect(gain);
+    gain.connect(ctx.destination);
+    return { conv: conv, gain: gain, state: { value: gainValue } };
+  }
+
+  /**
+   * 把某条链的增益平滑推到目标值。
+   * cancelAndHoldAtTime 能保住"此刻正在播的自动化值", 不支持的老浏览器
+   * 退回 cancelScheduledValues + setValueAtTime(用我们自己记的目标值近似)。
+   */
+  function rampGain(node, value, atTime, dur) {
+    var param = node.gain.gain;
+    var last = node.state.value;
+    try {
+      if (typeof param.cancelAndHoldAtTime === 'function') {
+        param.cancelAndHoldAtTime(atTime);
+      } else {
+        param.cancelScheduledValues(atTime);
+        param.setValueAtTime(last, atTime);
+      }
+    } catch (e) {
+      try { param.cancelScheduledValues(atTime); param.setValueAtTime(last, atTime); } catch (e2) { /* ignore */ }
+    }
+    param.linearRampToValueAtTime(value, atTime + dur);
+    node.state.value = value;
+  }
+
+  function setupStatic(st, ir) {
+    // ⚠️ 静态路径刻意【不插 GainNode】 —— 它必须与引入动态轨迹之前逐字等价:
+    //   ConvolverNode -> destination, 一个增益节点都不多建。
+    //   动态路径才需要增益来做交叉淡化。
+    var conv = st.ctx.createConvolver();
+    try { conv.normalize = false; } catch (e) { /* 老实现忽略 */ }
+    conv.buffer = ir;
+    conv.connect(st.ctx.destination);
+    st.inputs = [conv];
+    st.chain = [conv];
+    st.slotA = null;
+    st.slotB = null;
+  }
+
+  /**
+   * 动态轨迹: A/B 双卷积并联 + 关键帧调度。
+   *
+   * 关键帧时间轴来自 trajectory 模块的【出声时间】换算, 所以停顿期间
+   * 相邻关键帧的墙钟间隔被自动拉开 —— 停顿里不推进, 不会瞬移。
+   */
+  function setupDynamic(st, hrirApi, set, trajApi, trajectory, fromAz, fromDist) {
+    var ctx = st.ctx;
+
+    var timeline = trajApi.buildVoicedTimeline(st.buffer);
+    var plan = trajApi.buildPlan({
+      trajectory: trajectory,
+      fromAz: fromAz,
+      fromDist: fromDist,
+      toDist: trajApi.NEAR_DIST,
+      speechDuration: timeline.speechDuration
+    });
+
+    var keys = [];
+    for (var i = 0; i < plan.length; i++) {
+      keys.push({
+        t: trajApi.speechTimeToWall(timeline, plan[i].speechT),
+        az: plan[i].az,
+        dist: plan[i].dist
+      });
+    }
+    st.keys = keys;
+    st.keyIndex = 1;
+
+    var firstIr = hrirApi.getStereoIr(set, ctx, keys[0].az, keys[0].dist);
+    var A = makeConvChain(ctx, firstIr, 1);   // 当前主导
+    var B = makeConvChain(ctx, firstIr, 0);   // 待接管, 此刻增益 0 完全听不到
+    st.slotA = A;
+    st.slotB = B;
+    st.inputs = [A.conv, B.conv];             // 源同时喂两边
+    st.chain = [A.conv, A.gain, B.conv, B.gain];
+
+    function applyStep(key) {
+      var ir;
+      try {
+        ir = hrirApi.getStereoIr(set, ctx, key.az, key.dist);
+      } catch (e) { return; }
+      if (!ir || ir.numberOfChannels !== 2) return;
+
+      // 当前主导的是 state.value 较大的那条, 另一条就是待接管的
+      var incoming = (A.state.value >= B.state.value) ? B : A;
+      var outgoing = (incoming === B) ? A : B;
+
+      // 先换 buffer 再拉增益: 此刻 incoming 增益是 0, 换的瞬间听不到
+      incoming.conv.buffer = ir;
+
+      var t = ctx.currentTime;
+      rampGain(incoming, 1, t, trajApi.CROSSFADE_SEC);
+      rampGain(outgoing, 0, t, trajApi.CROSSFADE_SEC);
+    }
+
+    st.onStep = function () {
+      function tick() {
+        if (!st.playing || st.finished) return;
+        var elapsed = ctx.currentTime - st.startedAt;
+        var guard = 0;
+        while (st.keyIndex < keys.length && keys[st.keyIndex].t <= elapsed && guard++ < 64) {
+          applyStep(keys[st.keyIndex]);
+          st.keyIndex++;
+        }
+        st.timer = setTimeout(tick, trajApi.STEP_TIMER_MS);
+      }
+      tick();
+    };
+  }
+
   /**
    * 播放一条单声道语音到指定空间位置。
-   * @param {{blob: Blob, azimuthDeg?: number, distanceM?: number,
+   * @param {{blob: Blob, azimuthDeg?: number, distanceM?: number, trajectory?: string,
    *          onended?: Function, onstate?: Function}} opts
-   * @returns {Promise<Object>} 句柄 { pause, resume, stop, isPlaying }
+   * @returns {Promise<Object>} 句柄 { pause, resume, stop, isPlaying, getDuration }
    * @throws {Error} 任何一步失败都抛出 —— 调用方负责回退到 <audio>
    */
   async function play(opts) {
@@ -266,10 +410,13 @@
     if (ctx.state !== 'running') throw new Error('spatial_ctx_not_running:' + ctx.state);
     if (!window.TtsBinauralHrir) throw new Error('spatial_hrir_module_gone');
 
-    var ir = hrirApi.getStereoIr(set, ctx, opts.azimuthDeg, opts.distanceM);
-    if (!ir || ir.numberOfChannels !== 2) throw new Error('spatial_bad_ir');
+    // ---- 静态 or 动态 ----
+    var trajectory = opts.trajectory || 'static';
+    var trajApi = window.TtsBinauralTrajectory;
+    var trajDef = trajApi && trajApi.TRAJECTORIES ? trajApi.TRAJECTORIES[trajectory] : null;
+    var isDynamic = !!(trajDef && trajDef.mode && trajDef.mode !== 'none');
 
-    // ---- 解码 ----
+    // ---- 解码 (两条路径共用) ----
     var arrayBuffer = await blobToArrayBuffer(opts.blob);
     var decoded = await decodeAudio(ctx, arrayBuffer);
     if (!decoded || !decoded.length) throw new Error('spatial_empty_decode');
@@ -277,44 +424,57 @@
 
     if (ctx.state !== 'running') throw new Error('spatial_ctx_died:' + ctx.state);
 
-    // ---- 音频图 ----
-    var convolver = ctx.createConvolver();
-    // 自己做响度对齐(见 hrir-data.getStereoIr), 因此关掉浏览器内置归一化,
-    // 避免"归一化 × 我的增益"两次缩放。若某浏览器不认这个属性, 其默认 true 的
-    // 归一化结果与我的增益语义一致, 依然不会离谱 —— 这是有意的双保险。
-    try { convolver.normalize = false; } catch (e) { /* 老实现忽略 */ }
-    convolver.buffer = ir;
-    // 音频图出口。漏掉这一句的话 source→convolver 后面没有接任何人,
-    // 图是断的, 播放"成功"但一点声音都没有。
-    convolver.connect(ctx.destination);
-
     var st = {
       ctx: ctx,
-      convolver: convolver,
       source: null,
       buffer: mono,
+      inputs: [],   // BufferSource 要连到的节点
+      chain: [],    // 结束时统一 disconnect
       offset: 0,
       startedAt: 0,
       playing: false,
       finished: false,
       onended: opts.onended || null,
       onstate: opts.onstate || null,
-      tailMs: Math.ceil((ir.length / ctx.sampleRate) * 1000) + 40
+      tailMs: 80,
+      timer: null,
+      onStep: null,
+      slotA: null,
+      slotB: null,
+      keys: null,
+      keyIndex: 0,
+      dynamic: isDynamic
     };
+
+    if (isDynamic) {
+      var firstIr = hrirApi.getStereoIr(set, ctx, opts.azimuthDeg, opts.distanceM);
+      if (!firstIr || firstIr.numberOfChannels !== 2) throw new Error('spatial_bad_ir');
+      st.tailMs = Math.ceil((firstIr.length / ctx.sampleRate) * 1000) + 40;
+      setupDynamic(st, hrirApi, set, trajApi, trajectory, opts.azimuthDeg, opts.distanceM);
+    } else {
+      var ir = hrirApi.getStereoIr(set, ctx, opts.azimuthDeg, opts.distanceM);
+      if (!ir || ir.numberOfChannels !== 2) throw new Error('spatial_bad_ir');
+      st.tailMs = Math.ceil((ir.length / ctx.sampleRate) * 1000) + 40;
+      setupStatic(st, ir);
+    }
 
     function startAt(offset) {
       var src = ctx.createBufferSource();
       src.buffer = st.buffer;
-      src.connect(st.convolver);
+      // 动态路径下 inputs 是并联的 A/B 两条 convolver, 源要同时喂两边
+      for (var i = 0; i < st.inputs.length; i++) src.connect(st.inputs[i]);
       src.onended = function () {
         if (st.source !== src) return;      // 被 pause/stop 换掉了, 不是自然结束
         st.source = null;
         st.playing = false;
         st.finished = true;
         if (active === st) active = null;
+        if (st.timer) { clearTimeout(st.timer); st.timer = null; }
         // 等卷积尾巴抽完再摘节点, 否则末尾几个采样会被切断
         setTimeout(function () {
-          try { st.convolver.disconnect(); } catch (e) { /* ignore */ }
+          for (var c = 0; c < st.chain.length; c++) {
+            try { st.chain[c].disconnect(); } catch (e) { /* ignore */ }
+          }
         }, st.tailMs);
         if (st.onended) {
           try { st.onended(); } catch (e) { /* ignore */ }
@@ -325,6 +485,8 @@
       st.offset = offset;
       st.startedAt = ctx.currentTime;
       st.playing = true;
+      // 关键帧调度随播放一起启动; 暂停时 tick 会因 !st.playing 自然停摆
+      if (typeof st.onStep === 'function') st.onStep();
     }
 
     startAt(0);

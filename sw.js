@@ -11,7 +11,11 @@
 //          (sw.js 下方 Cinema Room 那条注释记的就是这个坑: 大二进制双份占空间、
 //           撑爆安装期缓存)。它按需加载, 由浏览器 HTTP 缓存自然复用。
 //   本次 bump 只是为了让 index.html 里新增的 <script> 标签生效(它是被预缓存的)。
-const CACHE_VERSION = 'v0.2.40.0';
+// v0.2.41.0 (2026-10-10): 双耳空间音频 —— 动态声相轨迹。
+//   index.html 新增 <script src="src/lib/tts/binaural/trajectory.js">, 它是被预缓存的,
+//   所以必须再 bump 一次 CACHE_VERSION 才能让新标签生效。
+//   src/lib/tts/binaural/*.js 与 assets/audio/hrir-ku100-nf.bin 依旧【不进预缓存】(见下)。
+const CACHE_VERSION = 'v0.2.41.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

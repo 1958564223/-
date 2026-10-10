@@ -811,6 +811,9 @@
           blob: blob,
           azimuthDeg: settings.azimuthDeg,
           distanceM: settings.distanceM,
+          // 2026-10-10: 动态轨迹。'static' 时引擎走原来的单卷积路径,
+          //   行为与改造前逐字一致; 其余值才启用 A/B 双卷积交叉淡化。
+          trajectory: settings.trajectory || 'static',
           onended: function () {
             if (button) button.textContent = '▶';
             if (typeof onEndedCallback === 'function') onEndedCallback();

@@ -60,6 +60,17 @@ function makeAudioBuffer(channels, length, sampleRate, fill) {
   };
 }
 
+// 可观测的 AudioParam: 记录所有自动化事件, 用来断言交叉淡化的形状
+class FakeAudioParam {
+  constructor(v) { this.value = v; this.events = []; }
+  setValueAtTime(v, t) { this.events.push({ type: 'set', v, t }); this.value = v; return this; }
+  linearRampToValueAtTime(v, t) { this.events.push({ type: 'ramp', v, t }); return this; }
+  setValueCurveAtTime(curve, t, dur) { this.events.push({ type: 'curve', v: curve, t, dur }); return this; }
+  cancelScheduledValues(t) { this.events.push({ type: 'cancel', t }); return this; }
+  cancelAndHoldAtTime(t) { this.events.push({ type: 'hold', t }); return this; }
+  automationRate() { return 'a-rate'; }
+}
+
 class FakeAudioContext {
   constructor(opts) {
     this.opts = opts || {};
@@ -68,9 +79,21 @@ class FakeAudioContext {
     this.destination = { name: 'destination' };
     this.currentTime = 0;
     this.convolvers = [];
+    this.gains = [];
     this.sources = [];
     this.decodeShouldFail = false;
     this.decoded = null;         // 未指定则生成一个 1 秒单声道缓冲
+  }
+  createGain() {
+    const n = {
+      kind: 'gain',
+      gain: new FakeAudioParam(1),
+      connectedTo: [],
+      connect(x) { this.connectedTo.push(x); },
+      disconnect() { this.disconnected = true; }
+    };
+    this.gains.push(n);
+    return n;
   }
   createBuffer(channels, length, sampleRate) {
     return makeAudioBuffer(channels, length, sampleRate);
@@ -142,11 +165,15 @@ function loadApp({ binauralEnabled = false, sampleRate = 48000, sharedCtx = null
       if (String(html).indexOf('tts-binaural-switch') >= 0) {
         audioElements['tts-binaural-switch'] = { checked: false, style: {}, onchange: null };
         audioElements['tts-binaural-details'] = { style: {} };
+        audioElements['tts-binaural-trajectory'] = { value: 'static', style: {}, onchange: null };
+        audioElements['tts-binaural-traj-hint'] = { textContent: '', style: {} };
         audioElements['tts-binaural-position'] = { value: 'right', style: {} };
         audioElements['tts-binaural-distance'] = { value: 'near', style: {} };
       } else {
         delete audioElements['tts-binaural-switch'];
         delete audioElements['tts-binaural-details'];
+        delete audioElements['tts-binaural-trajectory'];
+        delete audioElements['tts-binaural-traj-hint'];
         delete audioElements['tts-binaural-position'];
         delete audioElements['tts-binaural-distance'];
       }
@@ -247,6 +274,7 @@ function loadApp({ binauralEnabled = false, sampleRate = 48000, sharedCtx = null
   load('modules/tts-expression.js');
   load('src/lib/tts/index.js');
   load('src/lib/tts/binaural/hrir-data.js');
+  load('src/lib/tts/binaural/trajectory.js');
   load('src/lib/tts/binaural/spatial-audio.js');
   load('src/lib/tts/settings-ui.js');
   load('modules/tts-audio.js');
@@ -831,6 +859,11 @@ function testSettingsRoundTrip() {
   checkTrue('H4 渲染出双耳空间音频开关', html.indexOf('tts-binaural-switch') >= 0);
   checkTrue('H5 渲染出位置选择', html.indexOf('tts-binaural-position') >= 0);
   checkTrue('H6 渲染出距离选择', html.indexOf('tts-binaural-distance') >= 0);
+  checkTrue('H6b 渲染出空间轨迹下拉', html.indexOf('tts-binaural-trajectory') >= 0);
+  checkTrue('H6c 四个轨迹选项齐全',
+    ['static', 'whisper', 'orbit', 'approach'].every(k => html.indexOf('value="' + k + '"') >= 0),
+    html.slice(html.indexOf('tts-binaural-trajectory'), html.indexOf('tts-binaural-trajectory') + 300));
+  checkTrue('H6d 含"停顿期间方位冻结"说明', html.indexOf('方位冻结') >= 0);
   checkTrue('H7 渲染含 CC BY 4.0 署名', html.indexOf('CC BY 4.0') >= 0, html.slice(0, 200));
   checkTrue('H8 渲染含数据 DOI', html.indexOf('zenodo.4297951') >= 0);
   checkTrue('H9 渲染含"关闭即恢复原始播放"说明', html.indexOf('关闭开关即刻恢复原始播放') >= 0);
@@ -875,6 +908,231 @@ function testSettingsRoundTrip() {
 // ============================================================
 // 跑
 // ============================================================
+// ============================================================
+// I. 轨迹计算 (纯函数, 不碰 AudioContext)
+// ============================================================
+function testTrajectoryMath() {
+  const app = loadApp();
+  const TR = app.sandbox.TtsBinauralTrajectory;
+
+  check('I1 normalizeAz(-90) = 270', TR.normalizeAz(-90), 270);
+  check('I2 normalizeAz(450) = 90', TR.normalizeAz(450), 90);
+
+  // azPath: 耳到耳必须走后脑, 不能穿脸
+  check('I3 azPath(90左, 270右) = +180 (走后脑)', TR.azPath(90, 270), 180);
+  check('I4 azPath(270右, 90左) = -180', TR.azPath(270, 90), -180);
+  check('I5 azPath(0前, 90左) = +90 (走短边)', TR.azPath(0, 90), 90);
+  check('I6 azPath(0前, 270右) = -90 (走短边)', TR.azPath(0, 270), -90);
+
+  // 途经方位: 90->270 中间必须是 180, 全程不得经过 0(脸前)
+  const path = [];
+  for (let i = 0; i <= 18; i++) path.push(TR.normalizeAz(90 + 180 * i / 18));
+  checkTrue('I7 90->270 途经 180(后脑)', path.some(a => Math.abs(a - 180) < 7), JSON.stringify(path));
+  check('I8 90->270 全程不经过脸前(0 附近)', path.filter(a => a < 7 || a > 353).length, 0);
+
+  // static 退化为单帧
+  const pStatic = TR.buildPlan({ trajectory: 'static', fromAz: 90, fromDist: 0.25, speechDuration: 5 });
+  check('I9 static 只 1 关键帧', pStatic.length, 1);
+  check('I9b static 方位不变', pStatic[0].az, 90);
+
+  // orbit —— 最重要的一条回归: 最短路 + 模运算会把"转一圈"算成 0 位移
+  const pOrbit = TR.buildPlan({ trajectory: 'orbit', fromAz: 0, fromDist: 0.25, speechDuration: 9 });
+  checkTrue('I10 orbit 多关键帧', pOrbit.length > 3, String(pOrbit.length));
+  const azs = pOrbit.map(k => k.az);
+  const uniq = [...new Set(azs)];
+  checkTrue('I11 orbit 方位真的在变(不是原地不动)', uniq.length > 3, JSON.stringify(uniq));
+  // A/B 交叉淡化只能加载【离散】的 HRIR, 中间方位靠两个卷积器混合出来,
+  // 所以断言的标准是"步进间距内覆盖到四方位", 而不是"恰好命中 90/270"。
+  const gapsAz = [];
+  for (let i = 1; i < azs.length; i++) {
+    let d = azs[i] - azs[i - 1];
+    if (d < 0) d += 360;
+    gapsAz.push(d);
+  }
+  const maxGap = Math.max(...gapsAz);
+  for (const t of [0, 90, 180, 270]) {
+    checkTrue(`I12 orbit 在一步之内覆盖 ${t}°`,
+      azs.some(a => Math.abs(a - t) <= maxGap / 2 + 1), `azs=${JSON.stringify(azs)} maxGap=${maxGap}`);
+  }
+  checkTrue('I12b orbit 步进间距均匀且不过大', maxGap <= 45, `maxGap=${maxGap}`);
+  checkTrue('I13 orbit 完整一圈回到起点', Math.abs(azs[azs.length - 1] - azs[0]) < 1,
+    `${azs[0]} -> ${azs[azs.length - 1]}`);
+  // 旋转方向: 逆时针 = 递增(前->左->后->右)。
+  // 注意 324 -> 0 是跨过 360 的正常接缝, 判方向必须按正向增量算, 不能直接比大小。
+  const turning = pOrbit.filter((k, i) => i > 0 && k.az !== pOrbit[i - 1].az);
+  checkTrue('I14 orbit 方向为逆时针(每步正向推进)',
+    turning.every((k, i) => i === 0 || (((k.az - turning[i - 1].az) + 360) % 360) > 0),
+    JSON.stringify(turning.map(k => k.az)));
+
+  // whisper: 到对侧耳朵, 走后脑
+  const pWhisper = TR.buildPlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, speechDuration: 4.5 });
+  check('I15 whisper 起点 = 当前方位', pWhisper[0].az, 90);
+  check('I16 whisper 终点 = 对侧耳朵', pWhisper[pWhisper.length - 1].az, 270);
+  const wAzs = pWhisper.map(k => k.az);
+  const wStep = Math.max(...wAzs.map((a, i) => (i === 0 ? 0 : a - wAzs[i - 1])));
+  checkTrue('I17 whisper 在一步之内经过 180(后脑)',
+    wAzs.some(a => Math.abs(a - 180) <= wStep / 2 + 1), JSON.stringify(wAzs));
+  checkTrue('I18 whisper 方位单调推进',
+    pWhisper.every((k, i, a) => i === 0 || k.az >= a[i - 1].az), JSON.stringify(pWhisper.map(k => k.az)));
+  checkTrue('I19 whisper 距离保持不变', pWhisper.every(k => Math.abs(k.dist - 0.25) < 1e-9));
+
+  // approach: 方位不动, 1m -> 25cm
+  const pApp = TR.buildPlan({ trajectory: 'approach', fromAz: 90, fromDist: 0.25, speechDuration: 5 });
+  checkTrue('I20 approach 方位完全不变', pApp.every(k => k.az === 90), JSON.stringify(pApp.map(k => k.az)));
+  check('I21 approach 起始 1m', pApp[0].dist, 1.0);
+  check('I22 approach 结束 25cm', pApp[pApp.length - 1].dist, 0.25);
+  checkTrue('I23 approach 距离单调拉近',
+    pApp.every((k, i, a) => i === 0 || k.dist <= a[i - 1].dist));
+
+  // 退化情形
+  const pZero = TR.buildPlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, speechDuration: 0 });
+  check('I24 纯静音时退化为单帧', pZero.length, 1);
+  const pShort = TR.buildPlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, speechDuration: 0.3 });
+  check('I25 极短语音至少 2 帧(仍能走一步)', pShort.length, 2);
+
+  // 非法输入不抛错
+  let threw = null;
+  try {
+    TR.buildPlan({ trajectory: '不存在的模式', fromAz: NaN, fromDist: -1, speechDuration: -5 });
+    TR.azPath(NaN, undefined);
+    TR.normalizeAz(NaN);
+  } catch (e) { threw = e.message; }
+  check('I26 非法输入不抛错', threw, null);
+}
+
+// ============================================================
+// V. 出声时间线 —— "停顿不移动" 的机制本体
+// ============================================================
+function testVoicedTimeline() {
+  const app = loadApp();
+  const TR = app.sandbox.TtsBinauralTrajectory;
+  const SR = 48000;
+
+  // 4 秒: [0,1]有声 [1,2]静音 [2,3]有声 [3,4]静音
+  const n = SR * 4;
+  const data = new Float32Array(n);
+  const fill = (a, b) => { for (let i = a * SR; i < b * SR; i++) data[i] = Math.sin(i * 0.05) * 0.5; };
+  fill(0, 1); fill(2, 3);
+  const buf = { sampleRate: SR, length: n, duration: 4, numberOfChannels: 1, getChannelData: () => data };
+
+  const tl = TR.buildVoicedTimeline(buf);
+  check('V1 时长 4 秒', Math.round(tl.duration), 4);
+  checkTrue('V2 出声时长明显小于总时长(存在静音)', tl.speechDuration < 3.7, tl.speechDuration.toFixed(3));
+  checkTrue('V3 出声时长大于 1.5 秒', tl.speechDuration > 1.5, tl.speechDuration.toFixed(3));
+  checkTrue('V4 tau 单调不减',
+    tl.tau.every((v, i, a) => i === 0 || v >= a[i - 1] - 1e-6));
+
+  // 纯静音
+  const tl2 = TR.buildVoicedTimeline({ sampleRate: SR, length: n, getChannelData: () => new Float32Array(n) });
+  check('V5 纯静音时出声时长为 0', tl2.speechDuration, 0);
+
+  // 关键机制: 出声时间 -> 墙钟时间 的映射会把停顿"撑开",
+  // 于是相邻关键帧在停顿处的墙钟间隔远大于出声段 —— 停顿里自然不推进。
+  const wall = [];
+  for (let s = 0; s <= tl.speechDuration + 1e-6; s += 0.2) wall.push(TR.speechTimeToWall(tl, s));
+  checkTrue('V6 墙钟时间单调不减', wall.every((v, i, a) => i === 0 || v >= a[i - 1]), JSON.stringify(wall.map(v => v.toFixed(2))));
+  check('V7 起点为 0', wall[0], 0);
+  checkTrue('V8 墙钟跨度 >= 出声跨度', wall[wall.length - 1] >= tl.speechDuration - 1e-6,
+    `${wall[wall.length - 1]} vs ${tl.speechDuration}`);
+  const gaps = [];
+  for (let i = 1; i < wall.length; i++) gaps.push(+(wall[i] - wall[i - 1]).toFixed(3));
+  checkTrue('V9 存在被停顿撑开的间隔(冻结生效)', Math.max(...gaps) > Math.min(...gaps) * 1.5,
+    `gaps=${gaps.join(',')}`);
+}
+
+// ============================================================
+// J. 动态播放 (A/B 双卷积 + 交叉淡化)
+// ============================================================
+function makePauseyBuffer(SR) {
+  const n = SR * 4;
+  const data = new Float32Array(n);
+  const fill = (a, b) => { for (let i = a * SR; i < b * SR; i++) data[i] = Math.sin(i * 0.05) * 0.5; };
+  fill(0, 1); fill(2, 3);
+  return { sampleRate: SR, length: n, numberOfChannels: 1, duration: 4, getChannelData: () => data };
+}
+
+async function testDynamicPlayback() {
+  // J1 静态路径完全不变: 单卷积, 无增益节点
+  const s = loadApp({ binauralEnabled: true });
+  s.setBin(readBin());
+  await s.sandbox.TtsSpatialAudio.play({
+    blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25, trajectory: 'static'
+  });
+  const sctx = s.sandbox.TtsSpatialAudio.getContext();
+  check('J1 static: 1 个 ConvolverNode', sctx.convolvers.length, 1);
+  check('J2 static: 0 个 GainNode (与改造前一致)', sctx.gains.length, 0);
+  check('J2b static: 源只连 1 个节点', sctx.sources[0].connectedTo.length, 1);
+
+  // J3 动态路径: A/B 双卷积并联
+  const d = loadApp({ binauralEnabled: true });
+  d.setBin(readBin());
+  const dctx = d.sandbox.TtsSpatialAudio.getContext();
+  dctx.decoded = makePauseyBuffer(48000);
+
+  await d.sandbox.TtsSpatialAudio.play({
+    blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25, trajectory: 'whisper'
+  });
+  check('J3 whisper: 2 个 ConvolverNode', dctx.convolvers.length, 2);
+  check('J4 whisper: 2 个 GainNode', dctx.gains.length, 2);
+  check('J5 源同时连到两个 Convolver (并联)', dctx.sources[0].connectedTo.length, 2);
+  checkTrue('J6 动态链是 Convolver -> Gain -> destination',
+    dctx.convolvers.every(c => c.connectedTo.length === 1 && c.connectedTo[0].kind === 'gain')
+    && dctx.gains.every(g => g.connectedTo.length === 1 && g.connectedTo[0] === dctx.destination),
+    JSON.stringify({ conv: dctx.convolvers.map(c => c.connectedTo.map(x => x.kind || x.name)),
+                     gain: dctx.gains.map(g => g.connectedTo.map(x => x.kind || x.name)) }));
+  checkTrue('J7 两个 Convolver normalize 都关闭',
+    dctx.convolvers.every(c => c.normalize === false));
+  check('J8 初始增益互补 (1 / 0)',
+    JSON.stringify(dctx.gains.map(g => g.gain.value)), JSON.stringify([1, 0]));
+  check('J9 两条链的 IR 初始相同(同一时刻同一位置)', dctx.convolvers[0].buffer === dctx.convolvers[1].buffer, true);
+
+  // J10 推进时间 -> 触发交叉淡化
+  dctx.currentTime = 2.0;
+  await tick(90);
+  const allEvents = dctx.gains.map(g => g.gain.events);
+  const ramps = allEvents.flat().filter(e => e.type === 'ramp');
+  checkTrue('J10 时间推进后产生了 ramp 自动化', ramps.length >= 2, JSON.stringify(allEvents));
+  checkTrue('J11 ramp 目标互补(含 1 与 0)',
+    ramps.some(e => e.v === 1) && ramps.some(e => e.v === 0), JSON.stringify(ramps));
+  checkTrue('J12 未使用 setValueCurve(等功率会鼓包, 必须用互补线性)',
+    allEvents.flat().every(e => e.type !== 'curve'), JSON.stringify(allEvents.flat()));
+  checkTrue('J13 ramp 用的是 linearRampToValueAtTime',
+    ramps.every(e => e.type === 'ramp'), JSON.stringify(ramps.map(e => e.type)));
+
+  // J14 换了方位之后, 两条链的 IR 必须不同
+  check('J14 推进后两条链的 IR 不同(方位已改变)',
+    dctx.convolvers[0].buffer === dctx.convolvers[1].buffer, false);
+
+  // J15 停掉后定时器必须停摆
+  d.sandbox.TtsSpatialAudio.stop();
+  check('J15 stop 后不再播放', d.sandbox.TtsSpatialAudio.isPlaying(), false);
+  const before = dctx.gains.flatMap(g => g.gain.events).length;
+  dctx.currentTime = 9.0;
+  await tick(90);
+  const after = dctx.gains.flatMap(g => g.gain.events).length;
+  check('J16 stop 后不再产生新的自动化(定时器已清)', after, before);
+
+  // J17 orbit 也走双卷积, 且关键帧数 > 1
+  const o = loadApp({ binauralEnabled: true });
+  o.setBin(readBin());
+  const octx = o.sandbox.TtsSpatialAudio.getContext();
+  octx.decoded = makePauseyBuffer(48000);
+  await o.sandbox.TtsSpatialAudio.play({
+    blob: new Blob([new Uint8Array(16)]), azimuthDeg: 0, distanceM: 0.25, trajectory: 'orbit'
+  });
+  check('J17 orbit: 2 个 ConvolverNode', octx.convolvers.length, 2);
+
+  // J18 轨迹模块缺失 -> 退回静态, 不炸
+  const miss = loadApp({ binauralEnabled: true });
+  miss.setBin(readBin());
+  delete miss.sandbox.TtsBinauralTrajectory;
+  await miss.sandbox.TtsSpatialAudio.play({
+    blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25, trajectory: 'whisper'
+  });
+  const mctx = miss.sandbox.TtsSpatialAudio.getContext();
+  check('J18 轨迹模块缺失时退回单卷积(不炸)', mctx.convolvers.length, 1);
+}
+
 (async function main() {
   console.log('');
   console.log('========================================');
@@ -889,7 +1147,10 @@ function testSettingsRoundTrip() {
     ['E 引擎', testEngine],
     ['F 聊天链路集成', testChatIntegration],
     ['G 通话链路隔离', testCallIsolation],
-    ['H 设置项往返', testSettingsRoundTrip]
+    ['H 设置项往返', testSettingsRoundTrip],
+    ['I 轨迹计算', testTrajectoryMath],
+    ['V 出声时间线', testVoicedTimeline],
+    ['J 动态播放', testDynamicPlayback]
   ];
 
   for (const [name, fn] of suites) {
