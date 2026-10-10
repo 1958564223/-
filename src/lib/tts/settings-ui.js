@@ -252,17 +252,18 @@
           ${trajHint}
         </p>
         <div class="settings-item">
-          <label>起始位置</label>
+          <label id="tts-binaural-position-label">起始位置</label>
           <div class="settings-right">
             <select id="tts-binaural-position" class="settings-select">${posOptions}</select>
           </div>
         </div>
         <div class="settings-item">
-          <label>距离</label>
+          <label id="tts-binaural-distance-label">距离</label>
           <div class="settings-right">
             <select id="tts-binaural-distance" class="settings-select">${distOptions}</select>
           </div>
         </div>
+        <p class="settings-description" id="tts-binaural-note" style="padding:0 15px 8px;color:#a08050;font-size:11px;"></p>
       </div>
       <p class="settings-description" style="padding:0 15px 10px;color:#888;font-size:12px;line-height:1.6;">
         只作用于<b>聊天语音条</b>，视频 / 语音通话与口型不受影响。<br>
@@ -281,16 +282,52 @@
       };
     }
 
-    // 轨迹切换时同步刷新说明文案
+    // 轨迹切换时同步刷新说明文案, 并处理各模式下语义不同的控件
     var trajSelect = document.getElementById('tts-binaural-trajectory');
     var trajHintEl = document.getElementById('tts-binaural-traj-hint');
-    if (trajSelect && trajHintEl) {
+    if (trajSelect) {
       trajSelect.onchange = function () {
         var d = trajectories[trajSelect.value];
-        trajHintEl.textContent = (d && d.hint) || '';
+        if (trajHintEl) trajHintEl.textContent = (d && d.hint) || '';
+        applyTrajectoryUI(trajSelect.value);
       };
     }
+    applyTrajectoryUI(s.trajectory);
     void isDynamic;
+  }
+
+  /**
+   * 让「位置 / 距离」两个控件跟着当前轨迹走。
+   *
+   * 为什么需要它 —— 两个控件在不同模式下的语义并不一样:
+   *   static  : 位置 = 固定位置,      距离 = 生效
+   *   whisper : 位置 = 起点,          距离 = 全程保持, 生效
+   *   orbit   : 位置 = 起点(也是终点), 距离 = 全程保持, 生效
+   *   approach: 位置 = 固定方位,      距离 = 【被系统接管】1m→25cm, 用户选择无效
+   *
+   * 最后一种如果不处理, 用户会看到一个能点、但选了不生效的距离选择器 —— 纯误导。
+   */
+  function applyTrajectoryUI(trajKey) {
+    var def = getBinauralTrajectories()[trajKey] || { mode: 'none' };
+    var mode = def.mode || 'none';
+    var isDynamic = mode !== 'none';
+    var distIsAuto = mode === 'distanceOnly';
+
+    var posLabel = document.getElementById('tts-binaural-position-label');
+    if (posLabel) posLabel.textContent = isDynamic ? '起始位置' : '声音位置';
+
+    var distSel = document.getElementById('tts-binaural-distance');
+    var distLabel = document.getElementById('tts-binaural-distance-label');
+    if (distSel) distSel.disabled = distIsAuto;
+    if (distLabel) distLabel.style.opacity = distIsAuto ? '0.45' : '';
+
+    var note = document.getElementById('tts-binaural-note');
+    if (note) {
+      note.textContent = distIsAuto
+        ? '「由远及近」的距离由系统自动控制（1m → 25cm 耳畔），上方的距离选择在此模式下不生效。'
+        : (isDynamic ? '轨迹会从上面选的起始位置开始移动。' : '');
+      note.style.display = note.textContent ? '' : 'none';
+    }
   }
 
   function renderTtsProviderSettings() {

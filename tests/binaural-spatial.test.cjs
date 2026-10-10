@@ -167,15 +167,21 @@ function loadApp({ binauralEnabled = false, sampleRate = 48000, sharedCtx = null
         audioElements['tts-binaural-details'] = { style: {} };
         audioElements['tts-binaural-trajectory'] = { value: 'static', style: {}, onchange: null };
         audioElements['tts-binaural-traj-hint'] = { textContent: '', style: {} };
-        audioElements['tts-binaural-position'] = { value: 'right', style: {} };
-        audioElements['tts-binaural-distance'] = { value: 'near', style: {} };
+        audioElements['tts-binaural-position'] = { value: 'right', style: {}, disabled: false };
+        audioElements['tts-binaural-position-label'] = { textContent: '', style: {} };
+        audioElements['tts-binaural-distance'] = { value: 'near', style: {}, disabled: false };
+        audioElements['tts-binaural-distance-label'] = { textContent: '', style: {} };
+        audioElements['tts-binaural-note'] = { textContent: '', style: {} };
       } else {
         delete audioElements['tts-binaural-switch'];
         delete audioElements['tts-binaural-details'];
         delete audioElements['tts-binaural-trajectory'];
         delete audioElements['tts-binaural-traj-hint'];
         delete audioElements['tts-binaural-position'];
+        delete audioElements['tts-binaural-position-label'];
         delete audioElements['tts-binaural-distance'];
+        delete audioElements['tts-binaural-distance-label'];
+        delete audioElements['tts-binaural-note'];
       }
     }
   });
@@ -864,6 +870,32 @@ function testSettingsRoundTrip() {
     ['static', 'whisper', 'orbit', 'approach'].every(k => html.indexOf('value="' + k + '"') >= 0),
     html.slice(html.indexOf('tts-binaural-trajectory'), html.indexOf('tts-binaural-trajectory') + 300));
   checkTrue('H6d 含"停顿期间方位冻结"说明', html.indexOf('方位冻结') >= 0);
+  // 控件语义要跟着轨迹走: 静态=固定位置, 动态=起点; approach 的距离被系统接管
+  const applyUI = (traj) => {
+    app.audioElements['tts-binaural-trajectory'].value = traj;
+    app.audioElements['tts-binaural-trajectory'].onchange();
+  };
+  const posLabel = () => app.audioElements['tts-binaural-position-label'].textContent;
+  const distSel = () => app.audioElements['tts-binaural-distance'];
+  const note = () => app.audioElements['tts-binaural-note'].textContent;
+
+  applyUI('static');
+  check('H6e 静态模式: 标签是"声音位置"', posLabel(), '声音位置');
+  check('H6f 静态模式: 距离可用', distSel().disabled, false);
+
+  applyUI('whisper');
+  check('H6g 轻语模式: 标签是"起始位置"', posLabel(), '起始位置');
+  check('H6h 轻语模式: 距离仍可用(全程保持)', distSel().disabled, false);
+  checkTrue('H6i 轻语模式: 有"从起始位置移动"说明', note().indexOf('起始位置') >= 0, note());
+
+  applyUI('orbit');
+  check('H6j 环绕模式: 标签是"起始位置"', posLabel(), '起始位置');
+  check('H6k 环绕模式: 距离仍可用', distSel().disabled, false);
+
+  applyUI('approach');
+  check('H6l 由远及近: 距离选择被禁用(系统自动 1m→25cm)', distSel().disabled, true);
+  checkTrue('H6m 由远及近: 有明确说明为什么禁用', note().indexOf('不生效') >= 0, note());
+  check('H6n 由远及近: 位置仍可用(固定方位)', posLabel(), '起始位置');
   checkTrue('H7 渲染含 CC BY 4.0 署名', html.indexOf('CC BY 4.0') >= 0, html.slice(0, 200));
   checkTrue('H8 渲染含数据 DOI', html.indexOf('zenodo.4297951') >= 0);
   checkTrue('H9 渲染含"关闭即恢复原始播放"说明', html.indexOf('关闭开关即刻恢复原始播放') >= 0);
