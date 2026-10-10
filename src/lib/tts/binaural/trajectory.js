@@ -2,21 +2,26 @@
 // binaural/trajectory.js — 动态声相轨迹的纯计算层
 // ------------------------------------------------------------
 // 定位: 纯函数, 不碰 AudioContext / 不碰播放 / 不写任何全局状态。
-//       只回答两个问题:
-//         1) 这段语音里哪些时刻"有人在出声" (停顿时方位必须冻结, 不能移动)
-//         2) 在【出声时间】里, 方位角与距离该走到哪
+//
+// 【2026-10-10 架构改版】停顿切位 (Pause-Stepped IR Switch)
+//
+//   放弃"出声期连续 Crossfade", 改为:
+//     出声期间 —— 单个 ConvolverNode + 固定 buffer, 方位【锁死】
+//     停顿期间 —— 在静音区里瞬间换 buffer, 切到下一个方位
+//
+//   为什么这样才对:
+//     梳状滤波只在【两个卷积器同时出声、各自卷积同一路输入】时存在。
+//     单卷积直出时根本不存在第二个滤波器, 梳状在结构上归零, 音质 100% 纯净。
+//     而停顿时输入接近静音, 换 buffer 引起的内部状态作废落在静音区里, 听不到。
+//     代价是"位移"而不是"滑移"—— 但位移发生在听众听不见的瞬间。
+//
+//   另一条判据来自上游 binaural-voice 作者: "别在停顿里移动。停顿时没有声音,
+//   听的人听不见移动的过程, 只会觉得声音从一只耳朵瞬移到另一只。"
+//   早期版本照做成了"停顿期冻结、出声期滑移", 实测仍有明显梳状;
+//   现在反过来理解 —— 把移动【整个搬进停顿里】, 两条判据就都满足了。
 //
 // 坐标约定 (用 HRIR 数据实证过, 见 tools/verify_hrir.py):
 //   0=正前  90=左  180=正后  270=右, 【逆时针递增】
-//   判据: az=90 处左耳通道能量是右耳的 161 倍; az=270 正好反过来。
-//
-// ⚠️ 为什么必须做 voiced 检测, 不能简单地按 0→duration 线性移动:
-//   上游 binaural-voice 作者的实测结论 —— "别在停顿里移动。停顿时没有声音,
-//   听的人听不见移动的过程, 只会觉得声音从一只耳朵瞬移到另一只"。
-//   MiniMax t2a_v2 不返回逐字时间戳, 移动时机只能靠本地音频能量推断。
-//   buildVoicedTimeline 就是 binaural_voice.py 那段 RMS 包络检测的 JS 移植。
-//   效果: 关键帧的时间轴是"出声时间", 换算回墙钟后, 停顿区间里相邻关键帧
-//         会被自然拉开 —— 停顿期间根本不推进, 从根上杜绝瞬移。
 // ============================================================
 
 (function () {
@@ -25,7 +30,6 @@
   // ------------------------------------------------------------
   // 轨迹定义
   // ------------------------------------------------------------
-  // 全部以"用户当前选定的位置"为起点, 所以位置设置在任何模式下都有意义。
   var TRAJECTORIES = {
     static: {
       label: '静态固定',
@@ -35,78 +39,50 @@
     whisper: {
       label: '耳畔轻语 (移动到对侧耳朵)',
       mode: 'oppositeEar',
-      hint: '从当前方位一边说一边挪到对侧耳朵; 走后脑(180°), 绝不穿脸'
+      hint: '整条说完到达对侧耳朵; 走后脑(180°), 绝不穿脸'
     },
     orbit: {
       label: '360° 水平环绕',
       mode: 'fullTurn',
       // 【显式整圈】绝不用最短路 + 模运算: 0° 与 360° 是同一点,
-      // 最短路会把 "转一圈" 算成 0 位移 = 原地不动。
+      // 最短路会把"转一圈"算成 0 位移 = 原地不动。
       // 方向显式写死, 不推导。+360 = 逆时针 = 与本项目方位角递增方向一致
-      // (前→左→后→右→前)。想改成顺时针只要把这里改成 -360, 其余逻辑不用动。
+      // (前->左->后->右->前)。想改成顺时针只要把这里改成 -360, 其余逻辑不用动。
       turnDeg: 360,
-      hint: '从当前方位完整绕一整圈回到起点'
+      hint: '每遇到一个停顿转一格, 整条说完刚好绕回起点'
     },
     approach: {
       label: '由远及近 (拉近到耳畔)',
       mode: 'distanceOnly',
-      hint: '方位不动, 距离从 1m 逐渐拉到 25cm 耳畔'
+      hint: '方位不动, 每个停顿把距离拉近一格, 最后贴到耳畔'
     }
   };
 
   var DEFAULT_TRAJECTORY = 'static';
 
-  var NEAR_DIST = 0.25;   // 数据集最近的一档
+  var NEAR_DIST = 0.25;
   var FAR_DIST = 1.0;
 
   // 出声时间线参数 (与 binaural_voice.py 同款)
-  var HOP_SEC = 0.01;         // 10ms 一格
+  var HOP_SEC = 0.01;
   var VOICED_THRESHOLD = 0.05; // 低于峰值 5% 算静
-  var GAP_FILL_FRAMES = 40;    // 字间 <0.4s 的小缝算在出声
-  var SMOOTH_FRAMES = 20;      // 0.2s 平滑, 让走停有缓冲
+  var GAP_FILL_FRAMES = 40;    // 字间 <0.4s 的小缝算在出声(不算切位点)
+  var SMOOTH_FRAMES = 20;
 
-  // 交叉淡化时长 —— 2026-10-10 实测后从 0.22s 压到 0.09s。
-  //
-  // 为什么这里会产生梳状滤波(comb filtering):
-  //   两个 ConvolverNode 吃的是【同一个输入】, 卷积出的是同一段语音的两个延迟版本。
-  //   在交叉淡化期间它们被同时加权求和, 而两条路径的到达时间(HRIR 首个显著峰)
-  //   差半毫秒左右 —— 这正是相位抵消的条件, 听起来就是"梳状/颤动"。
-  //   缩短淡化时长只能缩短它【持续多久】, 不能让它消失, 但能让它在听感上
-  //   从"持续的怪异感"变成"极短的一下", 代价必须靠更小的步进来补 (见下)。
-  //
-  // ⚠️ 别再往小了压: 淡化越短, 输出幅值变化越陡, 咔哒声反而越明显。
-  var CROSSFADE_SEC = 0.09;
-
-  // 步进间隔 —— 2026-10-10 实测后从 0.9s 压到 0.2s。
-  //
-  // ⚠️ 实测结论 (见 _reports/binaural-audit/measure_combf.cjs, 6s 环绕信号):
-  //
-  //   配置                每步跨度  梳状强度
-  //   淡化0.22 / 步进0.90    51.4°    29.9%
-  //   淡化0.09 / 步进0.45    25.7°    19.0%
-  //   淡化0.05 / 步进0.45    25.7°    19.0%   <- 淡化再短, 梳状一点没降
-  //   淡化0.09 / 步进0.22    12.9°    10.3%
-  //   淡化0.03 / 步进0.15     9.0°     7.5%
-  //
-  //   【关键结论】在步进跨度不变的前提下, 把淡化从 0.22 压到 0.09 再压到 0.05,
-  //   梳状强度纹丝不动 (19.0% -> 19.0%)。真正压下来的是【步进跨度】本身:
-  //   步进减半, 梳状强度几乎减半。
-  //
-  //   原因: 梳状滤波的幅度正比于"两条 HRIR 有多不像"。淡化时长只决定它
-  //   出现多久, 不决定它有多强; 每步跨多少度才决定强度。
-  var STEP_SEC = 0.2;
-  var STEP_TIMER_MS = 20;      // 关键帧轮询间隔(随步进变密而加密)
+  // ---- 停顿切位参数 ----
+  // 合法停顿的最短时长。低于它就不切 —— 换 buffer 需要一点静默裕量。
+  var MIN_PAUSE_SEC = 0.12;
+  // 安全边距: 停顿开头先等这么久再切, 让上一次发声留下的卷积尾巴(约 2.7ms)抽干净。
+  var RING_GUARD_SEC = 0.025;
+  // 轮询间隔。停顿切位对时间精度要求不高, 慢一点无妨。
+  var STEP_TIMER_MS = 30;
 
   // ------------------------------------------------------------
   // 方位角路径 —— 耳到耳必须走后脑, 不能穿脸
   // ------------------------------------------------------------
   /**
-   * 求从 a0 走到 a1 的角度增量。
    * 与 binaural_voice.py 的 az_path 同款: 先取最短边; 但若最短边超过 150°
    * (意味着要横穿整个头部), 改走另一边 —— 那条路是绕到脑后。
-   * @param {number} a0 起点方位
-   * @param {number} a1 终点方位
-   * @returns {number} 增量(度), 可正可负
    */
   function azPath(a0, a1) {
     a0 = ((a0 % 360) + 360) % 360;
@@ -121,10 +97,9 @@
   }
 
   // ------------------------------------------------------------
-  // 出声时间线
+  // 出声时间线 (RMS 包络 -> voiced 掩码)
   // ------------------------------------------------------------
   /**
-   * RMS 包络 -> voiced 掩码 -> 累积"出声时间"
    * @param {{getChannelData:(c:number)=>Float32Array, length:number, sampleRate:number}} audioBuffer 单声道
    * @returns {{hopSec:number, voiced:Uint8Array, tau:Float32Array,
    *            speechDuration:number, duration:number}}
@@ -151,7 +126,7 @@
     var voiced = new Uint8Array(frames);
     for (var f = 0; f < frames; f++) voiced[f] = rms[f] > th ? 1 : 0;
 
-    // 字间小缝(<0.4s)填成出声, 免得一句话被切成十几段, 每段都走一步
+    // 字间小缝填成出声, 免得一句话被切成十几段, 每段都切一次位
     var i2 = 0;
     while (i2 < frames) {
       var j = i2;
@@ -162,7 +137,7 @@
       i2 = Math.max(j, i2 + 1);
     }
 
-    // 0.2s 移动平均, 让"开始走/停下来"有缓冲
+    // 0.2s 移动平均, 避免 voiced 在阈值附近抖动导致"假停顿"
     var smooth = new Float32Array(frames);
     var acc = 0;
     var win = SMOOTH_FRAMES;
@@ -188,12 +163,6 @@
     };
   }
 
-  /**
-   * 出声时间 -> 墙钟秒数 (tau 单调不减, 顺序扫即可)
-   * @param {object} tl buildVoicedTimeline 的结果
-   * @param {number} speechT 目标出声秒数
-   * @returns {number} 墙钟秒数
-   */
   function speechTimeToWall(tl, speechT) {
     if (!(speechT > 0)) return 0;
     if (speechT >= tl.speechDuration) return tl.duration;
@@ -205,46 +174,96 @@
   }
 
   // ------------------------------------------------------------
-  // 轨迹编排
+  // 找合法停顿 (切位点)
   // ------------------------------------------------------------
   /**
-   * 算出整段语音的走位关键帧。时间轴是【出声时间】, 不是墙钟时间。
-   * @param {{trajectory:string, fromAz:number, fromDist:number,
-   *          toDist?:number, speechDuration:number, stepSec?:number}} opts
-   * @returns {Array<{speechT:number, az:number, dist:number}>}
+   * 在 voiced 掩码里找连续静音段, 只保留"两头都有声音"的。
+   *
+   * 为什么两头都要有声音 —— 切位点的意义是"换到新方位后还要有声音能听见":
+   *   · 前面没声音(开头静音) -> 换了方位也听不出来, 只会让第一条字直接出现在
+   *     终点位置。"由远及近"会一开口就已经贴到耳朵, 与"动态=起点"的语义相反。
+   *   · 后面没声音(结尾静音) -> 换了方位没有东西可听, 白换一次 buffer。
+   *     纯静音整段则被这条规则一次挡掉两个问题。
+   *
+   * 切位时刻取【停顿开头 + 安全边距】而不是正中间: 那时发声留下的卷积尾巴
+   * (128 抽头 ≈ 2.7ms) 早已抽干, 换 buffer 的内部状态作废落在纯静音里, 听不到。
+   *
+   * @param {object} timeline buildVoicedTimeline 的结果
+   * @returns {Array<{index:number, t:number, dur:number, start:number, end:number}>}
+   *   t 是"在第几秒换 buffer"(已加安全边距), 单位秒, 直接对应播放时间轴
    */
-  function buildPlan(opts) {
+  function findPauses(timeline, minPauseSec, guardSec) {
+    var minPause = minPauseSec == null ? MIN_PAUSE_SEC : minPauseSec;
+    var guard = guardSec == null ? RING_GUARD_SEC : guardSec;
+    var v = timeline.voiced;
+    var hop = timeline.hopSec;
+    var out = [];
+    var i = 0;
+
+    while (i < v.length) {
+      if (v[i]) { i++; continue; }
+      var j = i;
+      while (j < v.length && !v[j]) j++;
+      var dur = (j - i) * hop;
+      // 必须是"语音中间的停顿": 前面有声音(否则一开口就在终点位置),
+      // 后面也得有声音(否则换完方位没东西可听, 白换一次)。
+      var midSpeech = i > 0 && j < v.length;
+      // 还必须长到"扣掉两头安全边距后还剩得下换 buffer 的时机"
+      if (midSpeech && dur >= minPause && dur >= guard * 2 + 0.01) {
+        out.push({
+          index: out.length,
+          start: i * hop,
+          end: j * hop,
+          dur: dur,
+          t: i * hop + guard
+        });
+      }
+      i = j;
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------
+  // 轨迹编排: 把【停顿】一一映射到【方位关键点】
+  // ------------------------------------------------------------
+  /**
+   * 每遇到一个合法停顿就顺次走一格; 停顿有多少个, 整条角度就被均分成多少份。
+   * 停顿多 -> 每格角度小 -> 位移细碎(但都在静音里, 听不出);
+   * 停顿少 -> 每格角度大 -> 位移粗(同样在静音里)。
+   * 两种情况听感都不受"滑移"影响, 这正是停顿切位的核心好处。
+   *
+   * @param {{trajectory:string, fromAz:number, fromDist:number,
+   *          pauses:Array, toDist?:number}} opts
+   * @returns {Array<{t:number, az:number, dist:number}>}
+   */
+  function buildPausePlan(opts) {
     opts = opts || {};
     var def = TRAJECTORIES[opts.trajectory] || TRAJECTORIES[DEFAULT_TRAJECTORY];
     var fromAz = Number(opts.fromAz) || 0;
     var fromDist = Number(opts.fromDist) || NEAR_DIST;
     var toDist = Number(opts.toDist) || NEAR_DIST;
-    var speechDuration = Math.max(0, Number(opts.speechDuration) || 0);
-    var stepSec = opts.stepSec || STEP_SEC;
-
-    if (def.mode === 'none' || speechDuration <= 0) {
-      return [{ speechT: 0, az: normalizeAz(fromAz), dist: fromDist }];
-    }
+    var pauses = opts.pauses || [];
 
     var delta = 0;
     if (def.mode === 'oppositeEar') {
-      // 对侧耳朵。azPath 保证不穿脸: 90(左) -> 270(右) 增量是 +180, 途经 180(后脑)。
+      // 对侧耳朵。azPath 保证不穿脸: 90(左) -> 270(右) 增量固定 +180, 途经 180(后脑)。
       delta = azPath(fromAz, normalizeAz(fromAz + 180));
     } else if (def.mode === 'fullTurn') {
-      // 整圈: 显式跨度, 不做模运算归零
-      delta = def.turnDeg;
+      delta = def.turnDeg;   // 显式整圈, 不做模运算
     } else if (def.mode === 'distanceOnly') {
       delta = 0;
       fromDist = FAR_DIST;
       toDist = NEAR_DIST;
     }
 
-    var steps = Math.max(1, Math.ceil(speechDuration / stepSec));
+    if (def.mode === 'none' || pauses.length === 0) return [];
+
     var plan = [];
-    for (var i = 0; i <= steps; i++) {
-      var p = i / steps;
+    for (var i = 0; i < pauses.length; i++) {
+      var p = (i + 1) / pauses.length;   // 走完这一格后到达的位置
       plan.push({
-        speechT: p * speechDuration,
+        t: pauses[i].t,
+        pauseIndex: pauses[i].index,
         az: normalizeAz(fromAz + delta * p),
         dist: fromDist + (toDist - fromDist) * p
       });
@@ -257,14 +276,15 @@
     DEFAULT_TRAJECTORY: DEFAULT_TRAJECTORY,
     NEAR_DIST: NEAR_DIST,
     FAR_DIST: FAR_DIST,
-    CROSSFADE_SEC: CROSSFADE_SEC,
-    STEP_SEC: STEP_SEC,
+    MIN_PAUSE_SEC: MIN_PAUSE_SEC,
+    RING_GUARD_SEC: RING_GUARD_SEC,
     STEP_TIMER_MS: STEP_TIMER_MS,
     HOP_SEC: HOP_SEC,
     azPath: azPath,
     normalizeAz: normalizeAz,
     buildVoicedTimeline: buildVoicedTimeline,
     speechTimeToWall: speechTimeToWall,
-    buildPlan: buildPlan
+    findPauses: findPauses,
+    buildPausePlan: buildPausePlan
   };
 })();

@@ -253,161 +253,105 @@
   }
 
   // ============================================================
-  // 音频链构造
+  // 音频链构造 —— 停顿切位 (Pause-Stepped IR Switch)
   // ------------------------------------------------------------
-  // 一条链 = ConvolverNode -> GainNode -> destination
-  //   静态路径只用一条; 动态路径用 A/B 两条并联, 靠两个 GainNode 交叉淡化换方位。
+  // 结构: BufferSource(单声道) -> ConvolverNode(单条, 双耳 HRIR) -> destination
   //
-  // 为什么用【互补线性】而不是等功率(cos/sin)淡化:
-  //   两个 Convolver 吃的是【同一个输入】, 输出高度相关。等功率淡化会让
-  //   中间总功率鼓出 +3dB; 互补线性因为两路相关, 反而是平的。
-  //   同理, 换 buffer 必须先装到【增益为 0】的那条上, 换的瞬间听不到, 不会有咔哒声。
+  // ⚠️ 2026-10-10 架构改版: 彻底移除了 A/B 双卷积 + 增益交叉淡化。
+  //
+  //   为什么必须换掉: 旧方案在【出声期间】同时跑两个卷积器, 各自卷积同一路输入。
+  //   两条路径的到达时间差半毫秒左右 —— 这就是梳状滤波的成因。实测数据:
+  //     淡化0.22s/步进0.90s  ->  梳状 29.9%
+  //     淡化0.09s/步进0.45s  ->  梳状 19.0%
+  //     淡化0.05s/步进0.45s  ->  梳状 19.0%   (淡化再短, 纹丝不动)
+  //     淡化0.03s/步进0.15s  ->  梳状  7.5%   (已经压到很夸张了)
+  //   即"每步只跨 9 度、淡化只有 30 毫秒"仍有 7.5% 残留, 用户实测反馈"还是有杂音"。
+  //   根因是结构性的, 调参救不了 —— 只要两个滤波器同时出声就有相位抵消。
+  //
+  //   现在的做法: 出声期间【全场只有一个卷积器一个 buffer】, 梳状在结构上归零,
+  //   音质就是 HRIR 本身, 100% 干净。方位只在停顿(静音区)里瞬切, 那时输入接近 0,
+  //   换 buffer 引起的内部状态作废落在无声处, 听不到。
+  //
+  //   代价是"位移"而不是"滑移"。但位移发生在听众听不见的瞬间, 这正是我们要的。
+  //
+  // 静态路径与动态路径现在共用同一个单卷积结构, 区别只有"要不要换 buffer"。
   // ============================================================
-  function makeConvChain(ctx, ir, gainValue) {
+  function makeConvolver(ctx, ir) {
     var conv = ctx.createConvolver();
     // 自己做响度对齐(见 hrir-data.getStereoIr), 关掉浏览器内置归一化,
     // 避免"归一化 × 我的增益"两次缩放。不认这个属性的实现默认 true, 语义一致。
     try { conv.normalize = false; } catch (e) { /* 老实现忽略 */ }
     conv.buffer = ir;
-    var gain = ctx.createGain();
-    gain.gain.value = gainValue;
-    conv.connect(gain);
-    gain.connect(ctx.destination);
-    return { conv: conv, gain: gain, state: { value: gainValue } };
-  }
-
-  /**
-   * 把某条链的增益平滑推到目标值。
-   * cancelAndHoldAtTime 能保住"此刻正在播的自动化值", 不支持的老浏览器
-   * 退回 cancelScheduledValues + setValueAtTime(用我们自己记的目标值近似)。
-   */
-  function rampGain(node, value, atTime, dur) {
-    var param = node.gain.gain;
-    var last = node.state.value;
-    try {
-      if (typeof param.cancelAndHoldAtTime === 'function') {
-        param.cancelAndHoldAtTime(atTime);
-      } else {
-        param.cancelScheduledValues(atTime);
-        param.setValueAtTime(last, atTime);
-      }
-    } catch (e) {
-      try { param.cancelScheduledValues(atTime); param.setValueAtTime(last, atTime); } catch (e2) { /* ignore */ }
-    }
-    param.linearRampToValueAtTime(value, atTime + dur);
-    node.state.value = value;
+    conv.connect(ctx.destination);
+    return conv;
   }
 
   function setupStatic(st, ir) {
-    // ⚠️ 静态路径刻意【不插 GainNode】 —— 它必须与引入动态轨迹之前逐字等价:
-    //   ConvolverNode -> destination, 一个增益节点都不多建。
-    //   动态路径才需要增益来做交叉淡化。
-    var conv = st.ctx.createConvolver();
-    try { conv.normalize = false; } catch (e) { /* 老实现忽略 */ }
-    conv.buffer = ir;
-    conv.connect(st.ctx.destination);
+    var conv = makeConvolver(st.ctx, ir);
+    st.convolver = conv;
     st.inputs = [conv];
     st.chain = [conv];
-    st.slotA = null;
-    st.slotB = null;
   }
 
   /**
-   * 动态轨迹: A/B 双卷积并联 + 关键帧调度。
+   * 动态轨迹: 单卷积器 + 停顿切位调度。
    *
-   * 关键帧时间轴来自 trajectory 模块的【出声时间】换算, 所以停顿期间
-   * 相邻关键帧的墙钟间隔被自动拉开 —— 停顿里不推进, 不会瞬移。
+   * 停顿表在播放【之前】就算好了 —— MiniMax 一次返回整段音频 (stream:false),
+   * 我们本来就要在播放前把整段 decode 成 AudioBuffer, 所以可以直接对整段做 RMS
+   * 分析得出全部切位时刻。不需要在播放时"听着切", 也就不会有检测漂移。
    */
   function setupDynamic(st, hrirApi, set, trajApi, trajectory, fromAz, fromDist) {
     var ctx = st.ctx;
 
     var timeline = trajApi.buildVoicedTimeline(st.buffer);
-    var plan = trajApi.buildPlan({
+    var pauses = trajApi.findPauses(timeline);
+    var plan = trajApi.buildPausePlan({
       trajectory: trajectory,
       fromAz: fromAz,
       fromDist: fromDist,
       toDist: trajApi.NEAR_DIST,
-      speechDuration: timeline.speechDuration
+      pauses: pauses
     });
 
-    var keys = [];
-    for (var i = 0; i < plan.length; i++) {
-      keys.push({
-        t: trajApi.speechTimeToWall(timeline, plan[i].speechT),
-        az: plan[i].az,
-        dist: plan[i].dist
-      });
-    }
-    st.keys = keys;
-    st.keyIndex = 1;
-    st.lastStepAt = null;   // 上一次开始交叉淡化的墙钟时刻, 用于"淡出未走完就不换 buffer"的守卫
+    var firstIr = hrirApi.getStereoIr(set, ctx, fromAz, fromDist);
+    var conv = makeConvolver(ctx, firstIr);
 
-    var firstIr = hrirApi.getStereoIr(set, ctx, keys[0].az, keys[0].dist);
-    var A = makeConvChain(ctx, firstIr, 1);   // 当前主导
-    var B = makeConvChain(ctx, firstIr, 0);   // 待接管, 此刻增益 0 完全听不到
-    st.slotA = A;
-    st.slotB = B;
-    st.inputs = [A.conv, B.conv];             // 源同时喂两边
-    st.chain = [A.conv, A.gain, B.conv, B.gain];
+    st.convolver = conv;
+    st.inputs = [conv];
+    st.chain = [conv];
+    st.pausePlan = plan;
+    st.pauseIndex = 0;
+    st.pauseCount = pauses.length;
 
-    /**
-     * 推进到一个新关键帧。
-     * @returns {boolean} true = 已推进; false = 本次跳过(调用方应重试)
-     */
-    function applyStep(key) {
-      var now = ctx.currentTime;
-
-      // ⚠️ 守卫 —— 这一条是"咔哒声"的主要来源。
-      //   换 convolver.buffer 会让该节点的内部卷积状态作废, 输出上出现台阶。
-      //   如果上一次交叉淡化还没走完, 待接管的那条链此刻仍有可听增益,
-      //   台阶就变成了听得见的咔哒。所以淡出未走完时直接放弃本次推进,
-      //   下一个 tick 自动重试; 步进间隔远大于淡化时长时不会真的触发。
-      if (st.lastStepAt != null && (now - st.lastStepAt) < trajApi.CROSSFADE_SEC) return false;
-
-      var ir;
-      try {
-        ir = hrirApi.getStereoIr(set, ctx, key.az, key.dist);
-      } catch (e) { return false; }
-      if (!ir || ir.numberOfChannels !== 2) return false;
-
-      // state.value 记的是上一次 ramp 的【目标值】, 因此较大的那条就是当前主导
-      var incoming = (A.state.value >= B.state.value) ? B : A;
-      var outgoing = (incoming === B) ? A : B;
-
-      // 双保险: 换 buffer 之前先把 incoming 的增益硬压到 0 并取消一切待执行的自动化。
-      // 有了上面的守卫它此刻本来就该是 0, 这句只为防浏览器在自动化边界上的细微出入。
-      try {
-        incoming.gain.gain.cancelScheduledValues(now);
-        incoming.gain.gain.setValueAtTime(0, now);
-      } catch (e) { /* ignore */ }
-      incoming.state.value = 0;
-
-      // 此时增益确认为 0, 换 buffer 在输出上听不到
-      incoming.conv.buffer = ir;
-
-      // 淡化起点就是 currentTime (它已经是渲染量子的起点, 不会落在量子内部),
-      // 两条链用互补线性同步 ramp, 任意时刻 g_in + g_out === 1, 中途无幅度台阶。
-      rampGain(incoming, 1, now, trajApi.CROSSFADE_SEC);
-      rampGain(outgoing, 0, now, trajApi.CROSSFADE_SEC);
-      st.lastStepAt = now;
-      return true;
+    // 一个合法停顿都没有 -> 整条保持起始方位, 行为等同静态。记一笔方便排查。
+    if (plan.length === 0) {
+      console.info('[双耳空间音频] 这条语音没检测到足够长的停顿, 方位保持不动。');
     }
 
     st.onStep = function () {
       function tick() {
         if (!st.playing || st.finished) return;
-        var elapsed = ctx.currentTime - st.startedAt;
+        // 真实播放位置。用 st.offset 起算, 这样暂停后 resume 也能对得上
+        // (resume 时 startAt 传入的是续播偏移, st.startedAt 会重置)。
+        var pos = st.offset + (ctx.currentTime - st.startedAt);
         var guard = 0;
-        while (st.keyIndex < keys.length && keys[st.keyIndex].t <= elapsed && guard++ < 64) {
-          // 淡出未走完就 break, 保留 keyIndex 供下次 tick 重试(不丢步进)
-          if (!applyStep(keys[st.keyIndex])) break;
-          st.keyIndex++;
+        while (st.pauseIndex < plan.length && plan[st.pauseIndex].t <= pos && guard++ < 64) {
+          var key = plan[st.pauseIndex];
+          st.pauseIndex++;
+          try {
+            // 【切位】直接换 buffer —— 没有增益节点, 没有第二个卷积器。
+            // 出声期间不存在任何相位抵消的可能。
+            conv.buffer = hrirApi.getStereoIr(set, ctx, key.az, key.dist);
+          } catch (e) {
+            console.warn('[双耳空间音频] 切位失败, 保持当前方位:', e);
+          }
         }
         st.timer = setTimeout(tick, trajApi.STEP_TIMER_MS);
       }
       tick();
     };
   }
+
 
   /**
    * 播放一条单声道语音到指定空间位置。
@@ -465,10 +409,10 @@
       tailMs: 80,
       timer: null,
       onStep: null,
-      slotA: null,
-      slotB: null,
-      keys: null,
-      keyIndex: 0,
+      convolver: null,
+      pausePlan: null,   // 停顿切位表: [{t, az, dist}]
+      pauseIndex: 0,
+      pauseCount: 0,
       dynamic: isDynamic
     };
 
@@ -487,7 +431,8 @@
     function startAt(offset) {
       var src = ctx.createBufferSource();
       src.buffer = st.buffer;
-      // 动态路径下 inputs 是并联的 A/B 两条 convolver, 源要同时喂两边
+      // 静态与动态都是单卷积, inputs 恒为 [convolver]; 保留循环是为了
+      // 万一将来链路前面还要插节点, 不必再动这里的接线。
       for (var i = 0; i < st.inputs.length; i++) src.connect(st.inputs[i]);
       src.onended = function () {
         if (st.source !== src) return;      // 被 pause/stop 换掉了, 不是自然结束

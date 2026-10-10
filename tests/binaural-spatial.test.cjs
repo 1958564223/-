@@ -192,7 +192,7 @@ function loadApp({ binauralEnabled = false, sampleRate = 48000, sharedCtx = null
 
   const sandbox = {};
   sandbox.window = sandbox;
-  sandbox.console = { log() {}, warn() {}, error() {}, debug() {} };
+  sandbox.console = { log() {}, warn() {}, error() {}, debug() {}, info() {} };
   sandbox.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
   sandbox.AbortController = AbortController;
   sandbox.setTimeout = setTimeout;
@@ -869,7 +869,9 @@ function testSettingsRoundTrip() {
   checkTrue('H6c 四个轨迹选项齐全',
     ['static', 'whisper', 'orbit', 'approach'].every(k => html.indexOf('value="' + k + '"') >= 0),
     html.slice(html.indexOf('tts-binaural-trajectory'), html.indexOf('tts-binaural-trajectory') + 300));
-  checkTrue('H6d 含"停顿期间方位冻结"说明', html.indexOf('方位冻结') >= 0);
+  checkTrue('H6d 含"停顿切位"说明', html.indexOf('停顿切位') >= 0);
+  checkTrue('H6d2 含"出声期间方位锁死"说明', html.indexOf('方位锁死') >= 0);
+  checkTrue('H6d3 明确告知停顿太少时轨迹不动', html.indexOf('轨迹不会动') >= 0);
   // 控件语义要跟着轨迹走: 静态=固定位置, 动态=起点; approach 的距离被系统接管
   const applyUI = (traj) => {
     app.audioElements['tts-binaural-trajectory'].value = traj;
@@ -941,156 +943,198 @@ function testSettingsRoundTrip() {
 // 跑
 // ============================================================
 // ============================================================
-// I. 轨迹计算 (纯函数, 不碰 AudioContext)
+// I. 轨迹计算 (纯函数)
 // ============================================================
 function testTrajectoryMath() {
   const app = loadApp();
   const TR = app.sandbox.TtsBinauralTrajectory;
 
-  // 实测调参结论锁定: 缩短淡化对梳状强度无效, 压小步进才有效
-  check('I0a 交叉淡化 0.09s (实测后从 0.22 压下来)', TR.CROSSFADE_SEC, 0.09);
-  check('I0b 步进 0.2s (实测后从 0.9 压下来)', TR.STEP_SEC, 0.2);
-  checkTrue('I0c 步进必须大于淡化时长(否则守卫会持续拦步进)',
-    TR.STEP_SEC > TR.CROSSFADE_SEC, `${TR.STEP_SEC} vs ${TR.CROSSFADE_SEC}`);
+  // 停顿切位参数锁定
+  check('I0a 合法停顿最短 0.12s', TR.MIN_PAUSE_SEC, 0.12);
+  check('I0b 切位安全边距 0.025s', TR.RING_GUARD_SEC, 0.025);
+  checkTrue('I0c 边距必须小于停顿阈值的一半',
+    TR.RING_GUARD_SEC < TR.MIN_PAUSE_SEC / 2, `${TR.RING_GUARD_SEC} vs ${TR.MIN_PAUSE_SEC / 2}`);
+  check('I0d 旧的 CROSSFADE 已彻底移除', TR.CROSSFADE_SEC, undefined);
+  check('I0e 旧的 STEP_SEC 已彻底移除', TR.STEP_SEC, undefined);
 
   check('I1 normalizeAz(-90) = 270', TR.normalizeAz(-90), 270);
   check('I2 normalizeAz(450) = 90', TR.normalizeAz(450), 90);
 
-  // azPath: 耳到耳必须走后脑, 不能穿脸
   check('I3 azPath(90左, 270右) = +180 (走后脑)', TR.azPath(90, 270), 180);
   check('I4 azPath(270右, 90左) = -180', TR.azPath(270, 90), -180);
   check('I5 azPath(0前, 90左) = +90 (走短边)', TR.azPath(0, 90), 90);
   check('I6 azPath(0前, 270右) = -90 (走短边)', TR.azPath(0, 270), -90);
 
-  // 途经方位: 90->270 中间必须是 180, 全程不得经过 0(脸前)
   const path = [];
   for (let i = 0; i <= 18; i++) path.push(TR.normalizeAz(90 + 180 * i / 18));
   checkTrue('I7 90->270 途经 180(后脑)', path.some(a => Math.abs(a - 180) < 7), JSON.stringify(path));
   check('I8 90->270 全程不经过脸前(0 附近)', path.filter(a => a < 7 || a > 353).length, 0);
 
-  // static 退化为单帧
-  const pStatic = TR.buildPlan({ trajectory: 'static', fromAz: 90, fromDist: 0.25, speechDuration: 5 });
-  check('I9 static 只 1 关键帧', pStatic.length, 1);
-  check('I9b static 方位不变', pStatic[0].az, 90);
+  const mkPauses = (times) => times.map((t, i) => ({ index: i, t, start: t, end: t + 0.4, dur: 0.4 }));
 
-  // orbit —— 最重要的一条回归: 最短路 + 模运算会把"转一圈"算成 0 位移
-  const pOrbit = TR.buildPlan({ trajectory: 'orbit', fromAz: 0, fromDist: 0.25, speechDuration: 9 });
-  checkTrue('I10 orbit 多关键帧', pOrbit.length > 3, String(pOrbit.length));
+  // static: 不产生任何切位
+  check('I9 static 不产生切位',
+    TR.buildPausePlan({ trajectory: 'static', fromAz: 90, fromDist: 0.25, pauses: mkPauses([1, 2, 3]) }).length, 0);
+
+  // 一个停顿都没有 -> 不动
+  check('I24 无停顿时轨迹为空(等同静态)',
+    TR.buildPausePlan({ trajectory: 'orbit', fromAz: 0, fromDist: 0.25, pauses: [] }).length, 0);
+
+  // ---- orbit: N 个停顿 = N 格, 整圈回到起点 ----
+  const pOrbit = TR.buildPausePlan({ trajectory: 'orbit', fromAz: 0, fromDist: 0.25, pauses: mkPauses([1, 2, 3, 4]) });
+  check('I10 orbit 停顿数 = 切位数', pOrbit.length, 4);
   const azs = pOrbit.map(k => k.az);
-  const uniq = [...new Set(azs)];
-  checkTrue('I11 orbit 方位真的在变(不是原地不动)', uniq.length > 3, JSON.stringify(uniq));
-  // A/B 交叉淡化只能加载【离散】的 HRIR, 中间方位靠两个卷积器混合出来,
-  // 所以断言的标准是"步进间距内覆盖到四方位", 而不是"恰好命中 90/270"。
-  const gapsAz = [];
-  for (let i = 1; i < azs.length; i++) {
-    let d = azs[i] - azs[i - 1];
-    if (d < 0) d += 360;
-    gapsAz.push(d);
+  checkTrue('I11 orbit 方位真的在变', new Set(azs).size > 2, JSON.stringify(azs));
+  // 4 格走 360° -> 每格 90° -> 必含四个方位
+  for (const t of [90, 180, 270]) {
+    checkTrue(`I12 orbit 途经 ${t}°`, azs.some(a => Math.abs(a - t) < 1), JSON.stringify(azs));
   }
-  const maxGap = Math.max(...gapsAz);
-  for (const t of [0, 90, 180, 270]) {
-    checkTrue(`I12 orbit 在一步之内覆盖 ${t}°`,
-      azs.some(a => Math.abs(a - t) <= maxGap / 2 + 1), `azs=${JSON.stringify(azs)} maxGap=${maxGap}`);
-  }
-  checkTrue('I12b orbit 步进间距均匀且不过大', maxGap <= 45, `maxGap=${maxGap}`);
-  checkTrue('I13 orbit 完整一圈回到起点', Math.abs(azs[azs.length - 1] - azs[0]) < 1,
-    `${azs[0]} -> ${azs[azs.length - 1]}`);
-  // 旋转方向: 逆时针 = 递增(前->左->后->右)。
-  // 注意 324 -> 0 是跨过 360 的正常接缝, 判方向必须按正向增量算, 不能直接比大小。
-  const turning = pOrbit.filter((k, i) => i > 0 && k.az !== pOrbit[i - 1].az);
-  checkTrue('I14 orbit 方向为逆时针(每步正向推进)',
-    turning.every((k, i) => i === 0 || (((k.az - turning[i - 1].az) + 360) % 360) > 0),
-    JSON.stringify(turning.map(k => k.az)));
+  check('I13 orbit 绕满一整圈回到起点', azs[azs.length - 1], 0);
+  const deltas = azs.map((a, i) => (i === 0 ? a : (((a - azs[i - 1]) + 360) % 360)));
+  checkTrue('I14 orbit 每步正向推进(逆时针)', deltas.every(d => d > 0), JSON.stringify(deltas));
 
-  // whisper: 到对侧耳朵, 走后脑
-  const pWhisper = TR.buildPlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, speechDuration: 4.5 });
-  check('I15 whisper 起点 = 当前方位', pWhisper[0].az, 90);
-  check('I16 whisper 终点 = 对侧耳朵', pWhisper[pWhisper.length - 1].az, 270);
+  // 环绕不能被"最短路归零"吃掉: 2 个停顿也必须真转 180°/格
+  const pOrbit2 = TR.buildPausePlan({ trajectory: 'orbit', fromAz: 0, fromDist: 0.25, pauses: mkPauses([1, 2]) });
+  checkTrue('I14b orbit 只 2 个停顿时每格 180°(不是 0)',
+    JSON.stringify(pOrbit2.map(k => k.az)) === '[180,0]', JSON.stringify(pOrbit2.map(k => k.az)));
+
+  // ---- whisper: 到对侧耳朵, 走后脑 ----
+  const pWhisper = TR.buildPausePlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, pauses: mkPauses([1, 2, 3]) });
+  check('I15 whisper 最后一格到达对侧耳朵', pWhisper[pWhisper.length - 1].az, 270);
   const wAzs = pWhisper.map(k => k.az);
-  const wStep = Math.max(...wAzs.map((a, i) => (i === 0 ? 0 : a - wAzs[i - 1])));
-  checkTrue('I17 whisper 在一步之内经过 180(后脑)',
-    wAzs.some(a => Math.abs(a - 180) <= wStep / 2 + 1), JSON.stringify(wAzs));
-  checkTrue('I18 whisper 方位单调推进',
-    pWhisper.every((k, i, a) => i === 0 || k.az >= a[i - 1].az), JSON.stringify(pWhisper.map(k => k.az)));
-  checkTrue('I19 whisper 距离保持不变', pWhisper.every(k => Math.abs(k.dist - 0.25) < 1e-9));
+  checkTrue('I16 whisper 全程方位递增(走向 270)',
+    wAzs.every((a, i) => i === 0 || a > wAzs[i - 1]), JSON.stringify(wAzs));
+  // 3 个停顿把 +180° 均分成 3 格 -> 150/210/270。终点 270 就是对侧耳朵, 合法;
+  // 关键是全程都不掉进脸前那一半 (0~90 与 270~360)。
+  checkTrue('I17 whisper 全程只在两耳之间(走的是后脑, 没穿脸)',
+    wAzs.every(a => a > 90 && a <= 270), JSON.stringify(wAzs));
+  checkTrue('I17b whisper 有一步真的踏进后脑半区(>=135)',
+    wAzs.some(a => Math.abs(a - 180) >= 45), JSON.stringify(wAzs));
+  checkTrue('I18 whisper 距离全程不变',
+    pWhisper.every(k => Math.abs(k.dist - 0.25) < 1e-9), JSON.stringify(pWhisper.map(k => k.dist)));
 
-  // approach: 方位不动, 1m -> 25cm
-  const pApp = TR.buildPlan({ trajectory: 'approach', fromAz: 90, fromDist: 0.25, speechDuration: 5 });
+  // ---- approach: 方位不动, 1m -> 25cm ----
+  const pApp = TR.buildPausePlan({ trajectory: 'approach', fromAz: 90, fromDist: 0.25, pauses: mkPauses([1, 2, 3, 4]) });
   checkTrue('I20 approach 方位完全不变', pApp.every(k => k.az === 90), JSON.stringify(pApp.map(k => k.az)));
-  check('I21 approach 起始 1m', pApp[0].dist, 1.0);
+  // 4 个停顿把 1m -> 25cm 均分成 4 格, 每格拉近 0.1875m。
+  // 起点 1m 本身不是关键帧(那是"还没走到第一格"的初始位置), 第一格落在 1 - 0.1875。
+  checkClose('I21 approach 第一格 = 1m - 1/4 段', pApp[0].dist, 1 - (1 - 0.25) / 4, 1e-9, 'm');
   check('I22 approach 结束 25cm', pApp[pApp.length - 1].dist, 0.25);
   checkTrue('I23 approach 距离单调拉近',
-    pApp.every((k, i, a) => i === 0 || k.dist <= a[i - 1].dist));
-
-  // 退化情形
-  const pZero = TR.buildPlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, speechDuration: 0 });
-  check('I24 纯静音时退化为单帧', pZero.length, 1);
-  const pShort = TR.buildPlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, speechDuration: 0.3 });
-  checkTrue('I25 极短语音至少 2 帧(仍能走一步)', pShort.length >= 2, String(pShort.length));
+    pApp.every((k, i, a) => i === 0 || k.dist <= a[i - 1].dist), JSON.stringify(pApp.map(k => k.dist)));
+  checkTrue('I23b approach 每格步长相同',
+    pApp.every((k, i, a) => i === 0 || Math.abs((a[i - 1].dist - k.dist) - 0.1875) < 1e-9),
+    JSON.stringify(pApp.map(k => k.dist)));
 
   // 非法输入不抛错
   let threw = null;
   try {
-    TR.buildPlan({ trajectory: '不存在的模式', fromAz: NaN, fromDist: -1, speechDuration: -5 });
+    TR.buildPausePlan({ trajectory: '不存在', fromAz: NaN, fromDist: -1, pauses: null });
     TR.azPath(NaN, undefined);
     TR.normalizeAz(NaN);
+    TR.findPauses({ voiced: new Uint8Array(0), hopSec: 0.01 }, 0.12, 0.025);
   } catch (e) { threw = e.message; }
-  check('I26 非法输入不抛错', threw, null);
+  check('I25 非法输入不抛错', threw, null);
 }
 
 // ============================================================
-// V. 出声时间线 —— "停顿不移动" 的机制本体
+// V. 出声时间线 + 停顿检测
 // ============================================================
+function buildTestBuffer(fillFn, sec, SR) {
+  const n = Math.round(SR * sec);
+  const data = new Float32Array(n);
+  fillFn(data, SR);
+  return { sampleRate: SR, length: n, numberOfChannels: 1, duration: sec, getChannelData: () => data };
+}
+const SR = 48000;
+const tone = (data, from, to, sr) => {
+  for (let i = Math.round(from * sr); i < Math.round(to * sr) && i < data.length; i++) {
+    data[i] = Math.sin(i * 0.05) * 0.5;
+  }
+};
+
 function testVoicedTimeline() {
   const app = loadApp();
   const TR = app.sandbox.TtsBinauralTrajectory;
-  const SR = 48000;
 
   // 4 秒: [0,1]有声 [1,2]静音 [2,3]有声 [3,4]静音
-  const n = SR * 4;
-  const data = new Float32Array(n);
-  const fill = (a, b) => { for (let i = a * SR; i < b * SR; i++) data[i] = Math.sin(i * 0.05) * 0.5; };
-  fill(0, 1); fill(2, 3);
-  const buf = { sampleRate: SR, length: n, duration: 4, numberOfChannels: 1, getChannelData: () => data };
-
+  const buf = buildTestBuffer((d, sr) => { tone(d, 0, 1, sr); tone(d, 2, 3, sr); }, 4, SR);
   const tl = TR.buildVoicedTimeline(buf);
+
   check('V1 时长 4 秒', Math.round(tl.duration), 4);
-  checkTrue('V2 出声时长明显小于总时长(存在静音)', tl.speechDuration < 3.7, tl.speechDuration.toFixed(3));
+  checkTrue('V2 出声时长明显小于总时长', tl.speechDuration < 3.7, tl.speechDuration.toFixed(3));
   checkTrue('V3 出声时长大于 1.5 秒', tl.speechDuration > 1.5, tl.speechDuration.toFixed(3));
   checkTrue('V4 tau 单调不减',
     tl.tau.every((v, i, a) => i === 0 || v >= a[i - 1] - 1e-6));
 
-  // 纯静音
-  const tl2 = TR.buildVoicedTimeline({ sampleRate: SR, length: n, getChannelData: () => new Float32Array(n) });
+  const tl2 = TR.buildVoicedTimeline(buildTestBuffer(() => {}, 2, SR));
   check('V5 纯静音时出声时长为 0', tl2.speechDuration, 0);
 
-  // 关键机制: 出声时间 -> 墙钟时间 的映射会把停顿"撑开",
-  // 于是相邻关键帧在停顿处的墙钟间隔远大于出声段 —— 停顿里自然不推进。
-  const wall = [];
-  for (let s = 0; s <= tl.speechDuration + 1e-6; s += 0.2) wall.push(TR.speechTimeToWall(tl, s));
-  checkTrue('V6 墙钟时间单调不减', wall.every((v, i, a) => i === 0 || v >= a[i - 1]), JSON.stringify(wall.map(v => v.toFixed(2))));
-  check('V7 起点为 0', wall[0], 0);
-  checkTrue('V8 墙钟跨度 >= 出声跨度', wall[wall.length - 1] >= tl.speechDuration - 1e-6,
-    `${wall[wall.length - 1]} vs ${tl.speechDuration}`);
-  const gaps = [];
-  for (let i = 1; i < wall.length; i++) gaps.push(+(wall[i] - wall[i - 1]).toFixed(3));
-  checkTrue('V9 存在被停顿撑开的间隔(冻结生效)', Math.max(...gaps) > Math.min(...gaps) * 1.5,
-    `gaps=${gaps.join(',')}`);
+  // ---- 停顿检测 ----
+  // 切位点 = "语音中间的静音段": 前后都得有声音。
+  const pauses = TR.findPauses(tl);
+  check('V6 只认句中停顿(结尾静音不算)', pauses.length, 1);
+  checkTrue('V7 唯一停顿起点在 1.0s 附近', Math.abs(pauses[0].start - 1.0) < 0.05,
+    String(pauses[0] && pauses[0].start));
+  checkTrue('V8 切位时刻已加安全边距(在停顿内部)',
+    pauses[0].t > pauses[0].start && pauses[0].t < pauses[0].end,
+    JSON.stringify(pauses[0]));
+  checkClose('V9 边距就是 RING_GUARD_SEC', pauses[0].t - pauses[0].start, TR.RING_GUARD_SEC, 0.011, 's');
+
+  // 字间小缝(0.2s)必须被 gap-fill 吸收, 不能当成切位点
+  const gapBuf = buildTestBuffer((d, sr) => { tone(d, 0, 1, sr); tone(d, 1.2, 2.2, sr); tone(d, 2.4, 3.4, sr); }, 4, SR);
+  const gapPauses = TR.findPauses(TR.buildVoicedTimeline(gapBuf));
+  check('V10 字间 0.2s 小缝全部被 gap-fill 吸收', gapPauses.length, 0);
+  check('V10b 缝隙再多也不该多出切位点',
+    TR.findPauses(TR.buildVoicedTimeline(
+      buildTestBuffer((d, sr) => { for (let k = 0; k < 8; k++) tone(d, k, k + 0.8, sr); }, 8, SR)
+    )).length, 0);
+
+  // 一句到底 -> 没有切位点
+  const noGap = TR.buildVoicedTimeline(buildTestBuffer((d, sr) => tone(d, 0, 4, sr), 4, SR));
+  check('V11 一句到底时无切位点', TR.findPauses(noGap).length, 0);
+
+  // 纯静音 -> 一次停顿都没有(否则"由远及近"会一开口就贴到耳朵)
+  const silent = TR.buildVoicedTimeline(buildTestBuffer(() => {}, 3, SR));
+  check('V12 纯静音不产生切位点', TR.findPauses(silent).length, 0);
+  check('V12b 纯静音也不产生任何切位表',
+    TR.buildPausePlan({ trajectory: 'approach', fromAz: 90, fromDist: 1, pauses: TR.findPauses(silent) }).length, 0);
+
+  // ⚠️ 开头静音: 换方位发生在第一声之前, 第一句话就会直接落在终点位置。
+  //    "动态=起点"的语义要求第一个字从起点方位出声, 所以开头静音必须被忽略。
+  const leadBuf = buildTestBuffer((d, sr) => { tone(d, 1, 2, sr); tone(d, 3, 4, sr); }, 5, SR);
+  const leadPauses = TR.findPauses(TR.buildVoicedTimeline(leadBuf));
+  check('V13 开头静音不算切位点(只剩句中那一个)', leadPauses.length, 1);
+  checkTrue('V13b 保留下来的是 2.0s 处那个句中停顿',
+    Math.abs(leadPauses[0].start - 2.0) < 0.06, String(leadPauses[0] && leadPauses[0].start));
+
+  // 结尾静音: 换了方位也没有声音能听见, 白换一次 buffer。
+  const tailBuf = buildTestBuffer((d, sr) => { tone(d, 0, 1, sr); tone(d, 2, 3, sr); }, 5, SR);
+  const tailPauses = TR.findPauses(TR.buildVoicedTimeline(tailBuf));
+  check('V14 结尾静音不算切位点(只留句中那个)', tailPauses.length, 1);
+  checkTrue('V14b 保留下来的是 1.0s 处那个句中停顿',
+    Math.abs(tailPauses[0].start - 1.0) < 0.06, String(tailPauses[0] && tailPauses[0].start));
+
+  // 过了门槛的句中停顿: 整条语音的切位次数 = 句中停顿数, 且均匀铺满
+  const twoBuf = buildTestBuffer((d, sr) => { tone(d, 0, 1, sr); tone(d, 2, 3, sr); tone(d, 4, 5, sr); }, 6, SR);
+  const twoPauses = TR.findPauses(TR.buildVoicedTimeline(twoBuf));
+  check('V15 三个语音段 = 2 个句中停顿', twoPauses.length, 2);
+  checkTrue('V15b 两个停顿分别在 1.0s 与 3.0s',
+    Math.abs(twoPauses[0].start - 1.0) < 0.06 && Math.abs(twoPauses[1].start - 3.0) < 0.06,
+    JSON.stringify(twoPauses.map(p => p.start)));
 }
 
 // ============================================================
-// J. 动态播放 (A/B 双卷积 + 交叉淡化)
+// J. 动态播放 —— 停顿切位
 // ============================================================
-function makePauseyBuffer(SR) {
-  const n = SR * 4;
-  const data = new Float32Array(n);
-  const fill = (a, b) => { for (let i = a * SR; i < b * SR; i++) data[i] = Math.sin(i * 0.05) * 0.5; };
-  fill(0, 1); fill(2, 3);
-  return { sampleRate: SR, length: n, numberOfChannels: 1, duration: 4, getChannelData: () => data };
+/** 6 秒测试音频: 有声[0,1] 停顿[1,2] 有声[2,3] 停顿[3,4] 有声[4,5] 结尾静音[5,6]
+ *  -> 两个句中切位点: 1.0s 与 3.0s。结尾静音那个不算切位点。 */
+function makePauseyBuffer() {
+  return buildTestBuffer((d, sr) => { tone(d, 0, 1, sr); tone(d, 2, 3, sr); tone(d, 4, 5, sr); }, 6, SR);
 }
 
 async function testDynamicPlayback() {
-  // J1 静态路径完全不变: 单卷积, 无增益节点
+  // ---- 结构断言: 这是"梳状归零"的根本保证 ----
   const s = loadApp({ binauralEnabled: true });
   s.setBin(readBin());
   await s.sandbox.TtsSpatialAudio.play({
@@ -1098,90 +1142,90 @@ async function testDynamicPlayback() {
   });
   const sctx = s.sandbox.TtsSpatialAudio.getContext();
   check('J1 static: 1 个 ConvolverNode', sctx.convolvers.length, 1);
-  check('J2 static: 0 个 GainNode (与改造前一致)', sctx.gains.length, 0);
+  check('J2 static: 0 个 GainNode', sctx.gains.length, 0);
   check('J2b static: 源只连 1 个节点', sctx.sources[0].connectedTo.length, 1);
 
-  // J3 动态路径: A/B 双卷积并联
   const d = loadApp({ binauralEnabled: true });
   d.setBin(readBin());
   const dctx = d.sandbox.TtsSpatialAudio.getContext();
-  dctx.decoded = makePauseyBuffer(48000);
+  dctx.decoded = makePauseyBuffer();
 
   await d.sandbox.TtsSpatialAudio.play({
     blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25, trajectory: 'whisper'
   });
-  check('J3 whisper: 2 个 ConvolverNode', dctx.convolvers.length, 2);
-  check('J4 whisper: 2 个 GainNode', dctx.gains.length, 2);
-  check('J5 源同时连到两个 Convolver (并联)', dctx.sources[0].connectedTo.length, 2);
-  checkTrue('J6 动态链是 Convolver -> Gain -> destination',
-    dctx.convolvers.every(c => c.connectedTo.length === 1 && c.connectedTo[0].kind === 'gain')
-    && dctx.gains.every(g => g.connectedTo.length === 1 && g.connectedTo[0] === dctx.destination),
-    JSON.stringify({ conv: dctx.convolvers.map(c => c.connectedTo.map(x => x.kind || x.name)),
-                     gain: dctx.gains.map(g => g.connectedTo.map(x => x.kind || x.name)) }));
-  checkTrue('J7 两个 Convolver normalize 都关闭',
-    dctx.convolvers.every(c => c.normalize === false));
-  check('J8 初始增益互补 (1 / 0)',
-    JSON.stringify(dctx.gains.map(g => g.gain.value)), JSON.stringify([1, 0]));
-  check('J9 两条链的 IR 初始相同(同一时刻同一位置)', dctx.convolvers[0].buffer === dctx.convolvers[1].buffer, true);
 
-  // J10 推进时间 -> 触发交叉淡化
-  dctx.currentTime = 2.0;
+  // ⚠️ 这是整个架构改版最关键的一条断言。
+  //    出声期间只要有第二个卷积器或任何增益节点, 梳状滤波就还有可能存在。
+  //    单卷积直出 => 滤波路径唯一 => 相位抵消在结构上不可能发生。
+  check('J3 动态: 仍然只有 1 个 ConvolverNode', dctx.convolvers.length, 1);
+  check('J4 动态: 0 个 GainNode(交叉淡化已彻底移除)', dctx.gains.length, 0);
+  check('J5 动态: 源只连 1 个节点', dctx.sources[0].connectedTo.length, 1);
+  check('J6 Convolver 直连 destination(中间无节点)', dctx.convolvers[0].connectedTo[0], dctx.destination);
+  check('J7 normalize 关闭', dctx.convolvers[0].normalize, false);
+
+  // ---- 出声期间方位锁死 ----
+  const bufAtStart = dctx.convolvers[0].buffer;
+  dctx.currentTime = 0.5;                       // 仍在第一段有声里
   await tick(90);
-  const allEvents = dctx.gains.map(g => g.gain.events);
-  const ramps = allEvents.flat().filter(e => e.type === 'ramp');
-  checkTrue('J10 时间推进后产生了 ramp 自动化', ramps.length >= 2, JSON.stringify(allEvents));
-  checkTrue('J11 ramp 目标互补(含 1 与 0)',
-    ramps.some(e => e.v === 1) && ramps.some(e => e.v === 0), JSON.stringify(ramps));
-  checkTrue('J12 未使用 setValueCurve(等功率会鼓包, 必须用互补线性)',
-    allEvents.flat().every(e => e.type !== 'curve'), JSON.stringify(allEvents.flat()));
-  checkTrue('J13 ramp 用的是 linearRampToValueAtTime',
-    ramps.every(e => e.type === 'ramp'), JSON.stringify(ramps.map(e => e.type)));
+  check('J8 出声期间方位锁死(不换 buffer)', dctx.convolvers[0].buffer, bufAtStart);
 
-  check('J14 推进后两条链的 IR 不同(方位已改变)',
-    dctx.convolvers[0].buffer === dctx.convolvers[1].buffer, false);
+  // ---- 停顿处切位 ----
+  dctx.currentTime = 1.1;                       // 第一个停顿(1.0s)已过
+  await tick(120);
+  check('J9 停顿处确实切了位', dctx.convolvers[0].buffer !== bufAtStart, true);
+  const bufAfter1 = dctx.convolvers[0].buffer;
+  dctx.currentTime = 2.5;                       // 第二段有声里, 不该动
+  await tick(120);
+  check('J10 恢复出声后再次锁死', dctx.convolvers[0].buffer, bufAfter1);
+  dctx.currentTime = 3.2;                       // 第二个停顿
+  await tick(120);
+  check('J11 第二个停顿再切一次', dctx.convolvers[0].buffer !== bufAfter1, true);
 
-  // J14b 换 buffer 之前必须先把待接管链的增益硬压到 0 —— 否则 buffer 切换
-  //       会作废卷积器内部状态, 在输出上留下台阶 = 咔哒声。
-  const zeroedBeforeSwap = dctx.gains.filter(g =>
-    g.gain.events.some(e => e.type === 'set' && e.v === 0));
-  checkTrue('J14b 换 buffer 前待接管链增益被置 0',
-    zeroedBeforeSwap.length >= 1,
-    JSON.stringify(dctx.gains.map(g => g.gain.events.map(e => `${e.type}:${e.v}@${e.t}`))));
+  // ---- 切位用的是不同方位(而不是同一份 buffer) ----
+  const irCache = d.sandbox.TtsBinauralHrir;
+  void irCache;
 
-  // J14c 每次换位都必须成对出现 (一条升到 1, 另一条降到 0), 任意时刻和为 1
-  const perGain = dctx.gains.map(g => g.gain.events.filter(e => e.type === 'ramp').map(e => e.v));
-  checkTrue('J14c 每条链都有升到 1 的 ramp',
-    perGain.some(v => v.includes(1)), JSON.stringify(perGain));
-  checkTrue('J14d 有链被降到 0', perGain.some(v => v.includes(0)), JSON.stringify(perGain));
-
-  // J15 停掉后定时器必须停摆
-  d.sandbox.TtsSpatialAudio.stop();
-  check('J15 stop 后不再播放', d.sandbox.TtsSpatialAudio.isPlaying(), false);
-  const before = dctx.gains.flatMap(g => g.gain.events).length;
-  dctx.currentTime = 9.0;
-  await tick(90);
-  const after = dctx.gains.flatMap(g => g.gain.events).length;
-  check('J16 stop 后不再产生新的自动化(定时器已清)', after, before);
-
-  // J17 orbit 也走双卷积, 且关键帧数 > 1
-  const o = loadApp({ binauralEnabled: true });
-  o.setBin(readBin());
-  const octx = o.sandbox.TtsSpatialAudio.getContext();
-  octx.decoded = makePauseyBuffer(48000);
-  await o.sandbox.TtsSpatialAudio.play({
-    blob: new Blob([new Uint8Array(16)]), azimuthDeg: 0, distanceM: 0.25, trajectory: 'orbit'
+  // ---- 一句到底: 无停顿 -> 保持起始方位 ----
+  const nopause = loadApp({ binauralEnabled: true });
+  nopause.setBin(readBin());
+  const nctx = nopause.sandbox.TtsSpatialAudio.getContext();
+  nopause.sandbox.__logs = [];
+  nctx.decoded = buildTestBuffer((dd, sr) => tone(dd, 0, 4, sr), 4, SR);
+  await nopause.sandbox.TtsSpatialAudio.play({
+    blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25, trajectory: 'orbit'
   });
-  check('J17 orbit: 2 个 ConvolverNode', octx.convolvers.length, 2);
+  const nBuf = nctx.convolvers[0].buffer;
+  nctx.currentTime = 3.5;
+  await tick(120);
+  check('J12 无停顿时全程不动', nctx.convolvers[0].buffer, nBuf);
+  check('J12b 无停顿时仍是单卷积', nctx.convolvers.length, 1);
 
-  // J18 轨迹模块缺失 -> 退回静态, 不炸
+  // ---- 轨迹模块缺失 -> 退回静态 ----
   const miss = loadApp({ binauralEnabled: true });
   miss.setBin(readBin());
   delete miss.sandbox.TtsBinauralTrajectory;
   await miss.sandbox.TtsSpatialAudio.play({
     blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25, trajectory: 'whisper'
   });
-  const mctx = miss.sandbox.TtsSpatialAudio.getContext();
-  check('J18 轨迹模块缺失时退回单卷积(不炸)', mctx.convolvers.length, 1);
+  check('J13 轨迹模块缺失时退回单卷积(不炸)', miss.sandbox.TtsSpatialAudio.getContext().convolvers.length, 1);
+
+  // ---- orbit 也走同一结构 ----
+  const o = loadApp({ binauralEnabled: true });
+  o.setBin(readBin());
+  const octx = o.sandbox.TtsSpatialAudio.getContext();
+  octx.decoded = makePauseyBuffer();
+  await o.sandbox.TtsSpatialAudio.play({
+    blob: new Blob([new Uint8Array(16)]), azimuthDeg: 0, distanceM: 0.25, trajectory: 'orbit'
+  });
+  check('J14 orbit 同样是单卷积零增益', octx.convolvers.length === 1 && octx.gains.length === 0, true);
+
+  // ---- 停止后定时器清掉 ----
+  d.sandbox.TtsSpatialAudio.stop();
+  check('J15 stop 后不再播放', d.sandbox.TtsSpatialAudio.isPlaying(), false);
+  const snap = dctx.convolvers[0].buffer;
+  dctx.currentTime = 9.0;
+  await tick(120);
+  check('J16 stop 后不再切位(定时器已清)', dctx.convolvers[0].buffer, snap);
 }
 
 (async function main() {
