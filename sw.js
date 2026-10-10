@@ -15,7 +15,14 @@
 //   index.html 新增 <script src="src/lib/tts/binaural/trajectory.js">, 它是被预缓存的,
 //   所以必须再 bump 一次 CACHE_VERSION 才能让新标签生效。
 //   src/lib/tts/binaural/*.js 与 assets/audio/hrir-ku100-nf.bin 依旧【不进预缓存】(见下)。
-const CACHE_VERSION = 'v0.2.41.0';
+// v0.2.42.0 (2026-10-10): Cinema Room 观影记忆草稿兜底。
+//   用户实测: API 临时抽风 → 退出总结失败 → 两集白看, 退出后什么都不剩。
+//   改造: 退出自动总结 → 手动「生成观影记忆」按钮 + 失败可重试
+//        + localStorage 草稿兜底(退出时存, 下次进影院恢复, 精炼成功才清)。
+//   cinema-live.js / cinema-room.js / cinema-room.css 三个都在下面 URLS_TO_CACHE 里,
+//   而且 index.html 里的 ?v= 已经 bump (1.3.0 / 0.25.2 / 0.35.2),
+//   所以【必须】bump CACHE_VERSION, 否则 SW 继续吐旧版, 改动等于没改。
+const CACHE_VERSION = 'v0.2.42.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

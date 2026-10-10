@@ -340,6 +340,7 @@
     }
     st.keys = keys;
     st.keyIndex = 1;
+    st.lastStepAt = null;   // 上一次开始交叉淡化的墙钟时刻, 用于"淡出未走完就不换 buffer"的守卫
 
     var firstIr = hrirApi.getStereoIr(set, ctx, keys[0].az, keys[0].dist);
     var A = makeConvChain(ctx, firstIr, 1);   // 当前主导
@@ -349,23 +350,47 @@
     st.inputs = [A.conv, B.conv];             // 源同时喂两边
     st.chain = [A.conv, A.gain, B.conv, B.gain];
 
+    /**
+     * 推进到一个新关键帧。
+     * @returns {boolean} true = 已推进; false = 本次跳过(调用方应重试)
+     */
     function applyStep(key) {
+      var now = ctx.currentTime;
+
+      // ⚠️ 守卫 —— 这一条是"咔哒声"的主要来源。
+      //   换 convolver.buffer 会让该节点的内部卷积状态作废, 输出上出现台阶。
+      //   如果上一次交叉淡化还没走完, 待接管的那条链此刻仍有可听增益,
+      //   台阶就变成了听得见的咔哒。所以淡出未走完时直接放弃本次推进,
+      //   下一个 tick 自动重试; 步进间隔远大于淡化时长时不会真的触发。
+      if (st.lastStepAt != null && (now - st.lastStepAt) < trajApi.CROSSFADE_SEC) return false;
+
       var ir;
       try {
         ir = hrirApi.getStereoIr(set, ctx, key.az, key.dist);
-      } catch (e) { return; }
-      if (!ir || ir.numberOfChannels !== 2) return;
+      } catch (e) { return false; }
+      if (!ir || ir.numberOfChannels !== 2) return false;
 
-      // 当前主导的是 state.value 较大的那条, 另一条就是待接管的
+      // state.value 记的是上一次 ramp 的【目标值】, 因此较大的那条就是当前主导
       var incoming = (A.state.value >= B.state.value) ? B : A;
       var outgoing = (incoming === B) ? A : B;
 
-      // 先换 buffer 再拉增益: 此刻 incoming 增益是 0, 换的瞬间听不到
+      // 双保险: 换 buffer 之前先把 incoming 的增益硬压到 0 并取消一切待执行的自动化。
+      // 有了上面的守卫它此刻本来就该是 0, 这句只为防浏览器在自动化边界上的细微出入。
+      try {
+        incoming.gain.gain.cancelScheduledValues(now);
+        incoming.gain.gain.setValueAtTime(0, now);
+      } catch (e) { /* ignore */ }
+      incoming.state.value = 0;
+
+      // 此时增益确认为 0, 换 buffer 在输出上听不到
       incoming.conv.buffer = ir;
 
-      var t = ctx.currentTime;
-      rampGain(incoming, 1, t, trajApi.CROSSFADE_SEC);
-      rampGain(outgoing, 0, t, trajApi.CROSSFADE_SEC);
+      // 淡化起点就是 currentTime (它已经是渲染量子的起点, 不会落在量子内部),
+      // 两条链用互补线性同步 ramp, 任意时刻 g_in + g_out === 1, 中途无幅度台阶。
+      rampGain(incoming, 1, now, trajApi.CROSSFADE_SEC);
+      rampGain(outgoing, 0, now, trajApi.CROSSFADE_SEC);
+      st.lastStepAt = now;
+      return true;
     }
 
     st.onStep = function () {
@@ -374,7 +399,8 @@
         var elapsed = ctx.currentTime - st.startedAt;
         var guard = 0;
         while (st.keyIndex < keys.length && keys[st.keyIndex].t <= elapsed && guard++ < 64) {
-          applyStep(keys[st.keyIndex]);
+          // 淡出未走完就 break, 保留 keyIndex 供下次 tick 重试(不丢步进)
+          if (!applyStep(keys[st.keyIndex])) break;
           st.keyIndex++;
         }
         st.timer = setTimeout(tick, trajApi.STEP_TIMER_MS);

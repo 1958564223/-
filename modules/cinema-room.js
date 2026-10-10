@@ -2494,44 +2494,92 @@
 
   /**
    * 退出房间。
-   * ⚠️ 严格顺序(与旧观影已验证的一致, 用户明确要求):
-   *    先 await CinemaLive.onLeaveCinema()
-   *      → 内部: 整理记忆 → 写 longTermMemory → await db.chats.put → 确认成功 → 才关 Live
-   *    只有它 resolve 了才真正关房间。
-   *    它失败时【不关 Live、不关房间】, 保持当前会话让用户重试。
+   *
+   * 🔴 2026-10-10 改了退出策略 (用户实测两集白看后的决定):
+   *   旧: 退出 → 自动总结 → 写库 → 关房间 (不可逆单向道, 失败就全丢)
+   *   新: 退出 → 弹框问一句 → [现在生成] 手动生成+写库 / [直接退出] 存草稿走人
+   *
+   * 关键点: 无论走哪条, 【都不能让"还没存进去的记忆"跟着页面一起消失】。
+   *   直接退出这条路由 CinemaLive.hardLeave 存 localStorage 草稿兜底,
+   *   下次进影院自动恢复 —— 这正是用户要的"换个时间再来总结"。
    */
   async function close() {
     ensureDom();
     flushProgress(true);
     if (global.CinemaLive && global.CinemaLive.isEnabled()) {
-      const r = await global.CinemaLive.onLeaveCinema();
-      if (r && r.saved === false && r.error) {
-        // ⚠️ 2026-10-07 用户实测被【关在房间里出不来】, 这里必须给兜底。
-        //
-        // 现象: 点退出 → Gemini 返回空 → 弹「观影记忆没存上」→ 房间不关。
-        //      再点退出还是不行 (Live 已经被 stopFrameLoop 停了, 连接是死的),
-        //      用户被彻底困住 —— 记忆没存上变成了【禁止退出】, 这不可接受。
-        //
-        // 记忆存不上是【降级】, 不是【禁止退出】。所以:
-        //   · 弹框给「仍然退出」, 点了直接走人
-        //   · 同时倒计时自动退出, 免得用户看不懂干等着
-        //
-        // 常见触发: iOS 切后台时 Live 被系统掐断, 回来连接已死 → Gemini 返回空
-        //          (用户原话: "没总结可能是我退了一下后台")
-        await showLeaveFallback(r.error);
-        // ⚠️⚠️ 2026-10-07 的「兜底」漏了这一行, 结果兜底本身变成了陷阱。
-        //   showLeaveFallback() 里的 settle() 只做三件事:
-        //     清定时器 → 关弹框 → resolve()
-        //   它【不会】去关房间。原来的代码 await 完直接 return,
-        //   finishClose() 从头到尾没被调用过 ——
-        //   所以点「仍然退出」弹框消失、10 秒倒计时走完, 房间依然开着;
-        //   再点退出还是走那条被缓存的 leavePromise, 于是永远出不去。
-        //   记忆存不上是【降级】, 绝不能变成【禁止退出】。
-        finishClose();
-        return;
+      // 有没存进去的记忆, 且已经还连着 Live → 问用户要不要现在生成
+      if (typeof global.CinemaLive.hasUnsavedMemory === 'function' && global.CinemaLive.hasUnsavedMemory()) {
+        const choice = await confirmLeaveWithMemory();
+        if (choice === 'generate') {
+          appendCinemaSystemLine('⏳ 正在整理这次观影记忆，请稍等……');
+          const r = await global.CinemaLive.generateFinalMemory({ quiet: true });
+          if (!r || r.saved !== true) {
+            // 生成失败: 【不能直接把人踢出去丢脸】, 弹框给一条"仍然退出"的出路。
+            // 单集记忆已经存草稿了, 走人也不会真丢。
+            await showLeaveFallback((r && r.error) || '未知原因');
+          }
+        }
+        // 'leave' → 直接往下走, finishClose 里 CinemaLive.forceLeave → hardLeave 存草稿
+      } else {
+        // 旧路径: 没有可总结内容时仍走原来的流程 (例如只剩聊天没剧情)
+        const r = await global.CinemaLive.onLeaveCinema();
+        if (r && r.saved === false && r.error) {
+          await showLeaveFallback(r.error);
+        }
       }
     }
     finishClose();
+  }
+
+  function appendCinemaSystemLine(text) {
+    const box = document.getElementById('cinema-chat-messages');
+    if (!box) return;
+    const div = document.createElement('div');
+    // ⚠️ class 必须是 cinema-chat-sys —— 跟 cinema-live.js 的 appendSystemLine 同名,
+    //   写成别的就套不到那套样式, 提示会变成一坨没样式的裸文字。
+    div.className = 'cinema-chat-sys';
+    div.textContent = text;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  /**
+   * 「这次还有记忆没存」时的退出确认框。
+   * 返回 'generate' (现在生成) / 'leave' (直接退出, 存草稿)。
+   * 无论用户点哪个、还是超时, 都一定会 resolve —— 不能把关房间卡死。
+   */
+  function confirmLeaveWithMemory() {
+    return new Promise(function (resolve) {
+      let done = false;
+      const timers = [];
+      function settle(v) {
+        if (done) return;
+        done = true;
+        timers.forEach(function (t) { try { clearTimeout(t); } catch (e) { /* noop */ } });
+        closeAnyModal();
+        resolve(v);
+      }
+      if (global.showCustomConfirm) {
+        global.showCustomConfirm(
+          '这次观影记忆还没存进长期记忆',
+          '要现在生成吗？生成后你随时可以点顶部「退出」离开。' +
+            '<br><br>如果现在不方便（比如 API 抽风），也可以直接退出 —— ' +
+            '<b>你这次攒下的剧情记忆会存在本地，下次进影院自动恢复</b>，到时候再生成就行，不会丢。',
+          {
+            confirmText: '现在生成',
+            cancelText: '直接退出（先存着）',
+            confirmButtonClass: ''
+          }
+        ).then(function (ok) {
+          settle(ok ? 'generate' : 'leave');
+        }).catch(function () { settle('leave'); });
+      } else {
+        // 没有确认弹框能力 → 保守起见直接存草稿走人, 绝不自动触发一次可能失败的生成
+        settle('leave');
+      }
+      // 兜底: 弹框任何异常/用户无视, 25 秒后一律放人
+      timers.push(setTimeout(function () { settle('leave'); }, 25000));
+    });
   }
 
   /** 关掉可能还开着的自定义弹框 (showCustomAlert/Confirm/Choice 共用那一个宿主节点) */

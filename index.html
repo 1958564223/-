@@ -202,8 +202,8 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 2026-10-09 双耳空间音频: HRIR 数据层必须在播放层之前加载(播放层要读它的 POSITIONS) -->
   <script src="src/lib/tts/binaural/hrir-data.js?v=0.0.1" defer></script>
   <!-- 2026-10-10 动态声相轨迹: 纯计算层(出声时间线检测 / 方位路径 / 关键帧编排) -->
-  <script src="src/lib/tts/binaural/trajectory.js?v=0.0.1" defer></script>
-  <script src="src/lib/tts/binaural/spatial-audio.js?v=0.0.2" defer></script>
+  <script src="src/lib/tts/binaural/trajectory.js?v=0.0.2" defer></script>
+  <script src="src/lib/tts/binaural/spatial-audio.js?v=0.0.3" defer></script>
   <script src="modules/tts-audio.js?v=0.0.46" defer></script>
   <script src="modules/appearance-theme.js?v=0.0.87" defer></script>
   <script src="modules/hot-news.js?v=0.1.2" defer></script>
@@ -257,11 +257,11 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 图片压缩 (2026-10-05): 上传房间背景时把 3~5MB 的 iPhone 照片压到 ~100KB。
        必须在 cinema-room.js 之前 —— 它在加载时就要拿到 window.CinemaImage。 -->
   <script src="modules/cinema-img.js?v=1.0.1" defer></script>
-  <script src="modules/cinema-room.js?v=0.25.1" defer></script>
-  <link rel="stylesheet" href="modules/cinema-room.css?v=0.35.1">
+  <script src="modules/cinema-room.js?v=0.25.2" defer></script>
+  <link rel="stylesheet" href="modules/cinema-room.css?v=0.35.2">
   <!-- Cinema Room 的 Gemini 3.8 Live 桥接层 (协议层仍是 live-client.js)。
        必须在 cinema-room.js 之后加载 —— cinema-room.js 打开房间时才会调它。 -->
-  <script src="modules/cinema-live.js?v=1.2.2" defer></script>
+  <script src="modules/cinema-live.js?v=1.3.0" defer></script>
   <!-- 主入口（最后加载，调用 init） -->
   <script src="modules/init-and-state.js?v=0.0.83" defer></script>
   <!-- 第九层：DOMContentLoaded 外部的独立模块 -->

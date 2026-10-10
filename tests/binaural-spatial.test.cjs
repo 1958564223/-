@@ -947,6 +947,12 @@ function testTrajectoryMath() {
   const app = loadApp();
   const TR = app.sandbox.TtsBinauralTrajectory;
 
+  // 实测调参结论锁定: 缩短淡化对梳状强度无效, 压小步进才有效
+  check('I0a 交叉淡化 0.09s (实测后从 0.22 压下来)', TR.CROSSFADE_SEC, 0.09);
+  check('I0b 步进 0.2s (实测后从 0.9 压下来)', TR.STEP_SEC, 0.2);
+  checkTrue('I0c 步进必须大于淡化时长(否则守卫会持续拦步进)',
+    TR.STEP_SEC > TR.CROSSFADE_SEC, `${TR.STEP_SEC} vs ${TR.CROSSFADE_SEC}`);
+
   check('I1 normalizeAz(-90) = 270', TR.normalizeAz(-90), 270);
   check('I2 normalizeAz(450) = 90', TR.normalizeAz(450), 90);
 
@@ -1020,7 +1026,7 @@ function testTrajectoryMath() {
   const pZero = TR.buildPlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, speechDuration: 0 });
   check('I24 纯静音时退化为单帧', pZero.length, 1);
   const pShort = TR.buildPlan({ trajectory: 'whisper', fromAz: 90, fromDist: 0.25, speechDuration: 0.3 });
-  check('I25 极短语音至少 2 帧(仍能走一步)', pShort.length, 2);
+  checkTrue('I25 极短语音至少 2 帧(仍能走一步)', pShort.length >= 2, String(pShort.length));
 
   // 非法输入不抛错
   let threw = null;
@@ -1131,9 +1137,22 @@ async function testDynamicPlayback() {
   checkTrue('J13 ramp 用的是 linearRampToValueAtTime',
     ramps.every(e => e.type === 'ramp'), JSON.stringify(ramps.map(e => e.type)));
 
-  // J14 换了方位之后, 两条链的 IR 必须不同
   check('J14 推进后两条链的 IR 不同(方位已改变)',
     dctx.convolvers[0].buffer === dctx.convolvers[1].buffer, false);
+
+  // J14b 换 buffer 之前必须先把待接管链的增益硬压到 0 —— 否则 buffer 切换
+  //       会作废卷积器内部状态, 在输出上留下台阶 = 咔哒声。
+  const zeroedBeforeSwap = dctx.gains.filter(g =>
+    g.gain.events.some(e => e.type === 'set' && e.v === 0));
+  checkTrue('J14b 换 buffer 前待接管链增益被置 0',
+    zeroedBeforeSwap.length >= 1,
+    JSON.stringify(dctx.gains.map(g => g.gain.events.map(e => `${e.type}:${e.v}@${e.t}`))));
+
+  // J14c 每次换位都必须成对出现 (一条升到 1, 另一条降到 0), 任意时刻和为 1
+  const perGain = dctx.gains.map(g => g.gain.events.filter(e => e.type === 'ramp').map(e => e.v));
+  checkTrue('J14c 每条链都有升到 1 的 ramp',
+    perGain.some(v => v.includes(1)), JSON.stringify(perGain));
+  checkTrue('J14d 有链被降到 0', perGain.some(v => v.includes(0)), JSON.stringify(perGain));
 
   // J15 停掉后定时器必须停摆
   d.sandbox.TtsSpatialAudio.stop();

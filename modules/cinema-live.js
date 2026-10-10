@@ -567,7 +567,7 @@
     box.scrollTop = box.scrollHeight;
   }
 
-  function resetBubble() { S.bubbleEl = null; }
+  function resetBubble() { S.bubbleEl = null; bubbleStreamId++; }
 
   // ============================================================
   // 剧情记忆面板 (Cinema Room 自己的, 可查看 + 可编辑)
@@ -746,6 +746,24 @@
       ? '<div class="cinema-plot-text">' + esc(watchSession.finalSummaryText) + '</div>'
       : '<div class="cinema-plot-text dim">（观影结束后生成）</div>';
 
+    // 🔴 2026-10-10 手动生成区。
+    //   之前退出流程会自动总结, 失败就没了; 现在改成用户自己点, 点一次失败可以再点。
+    //   已保存 / 正在生成 / 压根没内容 → 三种情况按钮都禁用, 免得点了没反应。
+    var finalizeBar = '';
+    if (!watchSession.finalSummarySaved) {
+      var canFinalize = draftHasContent() && !watchSession.summaryBusy && !watchSession.pendingSummary;
+      finalizeBar =
+        '<div class="cinema-plot-finalize">' +
+        '<button class="cinema-plot-btn primary' + (canFinalize ? '' : ' disabled') +
+        '" data-plot="finalize"' + (canFinalize ? '' : ' disabled') + '>' +
+        (watchSession.summaryBusy ? '⏳ 正在整理…' : '💾 生成观影记忆') + '</button>' +
+        '<div class="cinema-plot-hint">' +
+        (draftHasContent()
+          ? '随时可以点。存进长期记忆后点顶部「退出」离开房间；失败可以反复点，你的记忆不会丢。'
+          : '看剧时这里会攒剧情记忆，有了之后就能生成。') +
+        '</div></div>';
+    }
+
     return '<div class="cinema-plot-head">' + esc(head) +
         '<span class="cinema-plot-meta">收起 ▾</span></div>' +
       '<div class="cinema-plot-body" data-noscroll="1">' +
@@ -757,6 +775,7 @@
         ' · 已记 ' + memoryCount() + memoryUnit() + '</div>' +
       '<div class="cinema-plot-label">最终观影记忆</div>' +
       finalHtml +
+      finalizeBar +
       '</div>';
   }
 
@@ -827,6 +846,13 @@
     if (act && act.indexOf('edit') === 0) { startEditSummary(act.slice(5)); return; }
     if (act === 'save') { saveEditedSummary(); return; }
     if (act === 'cancel') { plotEditing = null; renderPlotPanel(); return; }
+    if (act === 'finalize') {
+      // 🔴 2026-10-10 手动生成。不用 await —— 它自己会 appendSystemLine 报进度/结果,
+      //   这里只是触发器, 面板会随状态刷新。
+      log('用户点了「生成观影记忆」');
+      generateFinalMemory();
+      return;
+    }
     if (t.closest('[data-noscroll]')) return;
     togglePlotPanel();
   }, true);
@@ -867,6 +893,8 @@
   // 迁移自旧文件 :551-565
   // ============================================================
   var bubbleText = '';   // 当前 assistant 气泡的完整文本, 用户发新消息才清零
+  var bubbleStreamId = 0;  // 当前这句话的唯一号。chatLog 靠它判断"是不是同一句还在流"
+                            // → 同一句只留一条, 被后续增量覆盖, 不产生几十条碎片。
 
   function handleModelText(text, isFinal) {
     if (!text) return;
@@ -892,12 +920,44 @@
     // 正常陪聊: 跨多个 turn 累加成【一整句】, 始终只占一个气泡
     bubbleText += takeDelta(bubbleText, text);
     if (bubbleText) renderGeminiBubble(bubbleText);
+    // ⚠️ 只在回合收尾 (isFinal) 记一条【完整句子】, 绝不逐字记。
+    //   中途增量进来时 bubbleText 还在长, 这时候记下来的是半截。
+    if (isFinal) recordAssistantFinal(bubbleText);
   }
 
   function recordChat(role, text) {
     if (!text) return;
-    watchSession.chatLog.push({ role: role, text: String(text).slice(0, 500) });
-    if (watchSession.chatLog.length > 60) watchSession.chatLog.shift();
+    var t = String(text).trim();
+    if (!t) return;
+    // 只记一句完整的话 —— 记录发生在"一句话说完"的时刻, 不是逐字流式时,
+    // 否则同一句会被记成几十条碎片。
+    // ⚠️ 2026-10-10: 之前只 recordChat('user'), 角色这边的回应从来没被记过,
+    //   而 buildFinalSummaryInstruction 里明明写了 m.role === 'user' ? '用户' : '你'
+    //   —— 双边对话才是"一起观影的回忆", 只记一边等于丢了现场。
+    var last = watchSession.chatLog[watchSession.chatLog.length - 1];
+    if (last && last.role === role && last.streamingId === bubbleStreamId) {
+      last.text = t.slice(0, 500);   // 同一句还在流 → 覆盖, 不追加
+      return;
+    }
+    watchSession.chatLog.push({ role: role, text: t.slice(0, 500), streamingId: bubbleStreamId, at: Date.now() });
+    // ⚠️ 60 条上限以前会把【一整场】的吐槽前文挤掉。这里改成 200 条:
+    //   草稿要落 localStorage, 200 条 × 500 字上限 ≈ 100KB, 完全放得下。
+    //   另外开头留一条"本场开场提示", 让角色知道这次观影之前聊过什么。
+    if (watchSession.chatLog.length > 200) watchSession.chatLog.splice(1, 1);
+  }
+
+  /** 记一句完整的角色回复。isFinal=true 才算这句话说完了。 */
+  function recordAssistantFinal(text) {
+    if (!text) return;
+    var t = String(text).trim();
+    if (!t) return;
+    var last = watchSession.chatLog[watchSession.chatLog.length - 1];
+    if (last && last.role === 'assistant' && last.streamingId === bubbleStreamId) {
+      last.text = t.slice(0, 500);   // 同一句收尾 → 覆盖成最终文本
+      return;
+    }
+    watchSession.chatLog.push({ role: 'assistant', text: t.slice(0, 500), streamingId: bubbleStreamId, at: Date.now() });
+    if (watchSession.chatLog.length > 200) watchSession.chatLog.splice(1, 1);
   }
 
   // ============================================================
@@ -1338,6 +1398,112 @@
   }
 
   // ============================================================
+  // 未总结草稿 (2026-10-10)
+  //
+  // 起因: 用户实测 —— API 临时抽风导致退出总结失败, 两集白看, 退出后什么都没留下。
+  //   (旧设计把"退出时总结"当成唯一落盘点, 它失败 = 整场丢失)
+  //
+  // 现在: 退出改为【手动生成 + 失败可重试】(数据不清), 但用户也可能
+  //   "这次 API 不行, 我先退出, 等换个时间再来总结"。
+  //   所以补一层 localStorage 草稿兜底:
+  //     · 任何"要离开但长期记忆还没写成功"的时刻 → 存草稿
+  //     · 下次进影院自动恢复 → 用户再点一次生成
+  //     · 【精炼成功才清草稿】(用户原话: "总结精炼完了才清记录")
+  //
+  // 为什么存 localStorage 而不是新建 Dexie 表:
+  //   草稿是"当前这次没总结完的临时数据", 不需要跨设备同步/索引查询。
+  //   localStorage 同步读写几百 KB 完全够, 而且【不用 bump db schema】——
+  //   避开了 init-db-schema.js ?v= 那道容易忘、忘了一定出真机事故的坎。
+  // ============================================================
+  var DRAFT_KEY = 'cinema_watch_draft';
+  var DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // 30 天没动就当过期, 免得长期占地方
+
+  /** 这次观影有没有"值得留一手"的记忆 (单集记忆 / 剧情摘要 / 总纲) */
+  function draftHasContent() {
+    return ((watchSession.episodeMemories && watchSession.episodeMemories.length > 0) ||
+      !!(watchSession.currentPlotSummary || '').trim() ||
+      !!(watchSession.seriesOutline || '').trim());
+  }
+
+  /** 把当前未总结的记忆存成本地草稿。幂等(覆盖写), 反复调无害。 */
+  function saveDraft() {
+    if (!draftHasContent()) return;
+    try {
+      var draft = {
+        chatId: watchSession.chatId,
+        kind: watchSession.kind,
+        seriesKey: watchSession.seriesKey,
+        seriesTitle: watchSession.seriesTitle,
+        seriesLastEp: watchSession.seriesLastEp,
+        seriesOutline: watchSession.seriesOutline,
+        episodeMemories: watchSession.episodeMemories,
+        currentPlotSummary: watchSession.currentPlotSummary,
+        chatLog: watchSession.chatLog,
+        savedAt: Date.now()
+      };
+      var json = JSON.stringify(draft);
+      localStorage.setItem(DRAFT_KEY, json);
+      log('💾 未总结的观影记忆已存草稿 (' + (watchSession.episodeMemories || []).length +
+        ' 条, ' + Math.round(json.length / 1024) + 'KB)');
+    } catch (e) {
+      // QuotaExceeded 等 —— 草稿存不下【绝不能影响正常退出】, 只记日志
+      logWarn('存草稿失败(不影响退出):', e.message);
+    }
+  }
+
+  function clearDraft() {
+    try { localStorage.removeItem(DRAFT_KEY); } catch (e) { /* noop */ }
+  }
+
+  /** 读草稿。空 / 过期 / 损坏 / 无有效内容 → null (并顺手清掉无效的)。 */
+  function loadDraft() {
+    try {
+      var raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return null;
+      var d = JSON.parse(raw);
+      if (!d || !Array.isArray(d.episodeMemories)) { clearDraft(); return null; }
+      if (!d.episodeMemories.length && !(d.currentPlotSummary || '').trim() && !(d.seriesOutline || '').trim()) {
+        clearDraft(); return null;
+      }
+      if (Date.now() - (d.savedAt || 0) > DRAFT_TTL_MS) { clearDraft(); return null; }
+      return d;
+    } catch (e) {
+      logWarn('读草稿失败(忽略):', e.message);
+      return null;
+    }
+  }
+
+  /**
+   * 进影院时恢复上次没总结完的记忆。
+   *
+   * 只在 setChat (进影院 / 切角色) 时调 —— 【换片时不恢复】:
+   *   换片是用户主动开始看新的, 旧草稿该继续留在 localStorage 等他处理,
+   *   不该在毫无提示的情况下塞进新片子里。
+   *
+   * 草稿跟角色绑定: 换个角色进影院, 别的角色的剧不该混进来 (返回 false, 草稿保留)。
+   */
+  function restoreDraft() {
+    var d = loadDraft();
+    if (!d) return false;
+    if (d.chatId && watchSession.chatId && d.chatId !== watchSession.chatId) return false;
+    watchSession.kind = d.kind || 'film';
+    watchSession.seriesKey = d.seriesKey || null;
+    watchSession.seriesTitle = d.seriesTitle || '';
+    watchSession.seriesLastEp = d.seriesLastEp || 0;
+    watchSession.seriesOutline = d.seriesOutline || '';
+    watchSession.episodeMemories = d.episodeMemories;
+    watchSession.currentPlotSummary = d.currentPlotSummary || '';
+    watchSession.chatLog = Array.isArray(d.chatLog) ? d.chatLog : [];
+    var n = watchSession.episodeMemories.length;
+    log('↩️ 恢复上次未总结的观影记忆 (' + n + ' 条, ' + (watchSession.seriesTitle || '长剧') + ')');
+    appendSystemLine('↩️ 上次有 ' + n + ' 条' +
+      (watchSession.seriesTitle ? '《' + watchSession.seriesTitle + '》' : '') +
+      '的观影记忆还没存进长期记忆，已经帮你恢复。看完了点「生成观影记忆」补上就行。');
+    renderPlotPanel();
+    return true;
+  }
+
+  // ============================================================
   // session resumption / 重连
   // 迁移自旧文件 :851-909
   // ============================================================
@@ -1671,6 +1837,10 @@
       .then(function () {
         // 只有 await db.chats.put 成功走到这里, 才算真的保存成功
         watchSession.finalSummarySaved = true;
+        // 🔴 2026-10-10: 【精炼成功才清草稿】(用户原话: "总结精炼完了才清记录")。
+        //   顺序很重要 —— 先确认写库成功, 再清本地草稿。反过来的话,
+        //   写库失败时草稿已经没了, 又变成"什么都没留下"。
+        clearDraft();
         appendSystemLine('✅ 观影记忆已保存到长期记忆');
         renderPlotPanel();
         hardLeave();
@@ -1681,6 +1851,8 @@
         logError('观影记忆未保存成功:', err.message);
         watchSession.finalSummaryRequested = false;
         S._leaving = false;
+        // 顺手存一份草稿: 用户可能觉得"这次 API 不行", 直接退出换时间再总结。
+        saveDraft();
         appendSystemLine('⚠️ 观影记忆还没有生成成功：' + err.message);
         renderStatus('ready');
         renderPlotPanel();
@@ -1722,6 +1894,13 @@
   function hardLeave() {
     watchSession.closed = true;
     stopStageSummary();
+
+    // 🔴 2026-10-10 最后一层保险: 要走人了, 但最终观影记忆还没写成功
+    //   → 先把内存里这些单集记忆存成 localStorage 草稿。
+    //   这一行是"退出换时间再总结"能成立的根基: 页面一关内存就没了,
+    //   草稿在, 下次进影院 restoreDraft() 就能捡回来, 不会白看。
+    //   (已成功保存的会话 finalSummarySaved=true, 这里跳过, 不留垃圾草稿)
+    if (!watchSession.finalSummarySaved) saveDraft();
     // ⚠️ 退出时自己把这次的播放时间账结清 (2026-10-07)。
     //
     // 不加这一行也能跑 —— 因为重连时 onClientState 里那个
@@ -1749,6 +1928,84 @@
     watchSession.leavePromise = runFinalSummaryFlow()
       .catch(function (err) { return { saved: false, error: err.message }; });
     return watchSession.leavePromise;
+  }
+
+  // ============================================================
+  // 手动生成最终观影记忆 (2026-10-10)
+  //
+  // 【为什么要有这条独立路径】
+  //   原来退出流程 = 自动总结 → 写库 → 关房间, 是一条不可逆的单向道:
+  //   一旦 Gemini 那次调用失败, 用户除了重试什么都做不了, 而页面一关内存就没了。
+  //   (2026-10-10 用户实测: API 临时抽风 → 两集全丢)
+  //
+  //   现在分成两件独立的事:
+  //     · generateFinalMemory()  ← 这里: 生成 + 写库, 【不退出房间】
+  //     · 关房间                 ← 独立动作, 任何时候都能走
+  //   失败不清数据(episodeMemories 一直留着), 按钮可以无限点。
+  // ============================================================
+  function generateFinalMemory(opts) {
+    var o = opts || {};
+    if (watchSession.finalSummarySaved) return Promise.resolve({ saved: true, alreadySaved: true });
+    if (watchSession.summaryBusy || watchSession.pendingSummary) {
+      return Promise.resolve({ saved: false, error: '正在整理中，请等一下' });
+    }
+    if (!draftHasContent()) {
+      return Promise.resolve({ saved: false, error: '这次还没有可总结的剧情记忆' });
+    }
+    var chat = getCurrentChat();
+    if (!chat) return Promise.resolve({ saved: false, error: '没有找到角色会话' });
+    if (!S.client || !S.client.isReady()) {
+      // ⚠️ Live 没连上时【不能】就这么算了 —— 那正是"API 临时问题"的场景,
+      //   而单集记忆还在内存里。让 UI 提示用户等重连后再点。
+      saveDraft();
+      return Promise.resolve({ saved: false, error: 'Gemini 还没连上，等它连好后可以再点一次' });
+    }
+
+    var wasPaused = S.paused;
+    // 手动生成时【不设 S._leaving】—— 那会把帧循环和重连一起关掉, 房间就废了。
+    if (!watchSession.finalSummaryRequested) {
+      watchSession.finalSummaryRequested = true;
+    }
+    pauseFrames('手动生成观影记忆');      // 停帧, 让它专心写文字
+    appendSystemLine(o.quiet ? '' : '⏳ 正在整理这次观影记忆，请稍等……');
+    renderPlotPanel();
+
+    return waitForNoPendingSummary()
+      .then(function () { return requestSummary('final', buildFinalSummaryInstruction()); })
+      .then(function (text) {
+        var content = (text || '').trim();
+        if (!content) throw new Error('Gemini 没有返回观影记忆内容');
+        watchSession.finalSummaryText = content;
+        appendSystemLine('💾 正在保存观影记忆…');
+        renderPlotPanel();
+        return saveToLongTermMemory(chat, content);
+      })
+      .then(function () {
+        watchSession.finalSummarySaved = true;
+        // 🔴 写库确认成功 → 才清草稿 (同 runFinalSummaryFlow 里的顺序理由)
+        clearDraft();
+        appendSystemLine('✅ 观影记忆已保存到长期记忆');
+        return { saved: true };
+      })
+      .catch(function (err) {
+        logError('手动生成观影记忆失败:', err.message);
+        // 失败【绝不清数据】: 单集记忆还在, 按钮还能再点。
+        saveDraft();   // 顺手留一手, 防用户点完就走 / 手机息屏
+        appendSystemLine('⚠️ 这次没存上：' + err.message +
+          '（你的记忆都还在，可以再点一次「生成观影记忆」）');
+        return { saved: false, error: err.message };
+      })
+      .then(function (r) {
+        // 无论成功失败都要把现场恢复, 否则用户看片会莫名其妙卡住不播了
+        watchSession.finalSummaryRequested = false;
+        finishSummary(watchSession.pendingSummary);
+        if (!wasPaused && S.enabled && S.client && S.client.isReady()) {
+          resumeFrames('手动生成完成');
+        }
+        renderStatus('ready');
+        renderPlotPanel();
+        return r;
+      });
   }
 
   // ============================================================
@@ -1935,7 +2192,12 @@
     setChat: function (chatId) {
       S.chatId = chatId || null;
       if (S.chatId) {
-        if (!watchSession.chatId || watchSession.chatId !== S.chatId) newWatchSession(S.chatId);
+        if (!watchSession.chatId || watchSession.chatId !== S.chatId) {
+          newWatchSession(S.chatId);
+          // 🔴 2026-10-10 进影院先捡草稿 —— 只在这里恢复, 换片(onVideoSourceChanged)不恢复,
+          //   免得旧片子的记忆莫名其妙混进新片。
+          restoreDraft();
+        }
       }
     },
     getChatId: function () { return S.chatId; },
@@ -1946,6 +2208,15 @@
     autoConnect: autoConnect,
     onLeaveCinema: onLeaveCinema,
     retryFinalSummary: retryFinalSummary,
+    /**
+     * 🔴 2026-10-10 手动生成最终观影记忆。写库成功但不退出房间,
+     *   失败不清数据、可无限重试。UI 层(退出按钮/兜底弹框)也调它。
+     */
+    generateFinalMemory: generateFinalMemory,
+    /** 有没有还没存进长期记忆的观影记忆 (UI 据此决定退���时要不要拦一下) */
+    hasUnsavedMemory: function () {
+      return draftHasContent() && !watchSession.finalSummarySaved;
+    },
     /**
      * 放弃这次记忆, 强制走人 (2026-10-07)。
      *
