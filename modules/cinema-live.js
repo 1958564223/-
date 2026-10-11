@@ -21,8 +21,9 @@
 //
 // 【人设 / 长期记忆】
 //   人设 = chat.settings.aiPersona (跟主聊天同一个字段)
-//   记忆 = chat.longTermMemory       (跟主聊天同一个数组, 只读)
-//   跟旧观影完全一致, 不新建第二套人格或记忆库。
+//   ⚠️ 2026-10-11 起【不再注入 longTermMemory】(原因见 buildSystemPrompt 里的长注释)。
+//      看剧时只给人设(语气), 不喂生活记忆 —— 记忆会跟剧情抢注意力, 让接话变蠢。
+//      观影记忆精炼是另一条独立指令, 不受影响。
 //   ⚠️ 房间里那两个小人是纯美术素材(设置里上传图片), 跟人设无关。
 //
 // 【抽帧降采样 — 为什么要改】
@@ -215,7 +216,7 @@
 
   // ============================================================
   // 系统提示词 (迁移自 watch-together-live.js:88-161)
-  // 人设/记忆来源字段与旧文件完全一致, 只改了措辞里的房间名。
+  // 人设来源跟旧文件一致; 但 2026-10-11 起【不再注入长期记忆】(见函数内注释)。
   // ============================================================
   function buildSystemPrompt(chat) {
     var c = chat || {};
@@ -224,18 +225,23 @@
     var myNickname = (c.settings && c.settings.myNickname) || '我';
     var charName = c.name || c.originalName || '角色';
 
-    var memoryText = '';
-    var mem = c.longTermMemory;
-    if (Array.isArray(mem) && mem.length > 0) {
-      var lines = [];
-      for (var i = mem.length - 1; i >= 0; i--) {
-        if (mem[i] && mem[i].content) lines.push('- ' + mem[i].content);
-      }
-      if (lines.length > 0) memoryText = lines.join('\n');
-    }
+    // 🔴 2026-10-11 不再把 longTermMemory 注入系统提示词 (用户实测: 接话降智、说雷霆语言)
+    //
+    //   原来这里会把【最近 5 条长期记忆全文】拼进提示词, 每条可能上千字 → 最多上万字。
+    //   问题不在于"多", 而在于【方向冲突】: 这些记忆讲的都是用户和角色的生活往事,
+    //   跟正在看的剧毫无关系; 而看片时每秒还有一帧画面要处理。
+    //   模型一边要跟着剧情, 一边被生活记忆的腔调往回拽 —— 用户看到的就是"接话蠢、雷霆语言"。
+    //
+    //   用户的对照组: 早先的独立测试页【没有注入记忆】时, 聊剧情明显更好。
+    //   同一个模型、同一套画面, 唯一差别就是少喂了这些 → 这是最硬的证据。
+    //
+    //   所以影院只保留人设(语气来源), 不再喂记忆。
+    //   ⚠️ 注意: 这只影响【看剧时的系统提示词】; 退出时的「观影记忆精炼」是另一条
+    //      独立指令, 剧情内容自己带过去, 不依赖这里。删掉不会丢观影记忆。
+    //   ⚠️ AI 侧气泡里仍然会显示角色头像(getAvatarUrl 读的是 chat.settings.aiAvatar,
+    //      跟这里无关)。
 
     var out = [];
-
     out.push('# 你是谁');
     out.push('');
     out.push('你就是 330 里的「' + charName + '」。');
@@ -253,15 +259,6 @@
       out.push(userPersona);
       out.push('');
     }
-    if (memoryText) {
-      out.push('# 你和用户之间已经确立的记忆');
-      out.push('');
-      out.push('这些是你和用户之间真实发生过的事, 必须当作事实:');
-      out.push('');
-      out.push(memoryText);
-      out.push('');
-    }
-
     out.push('# 你现在的状态');
     out.push('');
     out.push('你正在 Cinema Room 里和用户一起看视频。');
