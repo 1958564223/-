@@ -81,6 +81,9 @@ class FakeAudioContext {
     this.convolvers = [];
     this.gains = [];
     this.sources = [];
+    this.analysers = [];
+    // 模拟"音频图是活的"。测试里把它设成 0 就模拟设备上实测无输出。
+    this.outPeak = 0.7;
     this.decodeShouldFail = false;
     this.decoded = null;         // 未指定则生成一个 1 秒单声道缓冲
   }
@@ -108,6 +111,24 @@ class FakeAudioContext {
       disconnect() { this.disconnected = true; }
     };
     this.convolvers.push(n);
+    return n;
+  }
+  createAnalyser() {
+    const ctx = this;
+    const n = {
+      kind: 'analyser',
+      fftSize: 2048,
+      connectedTo: [],
+      connect(x) { this.connectedTo.push(x); },
+      disconnect() { this.disconnected = true; },
+      // 假实现不做真实 DSP, 直接回一个常量峰值。测试把 ctx.outPeak 设成 0
+      // 就等于模拟"这台设备上实测音频图没有输出"。
+      getFloatTimeDomainData(arr) {
+        const v = ctx.outPeak == null ? 0.7 : ctx.outPeak;
+        for (let i = 0; i < arr.length; i++) arr[i] = v;
+      }
+    };
+    this.analysers.push(n);
     return n;
   }
   createBufferSource() {
@@ -1282,8 +1303,118 @@ async function testDynamicPlayback() {
   check('J16 stop 后不再切位(定时器已清)', dctx.convolvers[0].buffer, snap);
 }
 
-(async function main() {
-  console.log('');
+// ============================================================
+// K. 静音自检兜底 (2026-10-13)
+// ------------------------------------------------------------
+// 背景: iPhone 上"开了空间音频就彻底没声音, 关掉就好", 而 <audio> 同时正常。
+// 前两轮排查(梳状调参 / 输出路由)都没命中, 所以这次不猜了 —— 引擎在音频图上
+// 挂 AnalyserNode 实测输出, 与"同一时刻的输入"对照, 判定图是不是死的, 并自动
+// 回退 <audio>。下面这些断言守的就是这条兜底。
+// ============================================================
+/** 有真实内容的 2 秒单声道测试音频 */
+function makeLoudBuffer(ctx) {
+  return buildTestBuffer((d, sr) => { tone(d, 0, 2, sr); }, 2, ctx.sampleRate);
+}
+
+async function testSilentWatchdog() {
+  // K1 正常出声: 图是活的, 绝不能误判, 绝不能回退
+  {
+    const a = loadApp({ binauralEnabled: true });
+    a.setBin(readBin());
+    const actx = a.sandbox.TtsSpatialAudio.getContext();
+    actx.decoded = makeLoudBuffer(actx);
+    let fellBack = null;
+    await a.sandbox.TtsSpatialAudio.play({
+      blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25,
+      onsilent: (r) => { fellBack = r; }
+    });
+    actx.currentTime = 0.5;
+    await tick(600);
+    check('K1 图是活的: 不回退', fellBack, null);
+    check('K1b 仍在播放', a.sandbox.TtsSpatialAudio.isPlaying(), true);
+    const ev = a.sandbox.TtsSpatialAudio.getDiagnostics().map(d => d.event);
+    checkTrue('K1c 记录了 play_start 现场', ev.includes('play_start'), JSON.stringify(ev));
+    checkTrue('K1d 没有 output_silent', !ev.includes('output_silent'), JSON.stringify(ev));
+  }
+
+  // K2 图是死的(实测输出为零)而输入有声 -> 必须判定并交回上层
+  {
+    const b = loadApp({ binauralEnabled: true });
+    b.setBin(readBin());
+    const bctx = b.sandbox.TtsSpatialAudio.getContext();
+    bctx.decoded = makeLoudBuffer(bctx);
+    bctx.outPeak = 0;                       // 模拟"这台设备上实测没有输出"
+    let fellBack = null;
+    await b.sandbox.TtsSpatialAudio.play({
+      blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25,
+      onsilent: (r) => { fellBack = r; }
+    });
+    bctx.currentTime = 0.5;
+    await tick(600);
+    check('K2 输出为零而输入有声: 交回上层', fellBack, 'output_silent');
+    check('K2b 已经停掉空间播放', b.sandbox.TtsSpatialAudio.isPlaying(), false);
+    const ev = b.sandbox.TtsSpatialAudio.getDiagnostics().map(d => d.event);
+    checkTrue('K2c 记了 output_silent', ev.includes('output_silent'), JSON.stringify(ev));
+    const last = b.sandbox.TtsSpatialAudio.getDiagnostics().slice(-1)[0];
+    checkTrue('K2d 现场里带了 ctxState / sr / 实测峰值',
+      /ctxState=/.test(last.detail) && /outPeak=/.test(last.detail) && /inPeak=/.test(last.detail),
+      last.detail);
+  }
+
+  // K3 ⚠️ 关键的反向断言: 语音里的句读停顿绝不能被当成"图死了"。
+  //    源在 0.8s 之后整段静音, 但此刻输出是有声(健康) —— 如果只看输出不看
+  //    "同一时刻输入", 就会在这里误判并把正常的空间播放掐掉。
+  {
+    const c = loadApp({ binauralEnabled: true });
+    c.setBin(readBin());
+    const cctx = c.sandbox.TtsSpatialAudio.getContext();
+    cctx.decoded = buildTestBuffer((d, sr) => tone(d, 0, 0.8, sr), 2, cctx.sampleRate);
+    let fellBack = null;
+    await c.sandbox.TtsSpatialAudio.play({
+      blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25,
+      onsilent: (r) => { fellBack = r; }
+    });
+    cctx.currentTime = 1.2;                 // 落在静音段里
+    await tick(600);
+    check('K3 源处于静音段时不误判', fellBack, null);
+    check('K3b 播放没被打断', c.sandbox.TtsSpatialAudio.isPlaying(), true);
+  }
+
+  // K4 旁听节点不能接 destination, 否则一路音频变两路
+  {
+    const d = loadApp({ binauralEnabled: true });
+    d.setBin(readBin());
+    const dctx = d.sandbox.TtsSpatialAudio.getContext();
+    dctx.decoded = makeLoudBuffer(dctx);
+    await d.sandbox.TtsSpatialAudio.play({
+      blob: new Blob([new Uint8Array(16)]), azimuthDeg: 90, distanceM: 0.25
+    });
+    check('K4 建了一个 AnalyserNode 旁听', dctx.analysers.length, 1);
+    check('K4b Analyser 没有任何下游(不重复出声)', dctx.analysers[0].connectedTo.length, 0);
+    const convOut = dctx.convolvers[0].connectedTo;
+    checkTrue('K4c Convolver 仍直连 destination',
+      convOut.indexOf(dctx.destination) >= 0, String(convOut.length));
+    check('K4d Convolver 第一个下游仍是 destination', convOut[0], dctx.destination);
+  }
+
+  // K5 端到端: 设备实测无输出时, 聊天语音条必须真的落到 <audio> 并出声
+  {
+    const e = loadApp({ binauralEnabled: true });
+    e.setBin(readBin());
+    e.sandbox.TtsSpatialAudio.prepare();
+    const ectx = e.sandbox.TtsSpatialAudio.getContext();
+    ectx.decoded = makeLoudBuffer(ectx);
+    ectx.outPeak = 0;
+    const bk = makeBody('你好呀', 'zh_voice_test');
+    await e.sandbox.playTtsAudio(bk.el);
+    ectx.currentTime = 0.5;
+    await tick(700);
+    check('K5 端到端: 实测无输出 -> 回退 <audio>', e.audioElements['tts-audio-player'].playCount, 1);
+    checkTrue('K5b 空间播放已彻底停掉', !e.sandbox.TtsSpatialAudio.isPlaying());
+  }
+}
+
+(async function main() {  console.log('');
   console.log('========================================');
   console.log(' 双耳空间音频 —— 测试结果');
   console.log('========================================');
@@ -1299,7 +1430,8 @@ async function testDynamicPlayback() {
     ['H 设置项往返', testSettingsRoundTrip],
     ['I 轨迹计算', testTrajectoryMath],
     ['V 出声时间线', testVoicedTimeline],
-    ['J 动态播放', testDynamicPlayback]
+    ['J 动态播放', testDynamicPlayback],
+    ['K 静音自检兜底', testSilentWatchdog]
   ];
 
   for (const [name, fn] of suites) {

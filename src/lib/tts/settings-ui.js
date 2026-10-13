@@ -271,10 +271,46 @@
         出声期间只有一条卷积链，音质与静态完全一致，不会有交叉淡化的杂音。<br>
         停顿太少（语速很快、一句到底）时轨迹不会动，会保持起始位置。<br>
         需要戴耳机才有空间感；外放时双耳差异会互相抵消。<br>
+        若某台设备上实测到空间链路没有输出，会<b>自动改用普通播放</b>，不会出现无声。<br>
         关闭开关即刻恢复原始播放效果。
+      </p>
+      <div class="settings-item" id="tts-binaural-diag-row" style="display:none;">
+        <label>链路自检</label>
+        <div class="settings-right">
+          <span id="tts-binaural-diag" style="color:#a08050;font-size:11px;text-align:right;">尚无记录</span>
+        </div>
+      </div>
+      <p class="settings-description" style="padding:0 4px 12px;color:#666;font-size:11px;line-height:1.5;">
+        下面是引擎每次播放时实测到的数值。出现“实测无输出→已回退普通播放”时，
+        把这里的内容截图反馈即可定位，无需开发者工具。
       </p>
       ${credit}
     `;
+
+    // 自检读数: 每 2 秒刷一次。只在设置页开着的时候跑, 不常驻。
+    (function startDiagTicker() {
+      var row = document.getElementById('tts-binaural-diag-row');
+      var box = document.getElementById('tts-binaural-diag');
+      if (!row || !box) return;
+      var prevTimer = window.__ttsBinauralDiagTimer;
+      if (prevTimer) clearInterval(prevTimer);
+      function paint() {
+        var api = window.TtsSpatialAudio;
+        if (!api || typeof api.getDiagnostics !== 'function') return;
+        var list = api.getDiagnostics();
+        if (!list || !list.length) { box.textContent = '尚无记录'; return; }
+        row.style.display = '';
+        var tail = list.slice(-4).map(function (d) {
+          var time = new Date(d.t);
+          var hh = time.getHours(), mm = time.getMinutes(), ss = time.getSeconds();
+          var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+          return pad(hh) + ':' + pad(mm) + ':' + pad(ss) + ' ' + d.event;
+        }).join('<br>');
+        box.innerHTML = tail;
+      }
+      paint();
+      window.__ttsBinauralDiagTimer = setInterval(paint, 2000);
+    })();
 
     var toggle = document.getElementById('tts-binaural-switch');
     var details = document.getElementById('tts-binaural-details');

@@ -800,10 +800,15 @@
   /**
    * 空间音频播放。resolve 语义与 <audio> 分支一致 —— "已经开始放" 就 resolve,
    * 播完走 onended, 这样上层的 spinner/按钮/缓存写入时序完全不变。
+   *
+   * onSilentFallback (可选): 引擎在音频图上量到"输入有声而输出为零"时回调。
+   * 这不是"猜测设备不支持", 是实测。收到就必须落回 <audio> —— 项目硬约束是
+   * 绝不能无声, 宁可这一条没有空间感。
    */
-  function playAudioSpatially(audioSrc, bodyElement, messageKey, onEndedCallback, sourceBlob) {
+  function playAudioSpatially(audioSrc, bodyElement, messageKey, onEndedCallback, sourceBlob, onSilentFallback) {
     var button = bodyElement.querySelector('.voice-play-btn');
     var settings = window.TtsSpatialAudio.getSettings();
+    var fellBack = false;
 
     return sourceToBlob(sourceBlob || audioSrc)
       .then(function (blob) {
@@ -817,6 +822,16 @@
           onended: function () {
             if (button) button.textContent = '▶';
             if (typeof onEndedCallback === 'function') onEndedCallback();
+          },
+          onsilent: function (reason) {
+            // 只落回一次, 免得和下面 catch 里的回退叠在一起放两遍
+            if (fellBack || typeof onSilentFallback !== 'function') return;
+            fellBack = true;
+            if (window.TtsSpatialAudio && typeof window.TtsSpatialAudio._setLastError === 'function') {
+              window.TtsSpatialAudio._setLastError('spatial_' + reason);
+            }
+            console.warn('[聊天TTS] 空间音频实测无输出, 已回退原播放器:', reason);
+            onSilentFallback();
           }
         });
       })
@@ -1023,7 +1038,13 @@
    */
   function playAudioFromData(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback, sourceBlob) {
     if (spatialAvailable()) {
-      return playAudioSpatially(audioSrc, bodyElement, messageKey, onEndedCallback, sourceBlob)
+      // 两条回退路径共用同一个动作: 彻底拆掉空间播放, 再走 <audio>。
+      // (a) play() 直接抛错  (b) 引擎实测到音频图是死的, 主动交回来
+      var toPlainAudio = function () {
+        stopSpatialTts();
+        return playAudioViaElement(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback);
+      };
+      return playAudioSpatially(audioSrc, bodyElement, messageKey, onEndedCallback, sourceBlob, toPlainAudio)
         .catch(function (error) {
           console.warn('[聊天TTS] 空间音频不可用, 已回退原播放器:', error);
           if (typeof window.TtsSpatialAudio?._setLastError === 'function') {
@@ -1031,8 +1052,7 @@
           }
           // 关键: 先把可能已经半启动的空间播放彻底拆干净, 再走 <audio>,
           // 否则会出现两段音频同时响, 或空间音频吞掉却不出声。
-          stopSpatialTts();
-          return playAudioViaElement(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback);
+          return toPlainAudio();
         });
     }
     return playAudioViaElement(audioSrc, audioType, text, voiceId, bodyElement, messageKey, onEndedCallback);

@@ -269,6 +269,7 @@
     active = null;
     teardownSource(st);
     if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+    if (st.watchdog) { clearTimeout(st.watchdog); st.watchdog = null; }
     // chain 里是本模块自己创建的节点 (动态路径有 conv+gain 共 4 个),
     // 只 disconnect 自己的, 绝不碰借来的 ctx 上的其他节点。
     for (var i = 0; i < (st.chain || []).length; i++) {
@@ -287,6 +288,124 @@
       try { st.source.disconnect(); } catch (e) { /* ignore */ }
       st.source = null;
     }
+  }
+
+  // ============================================================
+  // 输出监听 + 静音兜底 (2026-10-13)
+  // ------------------------------------------------------------
+  // 为什么需要这一段: iPhone 上出现过"开了空间音频就彻底没声音, 关掉就好"的
+  // 故障, 而同一时刻 <audio> 播放完全正常。前两轮排查(梳状调参 / 输出路由)
+  // 都没命中, 说明光靠静态推理排不掉这种问题 —— 与其继续猜, 不如让代码自己量。
+  //
+  // 做法: 在卷积器后面挂一个 AnalyserNode 量【实际输出】, 同时按播放位置取
+  // 【同一时刻的输入采样】。当"输入此刻明明有声, 而输出量出来几乎是零"时,
+  // 就说明音频图是死的 —— 这不是判断, 是测量。
+  //
+  // "同一时刻输入"这个对照是关键: 只看输出的话, 语音里的句读停顿会被误判成
+  // 故障。所以必须先确认那个位置上的输入采样本身确实响。
+  //
+  // 判定成立就【自动回退 <audio>】。项目的硬约束是"绝不能无声" —— 宁可这一条
+  // 没有空间感, 也不能让用户什么都听不到。
+  // ============================================================
+  var DIAG_MAX = 30;
+  var WATCHDOG_MS = 120;
+  var SILENT_HITS_TO_GIVE_UP = 2;
+  var diagnostics = [];
+
+  function diag(event, detail) {
+    diagnostics.push({
+      t: Date.now(),
+      event: event,
+      detail: detail == null ? '' : String(detail)
+    });
+    if (diagnostics.length > DIAG_MAX) diagnostics.shift();
+    try {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('[双耳空间音频]', event, detail == null ? '' : detail);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function getDiagnostics() {
+    return diagnostics.slice();
+  }
+
+  function absAt(x, i) {
+    var v = x[i];
+    return v < 0 ? -v : v;
+  }
+
+  function peakOf(audioBuffer) {
+    var x = audioBuffer.getChannelData(0);
+    var p = 0;
+    for (var i = 0; i < x.length; i++) {
+      var a = absAt(x, i);
+      if (a > p) p = a;
+    }
+    return p;
+  }
+
+  /** AnalyserNode 只用来"旁听", 不往 destination 接, 所以不会改变输出电平。 */
+  function makeOutputMonitor(ctx) {
+    var an = ctx.createAnalyser();
+    an.fftSize = 2048;
+    var buf = new Float32Array(an.fftSize);
+    return {
+      node: an,
+      peak: function () {
+        try { an.getFloatTimeDomainData(buf); } catch (e) { return 0; }
+        var p = 0;
+        for (var i = 0; i < buf.length; i++) {
+          var a = buf[i] < 0 ? -buf[i] : buf[i];
+          if (a > p) p = a;
+        }
+        return p;
+      }
+    };
+  }
+
+  /**
+   * 静音看门狗。命中即停掉空间播放并回调 onSilentFallback, 由上层落回 <audio>。
+   */
+  function startWatchdog(st, onSilentFallback) {
+    function tick() {
+      st.watchdog = setTimeout(tick, WATCHDOG_MS);
+      if (!st.playing || st.finished || st.silent || !st.monitor) return;
+      // 源本身就没声音(全零)时无可验证, 不判故障
+      if (st.inPeak < 1e-6) return;
+
+      var pos = st.offset + (st.ctx.currentTime - st.startedAt);
+      var x = st.buffer.getChannelData(0);
+      var sr = st.buffer.sampleRate || st.ctx.sampleRate;
+      var i = Math.floor(pos * sr);
+      if (i < 0 || i >= x.length) return;
+
+      // 同一时刻输入本来就是静音 -> 那是语音里的句读停顿, 不是故障
+      var xi = absAt(x, i);
+      if (xi < st.inPeak * 0.01) { st.silentHits = 0; return; }
+
+      var out = st.monitor.peak();
+      var floor = Math.max(1e-5, st.inPeak * 0.02);   // 比输入低 34dB 视为死了
+      if (out >= floor) { st.silentHits = 0; return; }
+
+      st.silentHits++;
+      if (st.silentHits < SILENT_HITS_TO_GIVE_UP) return;
+
+      st.silent = true;
+      diag('output_silent',
+        'pos=' + pos.toFixed(2) + 's'
+        + ' inSample=' + xi.toFixed(4)
+        + ' outPeak=' + out.toFixed(6)
+        + ' inPeak=' + st.inPeak.toFixed(4)
+        + ' ctxState=' + st.ctx.state
+        + ' sr=' + st.ctx.sampleRate
+        + ' traj=' + (st.trajectory || 'static'));
+      stop();
+      if (onSilentFallback) {
+        try { onSilentFallback('output_silent'); } catch (e) { /* ignore */ }
+      }
+    }
+    st.watchdog = setTimeout(tick, WATCHDOG_MS);
   }
 
   // ============================================================
@@ -328,6 +447,30 @@
     st.convolver = conv;
     st.inputs = [conv];
     st.chain = [conv];
+    attachMonitor(st, ir);
+  }
+
+  /** 把旁听用的 AnalyserNode 挂在卷积器输出上, 顺带记一次 IR 的实测幅度。 */
+  function attachMonitor(st, ir) {
+    if (!st.ctx || typeof st.ctx.createAnalyser !== 'function') return;
+    try {
+      var m = makeOutputMonitor(st.ctx);
+      st.monitor = m;
+      st.chain.push(m.node);
+      st.convolver.connect(m.node);      // 旁听, 不接 destination
+
+      // IR 峰值: 真机上如果它是 0, 说明取到的根本不是有效的 HRIR
+      st.irPeak = 0;
+      for (var c = 0; c < ir.numberOfChannels; c++) {
+        var d = ir.getChannelData(c);
+        for (var i = 0; i < d.length; i++) {
+          var a = d[i] < 0 ? -d[i] : d[i];
+          if (a > st.irPeak) st.irPeak = a;
+        }
+      }
+    } catch (e) {
+      st.monitor = null;
+    }
   }
 
   /**
@@ -359,6 +502,7 @@
     st.pausePlan = plan;
     st.pauseIndex = 0;
     st.pauseCount = pauses.length;
+    attachMonitor(st, firstIr);
 
     // 一个合法停顿都没有 -> 整条保持起始方位, 行为等同静态。记一笔方便排查。
     if (plan.length === 0) {
@@ -447,6 +591,14 @@
       timer: null,
       onStep: null,
       convolver: null,
+      monitor: null,        // AnalyserNode 旁听, 量实际输出
+      inPeak: 0,            // 解码后单声道的峰值, 用来判断"输出是不是死得太离谱"
+      irPeak: 0,
+      silentHits: 0,
+      silent: false,
+      watchdog: null,
+      onSilentFallback: opts.onsilent || null,
+      trajectory: trajectory,
       pausePlan: null,   // 停顿切位表: [{t, az, dist}]
       pauseIndex: 0,
       pauseCount: 0,
@@ -465,6 +617,17 @@
       setupStatic(st, ir);
     }
 
+    // 图建完再量: 输入峰值 + IR 峰值都拿到了, 记一条可供真机排查的现场
+    st.inPeak = peakOf(mono);
+    diag('play_start',
+      'traj=' + st.trajectory
+      + ' ctxState=' + ctx.state
+      + ' sr=' + ctx.sampleRate
+      + ' decodeCh=' + decoded.numberOfChannels
+      + ' decodeDur=' + decoded.duration.toFixed(2) + 's'
+      + ' inPeak=' + st.inPeak.toFixed(4)
+      + ' irPeak=' + (st.irPeak || 0).toFixed(4));
+
     function startAt(offset) {
       var src = ctx.createBufferSource();
       src.buffer = st.buffer;
@@ -478,6 +641,7 @@
         st.finished = true;
         if (active === st) active = null;
         if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+        if (st.watchdog) { clearTimeout(st.watchdog); st.watchdog = null; }
         // 等卷积尾巴抽完再摘节点, 否则末尾几个采样会被切断
         setTimeout(function () {
           for (var c = 0; c < st.chain.length; c++) {
@@ -500,6 +664,8 @@
       st.playing = true;
       // 关键帧调度随播放一起启动; 暂停时 tick 会因 !st.playing 自然停摆
       if (typeof st.onStep === 'function') st.onStep();
+      // 静音看门狗: 万一这台设备上音频图是死的, 立刻交回上层落回 <audio>
+      startWatchdog(st, st.onSilentFallback);
     }
 
     startAt(0);
@@ -564,6 +730,8 @@
     stop: stop,
     isPlaying: isPlaying,
     isActive: isActive,
+    // 真机排查用: 最近若干条现场记录 (播放参数 / 实测输出 / 判定结果)
+    getDiagnostics: getDiagnostics,
     getLastError: function () { return lastError; },
     // 供测试
     _setLastError: function (v) { lastError = v; },
