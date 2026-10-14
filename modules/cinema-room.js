@@ -789,9 +789,35 @@
 
     els.fileInput.addEventListener('change', function (e) {
       const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      // ⚠️⚠️ iOS: value 置空会【立刻作废】刚取出的 File (2026-10-14 补, 抄上面人物图那套)
+      //
+      //   坑: 下面 addLocalFilm() 第一件事就是 await S.checkSoftWarn() (要开 db),
+      //        清完 value 等 await 回来, 手里那个 File 已经是死对象了,
+      //        写进 IndexedDB 会抛 InvalidStateError 被 catch 吞掉 —— 用户看着就是
+      //        "点了添加, 什么都没发生"。
+      //
+      //   解法: 清 value 之前先把字节【拷出来】做成独立的 Blob, 之后 File 死了也有数据。
+      //        人物图那条 (:765 起) 早就是这么修的, 影片这边一直漏着。
+      var safeBlob = null;
+      try { safeBlob = file.slice(0, file.size, file.type || 'video/mp4'); } catch (x) { safeBlob = file; }
+      var safeName = file.name || 'video.mp4';
+      var safeType = safeBlob.type || 'video/mp4';
+
       // 重置 value, 否则连续选同一个文件不会触发 change
-      e.target.value = '';
-      if (file) addLocalFilm(file);
+      try { e.target.value = ''; } catch (x) { /* 某些环境不允许写 value */ }
+
+      // 伪造成一个 File, 让下游 addLocalFilm 的 file.name / file.size 照常工作
+      var payload = safeBlob;
+      try {
+        payload = new File([safeBlob], safeName, { type: safeType });
+      } catch (x) {
+        payload = safeBlob;
+        payload.__name = safeName;   // 没有 File 构造器时的兜底
+      }
+
+      addLocalFilm(payload);
     });
 
     els.list.addEventListener('click', function (e) {
@@ -996,7 +1022,7 @@
         return;
       }
     } else {
-      setVideoSrc(url);
+      applyVideoSrc(url);
     }
     els.idle.hidden = true;
     // 片名: 用户 2026-10-04 反馈"上方多了一个文件名, 其实可以不要显示" → 永久隐藏。
@@ -1340,7 +1366,18 @@
   // --------------------------------------------------------------------------
   let bridgeCorsOk = true;
 
-  function setVideoSrc(url) {
+  // ⚠️⚠️ 名字必须是 applyVideoSrc, 不能叫 setVideoSrc (2026-10-14 修复)
+  //
+  //   本函数 2026-10-09 (9277621) 刚加进来时叫 setVideoSrc(url), 而文件上面
+  //   早就有一个 setVideoSrc(url, film, resumeTime) —— 同名同作用域, 后者覆盖前者,
+  //   于是上面那个「播本地影片的完整装配」整体变成【死代码】:
+  //     play() 从没被调用 / 待机遮罩不撤 / currentFilmId 不赋值 /
+  //     进度存不下来 / 续播不生效 / blob 不回收。
+  //   表现 = 本地影片「一个都播不了, 连播放都没起」。
+  //   短剧没事, 因为 playSeriesEpisode 把装配代码内联复制了一份, 只调本函数。
+  //
+  //   教训: 加新 helper 前先 grep 同名函数, 新加的那个必须让名字。
+  function applyVideoSrc(url) {
     var v = els.video;
     var remote = /^https?:\/\//i.test(String(url || ''));
     if (!remote || !bridgeCorsOk) {
@@ -1545,7 +1582,7 @@
     pendingResumeTime = 0;
     lastSavedAt = 0;
 
-    setVideoSrc(url);
+    applyVideoSrc(url);
     els.idle.hidden = true;
     els.stopBtn.hidden = false;
     syncTopbarHeight();

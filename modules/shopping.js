@@ -1298,57 +1298,15 @@ ${recentHistoryContext}
   window.loadShoppingCart = loadShoppingCart;
   window.handleGenerateShoppingItems = handleGenerateShoppingItems;
 
-  // ========== 从 script.js 迁移：openVariationSelector, handlePaymentButtonClick ==========
-  async function openVariationSelector(productId) {
-    const product = await db.shoppingProducts.get(productId);
-    if (!product || !product.variations || product.variations.length === 0) return;
-    const modal = document.getElementById('variation-selection-modal');
-    document.getElementById('variation-product-image').src = product.imageUrl;
-    document.getElementById('variation-product-name').textContent = product.name;
-    const optionsContainer = document.getElementById('variation-options-container');
-    optionsContainer.innerHTML = '';
-    product.variations.forEach((variation, index) => {
-      const radio = document.createElement('input');
-      radio.type = 'radio'; radio.name = 'variation-select'; radio.id = `var-${productId}-${index}`; radio.value = index; radio.style.display = 'none';
-      if (index === 0) radio.checked = true;
-      const label = document.createElement('label');
-      label.htmlFor = `var-${productId}-${index}`;
-      label.textContent = variation.name;
-      label.style.cssText = 'padding: 6px 12px; border: 1px solid #ccc; border-radius: 15px; cursor: pointer; transition: all 0.2s;';
-      optionsContainer.appendChild(radio);
-      optionsContainer.appendChild(label);
-    });
-    const updateSelectionUI = () => {
-      const selectedRadio = optionsContainer.querySelector('input[name="variation-select"]:checked');
-      optionsContainer.querySelectorAll('label').forEach(lbl => { lbl.style.borderColor = '#ccc'; lbl.style.color = '#333'; lbl.style.backgroundColor = 'white'; });
-      if (selectedRadio) {
-        const selectedLabel = optionsContainer.querySelector(`label[for="${selectedRadio.id}"]`);
-        selectedLabel.style.borderColor = 'var(--accent-color)'; selectedLabel.style.color = 'var(--accent-color)'; selectedLabel.style.backgroundColor = '#e7f3ff';
-        const selectedVariation = product.variations[parseInt(selectedRadio.value)];
-        document.getElementById('variation-selected-price').textContent = `¥${selectedVariation.price.toFixed(2)}`;
-        if (selectedVariation.imageUrl) document.getElementById('variation-product-image').src = selectedVariation.imageUrl;
-        else document.getElementById('variation-product-image').src = product.imageUrl;
-      }
-    };
-    optionsContainer.addEventListener('change', updateSelectionUI);
-    updateSelectionUI();
-    document.getElementById('variation-quantity-display').textContent = '1';
-    const confirmBtn = document.getElementById('confirm-variation-selection-btn');
-    const newConfirmBtn = confirmBtn.cloneNode(true);
-    confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
-    newConfirmBtn.addEventListener('click', async () => {
-      const selectedRadio = optionsContainer.querySelector('input[name="variation-select"]:checked');
-      const quantity = parseInt(document.getElementById('variation-quantity-display').textContent);
-      if (selectedRadio) {
-        const selectedVariation = product.variations[parseInt(selectedRadio.value)];
-        await addToCart(productId, quantity, selectedVariation);
-        modal.classList.remove('visible');
-        await showCustomAlert('成功', '已成功加入购物车！');
-      }
-    });
-    modal.classList.add('visible');
-  }
-
+  // ⚠️ 2026-10-14 删除同作用域重名的 openVariationSelector 副本。
+  //   本文件里曾存在两份完全同名的 function openVariationSelector —— 一份在 :780
+  //   (79 行, 带大括号规范), 一份在下面 (49 行, 多条语句压成一行)。
+  //   后者把前者整个覆盖成了死代码, 谁改前者都不生效且不报错 —— 与 Cinema Room
+  //   那次本地影片播不了的根因是同一个坑 (同名函数声明, 后者赢)。
+  //   删前已逐条比对: 抹掉大括号后两份的操作序列【逐字相同】, 行为无差别,
+  //   本文件无 IIFE 包裹 (顶层声明), 删一份调用方无感。
+  //   保留 :780 那份 (较新、格式规范), 下方 window 导出自动绑到它。
+  // ========== 从 script.js 迁移：handlePaymentButtonClick ==========
   async function handlePaymentButtonClick() {
     const amountInput = document.getElementById('transfer-amount-input');
     const amount = parseFloat(amountInput.value);

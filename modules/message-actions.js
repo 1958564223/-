@@ -599,8 +599,31 @@
 
     const timestampToEdit = activeMessageTimestamp;
     const chat = state.chats[state.activeChatId];
-    const message = chat.history.find(m => m.timestamp === timestampToEdit);
-    if (!message) return;
+
+    // ⚠️⚠️ 2026-10-14 修复: 原来这里是
+    //     const message = chat.history.find(m => m.timestamp === timestampToEdit);
+    //     if (!message) return;
+    //   两个问题叠在一起, 表现就是「长按气泡 → 点编辑 → 什么都没发生」:
+    //
+    //   ① chat.history 已经不是消息真源了。
+    //      message-store.js 把聊天拆表了 (db.chats 只存元数据, 消息在 db.messages),
+    //      :84 stripChatHistory() 里直接 delete cleanChat.history,
+    //      :214 注释也写明「仅当前/近期窗口缓存，不再代表完整历史」。
+    //      气泡渲染走的是 messageStore.loadRecentMessages(), 跟它不是一回事。
+    //
+    //   ② 就算找到了也是【静默 return】—— 不报错、不提示, 用户只看到"点了没反应"。
+    //
+    //   修法: 用项目自己的规范查找函数 findChatMessageByTimestamp()
+    //   (:27-53, Number 归一化 + chat.history → state.currentMessages →
+    //    messageStore 窗口 → messageStore.getMessageByTimestamp 四层兜底),
+    //   这正是「复制文本」一直在用的那条路。
+    //   另外兜底找不到时给出可见提示, 不再静默吞掉。
+    const message = await findChatMessageByTimestamp(chat, timestampToEdit);
+    if (!message) {
+      hideMessageActions();
+      await showCustomAlert('无法编辑', '找不到这条消息，可能已被删除或不在当前加载的范围内。');
+      return;
+    }
 
     hideMessageActions();
 

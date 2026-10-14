@@ -581,6 +581,11 @@
       && videoCallActiveTurn.phase !== 'failed';
   }
 
+  // ⚠️ 错误提示停留期 (毫秒) —— 必须在【使用它的 failVideoCallTurn 之前】声明。
+  //   const 有 TDZ: 声明前访问直接 ReferenceError。本文件下面 setVideoCallStatusText
+  //   的定义处也有同名注释, 改位置前先读那段。
+  const CALL_STATUS_ERROR_HOLD_MS = 4000;
+
   // 统一收口: TTS 队列空 / 错误 / 无 TTS / 异常兜底, 都走这里
   function finishVideoCallTurn(turn, reason = '') {
     if (!turn) return;
@@ -601,6 +606,8 @@
       processVideoCallRecording(pending);
     }
     startVideoCallAutoListening();
+    // 沉默主动接话: 一轮对话结束 = 又一次"活动", 重新计时
+    armVideoCallIdleNudge();
   }
 
   // 异常路径专用 finish — 跟 finishVideoCallTurn 区别只在于日志文案
@@ -613,7 +620,7 @@
     videoCallState.isAiSpeaking = false;
     videoCallState.isTtsPlaying = false;
     videoCallState.canUserSpeak = true;
-    setVideoCallStatusText('出错了：' + (reason || '未知错误'));
+    setVideoCallStatusText('出错了：' + (reason || '未知错误'), { holdMs: CALL_STATUS_ERROR_HOLD_MS });
     logCallTtsRecoveryDiag('video', reason || 'unknown');
     // v0.5.0 P27: 【重要】失败路径【不】消费 videoCallPendingRecording。
     //   原因: 消费会形成无限循环 ——
@@ -670,18 +677,217 @@
     volumeThreshold: 0.035
   };
 
-  function setVideoCallStatusText(text) {
-    const statusText = document.getElementById('video-call-status-text');
-    if (statusText) {
-      statusText.textContent = text || '';
+  // ==========================================================================
+  // 沉默主动接话 (idle nudge) —— 2026-10-14
+  //
+  // 【要解决的问题】
+  //   330 通话是「用户说话 → 录音 → ASR → LLM → TTS」的单向回合制。
+  //   用户一沉默, 系统只把状态文字改成「未检测到有效语音」就结束,
+  //   永远不会主动开口 —— 通话就这么干晾着, 很不像真实电话。
+  //
+  // 【设计照抄糯米机 SullyOS】
+  //   糯米机 apps/CallApp.tsx 的 idleNudge (:2786-2872):
+  //     const silenceMs = 50_000 + Math.random() * 30_000 + count * 40_000;
+  //   用一个自重排的 setTimeout 计时「安静了多久」, 超时就发一次普通 LLM 回合。
+  //
+  // 【跟糯米机的三处不同, 都是按用户要求改的】
+  //   ① 阈值 50~80s → 20~30s (用户原话: "50-80秒太久了, 谁搁那一分钟不说话还不挂啊")
+  //   ② 不做设置开关, 常开 (用户原话: "干脆开关就不要了")
+  //   ③ 视频 + 语音两条链路都接 (330 这两条是两份独立代码, 必须各接一份)
+  //
+  // 【为什么不能直接把 nudge 文本当 userInput 传进 triggerAiInCallAction】
+  //   userInput 会被 (a) 渲染成一颗假的用户气泡, (b) push 进 callHistory 当成
+  //   用户真的说过的话 —— 用户会看到一堆莫名其妙的文字, 而且之后每一轮 AI 都会
+  //   以为用户说过那句括号里的系统提示。
+  //   所以这里用 callIdleNudgeText + callIdleNudgeActive 标记「本轮是主动接话」:
+  //     - 跳过用户气泡渲染和 callHistory.push (两处 if 都加了 !callIdleNudgeActive)
+  //     - 只在拼 messagesForApi 时临时追加一条 user 消息, 不落 callHistory
+  //   → AI 能看见「该主动开口了」这个指令, 但通话记录里干干净净。
+  // ==========================================================================
+  const CALL_IDLE_NUDGE_CONFIG = {
+    minSilenceMs: 20000,   // 安静 20 秒起
+    jitterMs: 10000,      // 再随机 0~10 秒, 避免每次都在第 20 秒准时开口
+    maxCount: 2           // 一次通话最多主动 2 次
+  };
+
+  // 通话前聊天摘要等"开场白"之外的静默, 不该在用户还没开口时就抢话 ——
+  //   所以要求 callHistory 已经有内容 (糯米机同样要求 !bubbles.length 就 return)
+  const CALL_IDLE_NUDGE_PROMPT =
+    '（电话里安静了好一会儿，对方一直没说话。你不是客服，不用干等——' +
+    '像真实通话里那样自然地开口：可以随口说说你这边正在做的事、把刚才的话题往下接一点，' +
+    '或者问问ta是不是在忙。一两句就好，别重复上一句。）';
+
+  let videoCallIdleNudgeTimer = null;
+  let voiceCallIdleNudgeTimer = null;
+  let videoCallIdleNudgeCount = 0;
+  let voiceCallIdleNudgeCount = 0;
+  // 本轮是否为「沉默主动接话」。见上面【为什么不能直接把 nudge 文本当 userInput 传】
+  let callIdleNudgeActive = false;
+  let callIdleNudgeText = null;
+
+  function clearVideoCallIdleNudgeTimer() {
+    if (videoCallIdleNudgeTimer) {
+      clearTimeout(videoCallIdleNudgeTimer);
+      videoCallIdleNudgeTimer = null;
     }
   }
 
-  function setVoiceCallStatusText(text) {
-    const statusText = document.getElementById('voice-call-status-text');
-    if (statusText) {
-      statusText.textContent = text || '';
+  function clearVoiceCallIdleNudgeTimer() {
+    if (voiceCallIdleNudgeTimer) {
+      clearTimeout(voiceCallIdleNudgeTimer);
+      voiceCallIdleNudgeTimer = null;
     }
+  }
+
+  /**
+   * 排一次「安静满 N 秒就主动接话」的检查。
+   * 在【任何一次对话活动之后】重新调用 = 计时器测的就是「距上次活动多久了」。
+   */
+  function armVideoCallIdleNudge() {
+    clearVideoCallIdleNudgeTimer();
+    if (!videoCallState.isActive) return;
+    if (videoCallIdleNudgeCount >= CALL_IDLE_NUDGE_CONFIG.maxCount) return;
+    videoCallIdleNudgeTimer = setTimeout(function () {
+      videoCallIdleNudgeTimer = null;
+      fireVideoCallIdleNudge();
+    }, CALL_IDLE_NUDGE_CONFIG.minSilenceMs + Math.random() * CALL_IDLE_NUDGE_CONFIG.jitterMs);
+  }
+
+  function armVoiceCallIdleNudge() {
+    clearVoiceCallIdleNudgeTimer();
+    if (!voiceCallState.isActive) return;
+    if (voiceCallIdleNudgeCount >= CALL_IDLE_NUDGE_CONFIG.maxCount) return;
+    voiceCallIdleNudgeTimer = setTimeout(function () {
+      voiceCallIdleNudgeTimer = null;
+      fireVoiceCallIdleNudge();
+    }, CALL_IDLE_NUDGE_CONFIG.minSilenceMs + Math.random() * CALL_IDLE_NUDGE_CONFIG.jitterMs);
+  }
+
+  /**
+   * 这一轮 AI 回合是不是失败了(503 / 网络错 / 只吐指令没台词)。
+   *
+   * ⚠️ 不能靠 try/catch 判断 —— triggerAiInCallAction 自己带兜底 catch,
+   *    失败时它已经把错吃掉并 return null 了, 外面永远抓不到。
+   * ⚠️ 也【不能】靠返回值 —— 成功路径没有 return, 是 undefined;
+   *    失败路径 return null。undefined/null 区分太脆。
+   * ✅ 可靠依据: 失败路径必会往 callHistory 末尾 push 一条 assistant 的
+   *    `[ERROR: ...]`, 成功路径 push 的是真正的台词。
+   *    (见本文件 catch 里的 callHistory.push({role:'assistant', content:`[ERROR: ...]`}))
+   */
+  function didLastCallTurnFail(callHistory) {
+    if (!Array.isArray(callHistory) || callHistory.length === 0) return false;
+    const last = callHistory[callHistory.length - 1];
+    return !!(last && typeof last.content === 'string' && last.content.indexOf('[ERROR:') === 0);
+  }
+
+  async function fireVideoCallIdleNudge() {
+    if (!videoCallState.isActive) return;
+    if (videoCallIdleNudgeCount >= CALL_IDLE_NUDGE_CONFIG.maxCount) return;
+    // ⚠️ callHistory 为空【也要能触发】: 用户接通后一句话都没说就沉默了 20~30 秒,
+    //    真实电话里对面早该问一句"喂? 还在吗?"了。
+    //    (糯米机在这里要求 bubbles.length > 0, 但它另有 characterInitiative
+    //     控制开场谁先说; 330 的 initiator 恒为 'user' 且没有那个开关, 所以这里不照抄。)
+    if (isInVideoCallTurn() || videoCallState.isAiResponding || videoCallState.isAiSpeaking || videoCallState.isTtsPlaying) {
+      armVideoCallIdleNudge();
+      return;
+    }
+
+    videoCallIdleNudgeCount += 1;
+    console.log('[视频通话] 沉默主动接话 (' + videoCallIdleNudgeCount + '/' + CALL_IDLE_NUDGE_CONFIG.maxCount + ')');
+    callIdleNudgeActive = true;
+    callIdleNudgeText = CALL_IDLE_NUDGE_PROMPT;
+    try {
+      await triggerAiInCallAction(callIdleNudgeText);
+    } catch (e) {
+      console.warn('[视频通话] 沉默主动接话失败:', (e && e.message) || e);
+    } finally {
+      callIdleNudgeActive = false;
+      callIdleNudgeText = null;
+      // ⚠️⚠️ 失败【不计入配额】(2026-10-14 修): 之前是无条件 count += 1,
+      //    于是后端抽风 (503) 时两次沉默接话全打在失败请求上 → 配额瞬间烧光 →
+      //    armVideoCallIdleNudge 看到 count >= maxCount 就永远不再排期 →
+      //    【AI 这通电话从此永久闭嘴, 哪怕后端两秒后就恢复了】。
+      //    一次失败的用户体验, 不该让整个通话失去"对方主动开口"的能力。
+      if (didLastCallTurnFail(videoCallState.callHistory)) {
+        videoCallIdleNudgeCount = Math.max(0, videoCallIdleNudgeCount - 1);
+        console.warn('[视频通话] 沉默主动接话这一轮失败, 不计入配额 (退回第 ' + videoCallIdleNudgeCount + ' 次)');
+      }
+      armVideoCallIdleNudge();
+    }
+  }
+
+  async function fireVoiceCallIdleNudge() {
+    if (!voiceCallState.isActive) return;
+    if (voiceCallIdleNudgeCount >= CALL_IDLE_NUDGE_CONFIG.maxCount) return;
+    // ⚠️ callHistory 为空也要能触发, 同视频通话 (见 fireVideoCallIdleNudge 注释)
+    // 语音通话没有 videoCallActiveTurn 那套 turn 对象, 守卫就是 isAiResponding
+    if (voiceCallState.isAiResponding || voiceCallState.isAiSpeaking || voiceCallState.isTtsPlaying) {
+      armVoiceCallIdleNudge();
+      return;
+    }
+
+    voiceCallIdleNudgeCount += 1;
+    console.log('[语音通话] 沉默主动接话 (' + voiceCallIdleNudgeCount + '/' + CALL_IDLE_NUDGE_CONFIG.maxCount + ')');
+    callIdleNudgeActive = true;
+    callIdleNudgeText = CALL_IDLE_NUDGE_PROMPT;
+    try {
+      await triggerAiInVoiceCallAction(callIdleNudgeText);
+    } catch (e) {
+      console.warn('[语音通话] 沉默主动接话失败:', (e && e.message) || e);
+    } finally {
+      callIdleNudgeActive = false;
+      callIdleNudgeText = null;
+      // ⚠️ 失败不计入配额, 同 fireVideoCallIdleNudge
+      if (didLastCallTurnFail(voiceCallState.callHistory)) {
+        voiceCallIdleNudgeCount = Math.max(0, voiceCallIdleNudgeCount - 1);
+        console.warn('[语音通话] 沉默主动接话这一轮失败, 不计入配额 (退回第 ' + voiceCallIdleNudgeCount + ' 次)');
+      }
+      armVoiceCallIdleNudge();
+    }
+  }
+
+  // ⚠️⚠️ 2026-10-14 错误提示停留期
+//   背景: 错误气泡塞在 #video-call-main / #voice-call-main 里, 而那两个容器
+//   被 display:none !important 隐藏 → 用户根本看不到任何错误, 只感觉
+//   "AI 突然不说话了"。所以错误要显示到【可见的状态文字/胶囊】上。
+//
+//   但这里有个坑: setXxxCallStatusText 只是"写一下", 而失败恢复路径紧接着就会
+//   调 startXxxCallAutoListening(), 它第一件事就是写「我在听…」/「倾听中」——
+//   【同步】执行, 立刻把刚写好的错误提示覆盖掉。
+//   结果就是: 专门为"让故障一眼可见"加的那次写入, 被自己的恢复流程废掉了。
+//
+//   修法: 错误提示带 holdMs 写一次, 在停留期内屏蔽常规状态覆盖。
+//   ⚠️ 停留期只锁【状态文字】, 不锁麦克风 —— startXxxCallAutoListening 照常
+//      执行, 用户在这几秒里说话照样被录到, 流程完全不受影响。
+//   (常量 CALL_STATUS_ERROR_HOLD_MS 声明在上面 isInVideoCallTurn 之后, 别往下挪)
+let videoCallStatusHoldUntil = 0;
+let voiceCallStatusHoldUntil = 0;
+
+  function setVideoCallStatusText(text, options) {
+    const statusText = document.getElementById('video-call-status-text');
+    if (!statusText) return;
+    const opts = options || {};
+    if (opts.holdMs) {
+      videoCallStatusHoldUntil = Date.now() + opts.holdMs;
+      statusText.textContent = text || '';
+      return;
+    }
+    // 错误提示停留期内, 不让「我在听…」这类常规状态把它盖掉
+    if (Date.now() < videoCallStatusHoldUntil) return;
+    statusText.textContent = text || '';
+  }
+
+  function setVoiceCallStatusText(text, options) {
+    const statusText = document.getElementById('voice-call-status-text');
+    if (!statusText) return;
+    const opts = options || {};
+    if (opts.holdMs) {
+      voiceCallStatusHoldUntil = Date.now() + opts.holdMs;
+      statusText.textContent = text || '';
+      return;
+    }
+    if (Date.now() < voiceCallStatusHoldUntil) return;
+    statusText.textContent = text || '';
   }
 
   // v0.2.30.37: 语音通话光晕 — thinking/speaking 分开挂不同元素
@@ -1461,6 +1667,10 @@
     setVideoCallStatusText('');
     videoCallAutoListenEnabled = true;
     resetVideoCallAutoListenState();
+    // 沉默主动接话: 每次接通重新计数 + 重新计时 (maxCount 是「每次通话」不是「每天」)
+    videoCallIdleNudgeCount = 0;
+    armVideoCallIdleNudge();
+    videoCallStatusHoldUntil = 0;   // 清掉上一通电话残留的错误提示停留期
     showScreen('video-call-screen');
 
     // 应用视频通话优化设置
@@ -1648,6 +1858,18 @@
       const recognizedText = String(await window.transcribeAudioBlob(audioBlob)).trim();
       if (!recognizedText) {
         setVideoCallStatusText('未识别到有效语音');
+        // ⚠️⚠️ 修复「麦克风死了」: ASR 跑完但没识别出文字, 原来直接 return,
+        //    监听再也没人重启 —— 用户之后说话没人听得见, 一直卡到手动按录音键。
+        //    (catch 分支早就重启了, 只有这条成功-but-空的路径漏了)
+        //
+        // ⚠️ 必须先清 videoCallIsRecognizing 再重启: startVideoCallAutoListening
+        //    的入口守卫 (本文件 startVideoCallAutoListening 第一行) 里有这个标志,
+        //    还是 true 的话这里调了也直接 return —— 跟下面 catch 分支是同一个坑。
+        videoCallIsRecognizing = false;
+        if (videoCallState.isActive) {
+          console.warn('[视频通话] ASR 未识别到有效语音, 重新启动自动监听');
+          startVideoCallAutoListening();
+        }
         return;
       }
 
@@ -1722,17 +1944,30 @@
       if (!shouldProcessRecording || !videoCallState.isActive) {
         if (stopReason === 'no-speech' && videoCallState.isActive) {
           setVideoCallStatusText('未检测到有效语音');
+          // ⚠️⚠️ 修复「麦克风死了」: 沉默 8 秒后录音停了却没人重启监听,
+          //    用户之后再说话完全听不见 (只能按手动录音键)。
+          //
+          //    ⚠️ 这里【只】能对 no-speech 重启, 同一个分支还承载着别的 stopReason:
+          //      hangup     → 挂了再开麦 = 麦克风复活, 泄漏
+          //      ai-start   → AI 正在回合, 重启会跟它抢麦
+          //      interrupted→ 同上
+          //      start-error / manual → 启动失败或用户主动停, 都不该自动复活
+          startVideoCallAutoListening();
         }
         return;
       }
 
       if (recordedMs < VIDEO_CALL_AUTO_LISTEN_CONFIG.minRecordingMs) {
         setVideoCallStatusText('未识别到有效语音');
+        // 录音太短 (误触/敲桌子) —— 同样要重启, 否则也是死状态
+        startVideoCallAutoListening();
         return;
       }
 
       if (chunks.length === 0) {
         setVideoCallStatusText('未识别到有效语音');
+        // 没录到任何数据 —— 重启
+        startVideoCallAutoListening();
         return;
       }
 
@@ -2033,6 +2268,8 @@
 
     videoCallAutoListenEnabled = false;
     releaseVideoCallMicrophone();
+    // 沉默主动接话: 挂断了就彻底停掉, 不留孤儿定时器
+    clearVideoCallIdleNudgeTimer();
 
     // 停止摄像头
     if (typeof stopCamera === 'function') {
@@ -2313,6 +2550,11 @@ ${linkedContents}
     const timeContextBlock = timeContextText ? `\n# 当前时间\n${timeContextText}` : '';
 
     if (userInput && videoCallState.isUserParticipating) {
+      // ⚠️ callIdleNudgeActive: 本轮是「沉默主动接话」, 不是用户真的说话了。
+      //    所以【不渲染用户气泡、也不写进 callHistory】——
+      //    否则用户会看到一堆莫名其妙的括号文字, 而且之后每一轮 AI 都会
+      //    以为用户说过那句系统提示。指令改由下面 messagesForApi 临时追加。
+      if (!callIdleNudgeActive) {
       const userTimestamp = Date.now();
       const userBubble = document.createElement('div');
       userBubble.className = 'call-message-bubble user-speech';
@@ -2359,6 +2601,7 @@ ${linkedContents}
         content: userContent,
         timestamp: userTimestamp
       });
+      }   // ← 关闭 !callIdleNudgeActive
     }
 
 
@@ -2450,12 +2693,18 @@ ${linkedContents}
     }))
     ];
 
-    if (videoCallState.callHistory.length === 0) {
+    if (videoCallState.callHistory.length === 0 && !callIdleNudgeActive) {
       const firstLineTrigger = videoCallState.initiator === 'user' ? `*你按下了接听键...*` : `*对方按下了接听键...*`;
       messagesForApi.push({
         role: 'user',
         content: firstLineTrigger
       });
+    }
+
+    // 沉默主动接话: 只在这条请求里临时加一句, 【不写进 callHistory】。
+    // 这样 AI 知道「该主动开口了」, 而通话记录保持干净 (见 callIdleNudgeActive 注释)。
+    if (callIdleNudgeActive && callIdleNudgeText) {
+      messagesForApi.push({ role: 'user', content: callIdleNudgeText });
     }
 
     try {
@@ -2708,7 +2957,7 @@ ${linkedContents}
       // 上面这颗气泡是塞进 #video-call-main 的, 而那个容器被 `display:none !important` 隐藏
       // → 用户根本看不到任何错误, 只感觉"AI 突然不说话了"。
       // 这里同步把错误显示到【可见的】状态胶囊上, 让故障一眼可见。
-      setVideoCallStatusText('出错了：' + error.message);
+      setVideoCallStatusText('出错了：' + error.message, { holdMs: CALL_STATUS_ERROR_HOLD_MS });
       // v0.5.0 P26: turnId 守卫 — 异常路径也拒绝 stale 写入
       if (videoCallActiveTurn && videoCallActiveTurn.id === turn.id) {
         videoCallState.callHistory.push({
@@ -2751,7 +3000,7 @@ ${linkedContents}
         videoCallState.isTtsPlaying = false;
         videoCallState.canUserSpeak = true;
         const msg = (e && e.message) ? e.message : String(e);
-        setVideoCallStatusText('出错了：' + msg);
+        setVideoCallStatusText('出错了：' + msg, { holdMs: CALL_STATUS_ERROR_HOLD_MS });
       }
       return null;
     }
@@ -2937,7 +3186,18 @@ ${linkedContents}
   }
 
   async function processVoiceCallRecording(audioBlob) {
-    if (!voiceCallState.isActive || !audioBlob || audioBlob.size === 0) return;
+    if (!voiceCallState.isActive || !audioBlob || audioBlob.size === 0) {
+      // ⚠️⚠️ 修复「麦克风死了」: 空 blob 直接 return, 监听再也不重启。
+      //    语音侧【没有】视频那个 chunks.length === 0 检查, 所以死路在这里。
+      //    (视频对应的修复在 recorder stop 处理器里的 chunks.length === 0 分支)
+      //
+      //    这里不用先清 voiceCallIsRecognizing —— 下面的 try 还没把它置 true。
+      if (voiceCallState.isActive) {
+        setVoiceCallStatusText('未识别到有效语音');
+        startVoiceCallAutoListening();
+      }
+      return;
+    }
 
     const userAvatar = document.querySelector('#voice-participant-avatars-grid .participant-avatar-wrapper[data-participant-id="user"] .participant-avatar');
 
@@ -2953,6 +3213,12 @@ ${linkedContents}
       const recognizedText = String(await window.transcribeAudioBlob(audioBlob)).trim();
       if (!recognizedText) {
         setVoiceCallStatusText('未识别到有效语音');
+        // ⚠️ 同视频通话: 先清 voiceCallIsRecognizing 再重启 (入口守卫里有这个标志)
+        voiceCallIsRecognizing = false;
+        if (voiceCallState.isActive) {
+          console.warn('[语音通话] ASR 未识别到有效语音, 重新启动自动监听');
+          startVoiceCallAutoListening();
+        }
         return;
       }
 
@@ -3016,11 +3282,16 @@ ${linkedContents}
 
       if (stopReason === 'no-speech') {
         setVoiceCallStatusText('未检测到有效语音');
+        // ⚠️⚠️ 修复「麦克风死了」: 同视频通话。语音侧 no-speech 是【独立分支】,
+        //    所以这里不用像视频那样再判一次 stopReason。
+        startVoiceCallAutoListening();
         return;
       }
 
       if (recordedMs < VOICE_CALL_AUTO_LISTEN_CONFIG.minRecordingMs) {
         setVoiceCallStatusText('未识别到有效语音');
+        // 录音太短 (误触) —— 重启
+        startVoiceCallAutoListening();
         return;
       }
 
@@ -3315,6 +3586,8 @@ ${linkedContents}
     });
     console.log('[语音通话] AI 多段 TTS 已全部播放完成，可以说话。');
     startVoiceCallAutoListening();
+    // 沉默主动接话: 一轮对话结束 = 又一次"活动", 重新计时
+    armVoiceCallIdleNudge();
   }
 
   function startVoiceCall() {
@@ -3342,6 +3615,10 @@ ${linkedContents}
     setVoiceCallStatusText('');
     voiceCallAutoListenEnabled = true;
     resetVoiceCallAutoListenState();
+    // 沉默主动接话: 同视频通话, 每次接通重新计数 + 重新计时
+    voiceCallIdleNudgeCount = 0;
+    armVoiceCallIdleNudge();
+    voiceCallStatusHoldUntil = 0;  // 同上
     showScreen('voice-call-screen');
 
     hideVoiceCallManualMicButton();
@@ -3466,6 +3743,8 @@ ${linkedContents}
 
     voiceCallAutoListenEnabled = false;
     releaseVoiceCallMicrophone();
+    // 沉默主动接话: 挂断了就彻底停掉
+    clearVoiceCallIdleNudgeTimer();
 
     voiceCallState.isActive = false;
     voiceCallState.isAwaitingResponse = false;
@@ -3728,6 +4007,8 @@ ${linkedContents}
 
     if (userInput && voiceCallState.isUserParticipating) {
       const userTimestamp = Date.now();
+      // ⚠️ callIdleNudgeActive: 见视频通话同名注释 —— 主动接话不产生用户气泡 / 不入 callHistory
+      if (!callIdleNudgeActive) {
       const userBubble = document.createElement('div');
       userBubble.className = 'call-message-bubble user-speech';
       userBubble.textContent = userInput;
@@ -3741,6 +4022,7 @@ ${linkedContents}
         content: userInput,
         timestamp: userTimestamp
       });
+      }   // ← 关闭 !callIdleNudgeActive
     }
 
     let inCallPrompt;
@@ -3819,12 +4101,17 @@ ${voiceCallTtsBlock}
     }))
     ];
 
-    if (voiceCallState.callHistory.length === 0) {
+    if (voiceCallState.callHistory.length === 0 && !callIdleNudgeActive) {
       const firstLineTrigger = voiceCallState.initiator === 'user' ? `喂？` : `喂，你好？`;
       messagesForApi.push({
         role: 'user',
         content: firstLineTrigger
       });
+    }
+
+    // 沉默主动接话: 同视频通话, 只临时加一句, 不写进 callHistory
+    if (callIdleNudgeActive && callIdleNudgeText) {
+      messagesForApi.push({ role: 'user', content: callIdleNudgeText });
     }
 
     try {
@@ -4006,6 +4293,12 @@ ${voiceCallTtsBlock}
       errorBubble.textContent = `[ERROR: ${error.message}]`;
       callFeed.appendChild(errorBubble);
       callFeed.scrollTop = callFeed.scrollHeight;
+      // ⚠️⚠️ 语音侧原来【根本没有】把错误写到可见的提示文字上 (视频侧有)。
+      //   错误气泡在 #voice-call-main 里, 那个容器被 display:none !important 隐藏,
+      //   于是语音通话出错时用户只感觉"AI 突然不说话了", 拿不到任何原因。
+      //   这里补上 + 4 秒停留期, 否则紧接着的 onVoiceCallTtsQueueFinished
+      //   → startVoiceCallAutoListening → 「倾听中」会同步覆盖掉。
+      setVoiceCallStatusText('出错了：' + error.message, { holdMs: CALL_STATUS_ERROR_HOLD_MS });
       voiceCallState.callHistory.push({
         role: 'assistant',
         content: `[ERROR: ${error.message}]`
