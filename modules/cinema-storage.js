@@ -34,6 +34,8 @@
   // 人物立绘表 (db v66)。常量提到最上面 —— ensureCharTable() 会用,
   // 放在文件下面会撞 const 的 TDZ (声明前访问直接 ReferenceError)。
   const CHARS = 'cinemaChars';
+  // 短剧前情提要表 (db v68, 2026-10-15)。理由见文件末尾注释块。
+  const SERIES_RECAP = 'cinemaSeriesRecap';
 
   // 300MB 软警告线 —— 超过只提示, 不阻止 (用户 2026-10-04 决策)。
   // iOS PWA 长期存储配额常在 1GB 量级, 硬拦会让人存不进东西。
@@ -103,6 +105,99 @@
 
   function stripExt(name) {
     return String(name || '').replace(/\.[^/.]+$/, '');
+  }
+
+  // --------------------------------------------------------------------------
+  // 短剧前情提要 (db v68)
+  //
+  // 【表里存什么】每部短剧一份跨场底稿:
+  //   { key, title, text, lastEp, createdAt, updatedAt }
+  //   key = 短剧文件夹名 (duanju-bridge server.mjs 的 dir.name), 稳定可做主键。
+  //
+  // 【为什么要自愈】跟 cinemaChars 一模一样的坑: 加了 db.version(68) 却忘了 bump
+  // index.html 里 init-db-schema.js 的 ?v=, Service Worker 一直吐旧版 → 手机上
+  // Dexie 不知道有 v68 → 表永远不建。写操作全部走兜底, 不影响别的功能。
+  //
+  // 【为什么设 MAX_RECAP_CHARS 上限】短剧能到几百集, 每次退出重写一次,
+  // 不限长的话前情提要自己就会膨胀成噪音, 而且会被整段喂回模型。超了砍尾巴。
+  // --------------------------------------------------------------------------
+
+  const MAX_RECAP_CHARS = 1800;
+
+  let recapHealing = null;
+  async function ensureSeriesRecapTable() {
+    const db = await whenDbReady();
+    if (db[SERIES_RECAP]) return db[SERIES_RECAP];
+    if (!recapHealing) {
+      recapHealing = (async function () {
+        try {
+          // ⚠️ 必须先 close() —— Dexie 不允许在库已打开时加版本号 (同 ensureCharTable)
+          try { db.close(); } catch (e) { /* 本来就没开 */ }
+          db.version(68).stores({ [SERIES_RECAP]: '&key, updatedAt' });
+          await db.open();
+          if (db[SERIES_RECAP]) {
+            console.warn('[CinemaStorage] 前情提要表缺失, 已现场补建 v68');
+            return db[SERIES_RECAP];
+          }
+        } catch (e) {
+          console.error('[CinemaStorage] 前情提要表补建失败', (e && e.name) || '', (e && e.message) || e);
+        }
+        return null;
+      })();
+    }
+    return recapHealing;
+  }
+
+  /** 读某部剧的前情提要。表缺失/读失败 → null (绝不让影院因为它打不开)。 */
+  async function loadSeriesRecap(key) {
+    if (!key) return null;
+    try {
+      const t = await ensureSeriesRecapTable();
+      if (!t) return null;
+      const row = await t.get(String(key));
+      return (row && row.text) ? row : null;
+    } catch (e) {
+      console.warn('[CinemaStorage] 读前情提要失败(忽略):', (e && e.message) || e);
+      return null;
+    }
+  }
+
+  /**
+   * 写前情提要。超长截断。
+   * createdAt 保留旧值 —— 这样"这部剧的前情提要是什么时候开始攒的"还在,
+   * 每次退出覆盖时不该把它冲掉。
+   */
+  async function saveSeriesRecap(rec) {
+    const key = rec && rec.key ? String(rec.key) : '';
+    const text = String((rec && rec.text) || '').trim();
+    if (!key || !text) return null;
+    const t = await ensureSeriesRecapTable();
+    if (!t) return null;
+    const old = await t.get(key).catch(function () { return null; });
+    const row = {
+      key: key,
+      title: String((rec && rec.title) || (old && old.title) || ''),
+      text: text.length > MAX_RECAP_CHARS ? text.slice(0, MAX_RECAP_CHARS) : text,
+      lastEp: Number((rec && rec.lastEp) || (old && old.lastEp) || 0),
+      createdAt: (old && old.createdAt) || Date.now(),
+      updatedAt: Date.now()
+    };
+    await t.put(row);
+    return row;
+  }
+
+  /** 手动删除某部剧的前情提要。表都没有也算删成功 (本来就没有)。 */
+  async function deleteSeriesRecap(key) {
+    if (!key) return false;
+    try {
+      const t = await ensureSeriesRecapTable();
+      if (!t) return false;
+      await t.delete(String(key));
+      return true;
+    } catch (e) {
+      console.warn('[CinemaStorage] 删前情提要失败:', (e && e.message) || e);
+      return false;
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -484,7 +579,13 @@
     getRoomBg: getRoomBg,
     removeRoomBg: removeRoomBg,
     getAllChars: getAllChars,
-    removeChar: removeChar
+    removeChar: removeChar,
+    // 短剧前情提要 (2026-10-15)
+    SERIES_RECAP: SERIES_RECAP,
+    MAX_RECAP_CHARS: MAX_RECAP_CHARS,
+    loadSeriesRecap: loadSeriesRecap,
+    saveSeriesRecap: saveSeriesRecap,
+    deleteSeriesRecap: deleteSeriesRecap
   };
 
 })(window);

@@ -235,4 +235,23 @@ db.version(67).stores({
   watchTogetherPlaylist: null
 });
 
+// 短剧前情提要 (db v68, 2026-10-15)
+//
+// 【为什么必须有这张表】短剧的 episodeMemories / seriesOutline 全在 watchSession
+// 内存里, 退出精炼成功后 clearDraft() 一清, 下次进来模型对这部剧是零认知 ——
+// 用户看第 3 集时问"刚那个人是谁", 它答不上来。
+// 这张表按剧名存一份跨场前情提要: 退出时生成, 进片时喂回模型。
+//
+// 为什么不是 localStorage (cinema-series-progress 就是那么存的):
+//   data-management.js 有 localStorage.clear(), 一键清数据会连带清掉;
+//   而且不跟着数据导出走, 手机清一次缓存就全没了。
+//
+// key = 短剧下载目录的文件夹名 (duanju-bridge server.mjs 的 key: dir.name), 稳定。
+// ⚠️ 加这张表必须同时 bump index.html 里 init-db-schema.js 的 ?v=,
+//    忘了手机上 Dexie 压根不建表 (v66 cinemaChars 踩过这个坑)。
+//    cinema-storage.js 的 ensureSeriesRecapTable() 是第二道防线。
+db.version(68).stores({
+  cinemaSeriesRecap: '&key, updatedAt'   // { key, title, text, lastEp, createdAt, updatedAt }
+});
+
 window.db = db;
