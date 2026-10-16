@@ -631,7 +631,8 @@
   // ⚠️ 只显示当前 session 的临时记忆, 绝不写 chat.longTermMemory
   // ============================================================
   var plotPanelEl = null;
-  var plotPanelOpen = false;
+  // 2026-10-16: 删掉了 plotPanelOpen (原来是"聊天面板里那条折叠条"的展开标志)。
+  //   剧情记忆现在是独立页面, 开合状态看 #cinema-plot-sheet 上的 .open 类。
   // 正在编辑哪一块: null = 没在编辑 | 'summary' = 当前剧情摘要 | 'ep:N' = 短剧第 N 集
   var plotEditing = null;
   var plotDraft = '';
@@ -661,14 +662,16 @@
     el.id = PLOT_PANEL_ID;
     el.className = 'cinema-plot-panel';
     plotPanelEl = el;
-    // ⚠️ 必须挂进聊天面板【内部】, 不能绝对定位挂在房间底部 ——
-    //    2026-10-04 用户反馈: 绝对定位那版正好压住聊天输入框, 什么都点不了。
-    //    改成消息列表上方的可展开区域, 收起时只有一行标题, 不占地方也不挡任何东西。
-    var host = document.getElementById('cinema-chat-panel');
+    // 🔴 2026-10-16 改: 挂进【独立的剧情记忆页】(cinema-plot-sheet),
+    //   不再挂聊天面板。
+    //   原来挂在聊天面板里当一条常驻折叠条, 用户反馈"又要显示剧情, 又要显示聊天记录,
+    //   想改点剧情总结, 键盘一弹看都不怎么看的见" —— 挤在聊天框里, 手机屏根本不够分。
+    //   现在由顶栏「记忆」按钮开一个底部上滑页, 跟设置/片单同一套。
+    var host = document.getElementById('cinema-plot-sheet');
     if (host) {
-      var head = host.querySelector('.cinema-chat-head');
+      var head = host.querySelector('.cinema-source-head');
       if (head && head.nextSibling) host.insertBefore(el, head.nextSibling);
-      else host.insertBefore(el, host.firstChild);
+      else host.appendChild(el);
     } else {
       var room = document.getElementById('cinema-room');
       (room || document.body).appendChild(el);
@@ -788,14 +791,10 @@
   }
 
   function buildPlotPanelHtml() {
-    var head = 'Gemini 剧情记忆';
-    if (!plotPanelOpen) {
-      var dot = watchSession.summaryBusy ? '🟡' : (hasAnyMemory() ? '🟢' : '⚪');
-      var savedTag = watchSession.finalSummarySaved ? ' · 记忆已存' : '';
-      return '<div class="cinema-plot-head">' + dot + ' ' + esc(head) +
-        '<span class="cinema-plot-meta">' + memoryCount() + memoryUnit() + esc(savedTag) + ' ▸</div>';
-    }
-
+    // 🔴 2026-10-16: 不再有"收起的一行标题"那一套了。
+    //   原来这是聊天面板顶部一条可折叠的条 (点一下展开、再点收起), 因为它只能
+    //   挤在聊天框里才有意义。现在它是独立页面, 由顶栏「记忆」按钮开、页面自带的
+    //   「关闭」按钮收, 进来永远是展开的完整正文 —— 用户要的就是"能好好看清楚能改"。
     var busyHtml = watchSession.summaryBusy
       ? '<div class="cinema-plot-busy">⏳ 正在整理剧情，请稍等一下…</div>' : '';
 
@@ -840,8 +839,13 @@
         '</div></div>';
     }
 
-    return '<div class="cinema-plot-head">' + esc(head) +
-        '<span class="cinema-plot-meta">收起 ▾</span></div>' +
+    // 🔴 状态点保留: 收起时那一行没了, 但进来一眼要能看出"有没有在整理/有没有记忆"。
+    //   放在正文最上面, 当页面自己的状态条用。
+    var dot = watchSession.summaryBusy ? '🟡' : (hasAnyMemory() ? '🟢' : '⚪');
+    var savedTag = watchSession.finalSummarySaved ? ' · 记忆已存' : '';
+
+    return '<div class="cinema-plot-head">' + dot + ' 本次已记 ' + memoryCount() + memoryUnit() +
+        esc(savedTag) + '</div>' +
       '<div class="cinema-plot-body" data-noscroll="1">' +
       '<div class="cinema-plot-label">当前剧情摘要</div>' +
       summaryBody +
@@ -855,12 +859,9 @@
       '</div>';
   }
 
-  function togglePlotPanel() {
-    plotPanelOpen = !plotPanelOpen;
-    plotEditing = null;
-    plotDraft = watchSession.currentPlotSummary || '';
-    renderPlotPanel();
-  }
+  // ⚠️ 2026-10-16 删掉了 togglePlotPanel()。它是给"聊天面板里那条折叠条"用的
+  //   (点一下展开、再点收起)。剧情记忆现在是独立页面, 开由顶栏「记忆」按钮、
+  //   关由页面自带的「关闭」按钮, 进来永远是展开的 —— 没有可折叠的东西了。
 
   /** 开始编辑某一块。target: 'summary' 或 'ep:N' */
   function startEditSummary(target) {
@@ -943,8 +944,10 @@
       deleteCurrentSeriesRecap();
       return;
     }
-    if (t.closest('[data-noscroll]')) return;
-    togglePlotPanel();
+    // ⚠️ 2026-10-16: 原来这里收尾是 togglePlotPanel() —— 点面板空白处就折叠。
+    //   剧情记忆现在是独立页面, 点空白不该有副作用 (尤其会把刚滚到的位置重置掉),
+    //   所以面板内的点击一律只处理按钮, 什么都不做。
+    return;
   }, true);
 
   // ============================================================
@@ -1470,7 +1473,99 @@
   // ============================================================
 
   var RECAP_MARK = '【前情提要】';        // 生成时的分界标记, 解析靠它
+  var MEMORY_MARK = '【观影记忆】';
   var RECAP_MAX_CHARS = 1800;
+
+  /**
+   * 找标题行, 宽松匹配。
+   *
+   * ⚠️ 为什么不能只认死字符串 (2026-10-15 用户实测踩到):
+   *   第一次退出时指令里【没有】旧提要, 模型老老实实按格式输出, 解析成功。
+   *   从第二次起旧提要进了指令, 模型的排版就变了 —— 可能写成 `**前情提要**`、
+   *   `前情提要：`, 也可能把两段【写反了】(前情提要写在观影记忆前面)。
+   *   死认 `【前情提要】` 的话, 这些统统解析失败 → recap 是空串 →
+   *   persistSeriesRecapSafely 第一行就 return → 【一条都没写】。
+   *   症状就是"观影记忆照常存、前情提要永远停在第一次那版", 完全看不出哪里坏了。
+   *
+   * 先找带方括号的严格标记, 找不到再退到宽松匹配, 最后再兜底别的写法。
+   */
+  function findHeading(text, strictMark, looseName) {
+    var at = text.indexOf(strictMark);
+    if (at >= 0) return { at: at, end: at + strictMark.length, strict: true };
+    // **前情提要** / 〔前情提要〕 / 前情提要: / 前情提要：
+    //
+    // 🔴 必须是【独占一行】才算标题 (上面加了 ^ $ 和 m 修饰符)。不这么限的话,
+    //   观影记忆正文里随口一句"我们上次说的前情提要…"就会被当成标题,
+    //   记忆被拦腰砍断、后半截变成提要 —— 比解析失败严重得多。
+    //   宁可漏认一个标题 (那样只是不更新提要), 也绝不能砍断记忆。
+    var re = new RegExp('^[ \\t>]*[【\\[〔*#]{0,2}[ \\t]*' + looseName +
+      '[ \\t]*[】\\]〕*#]{0,2}[ \\t]*[:：]?[ \\t]*$', 'm');
+    var m = text.match(re);
+    if (m) return { at: m.index, end: m.index + m[0].length, strict: false };
+    return null;
+  }
+
+  function cleanSlice(text, from, to) {
+    return String(text || '').slice(from, to).trim();
+  }
+
+  /**
+   * 把模型那一次回复拆成【观影记忆】+【前情提要】。
+   *
+   * 🔴 铁律: 宁可不要前情提要, 也绝不能动观影记忆 ——
+   *   观影记忆是要进长期记忆的, 里面混进一整段剧情提要就是污染。
+   *   所以任何一种"观影记忆被写没了"的情况, 都退回整段当观影记忆。
+   */
+  function splitFinalSummaryAndRecap(text) {
+    var t = String(text || '').trim();
+    if (!t) return { memory: '', recap: '' };
+
+    var r = findHeading(t, RECAP_MARK, '前情提要');
+    var m = findHeading(t, MEMORY_MARK, '观影记忆');
+
+    // 两个标题都没找到 → 模型这次压根没分两段, 整段当观影记忆 (等于退回旧行为)
+    if (!r && !m) {
+      logWarn('[前情提要] 输出里没认出【前情提要】标题, 本次不更新提要 (原文前 80 字: ' +
+        t.slice(0, 80).replace(/\n/g, ' ') + ')');
+      return { memory: t, recap: '' };
+    }
+
+    var memory = '', recap = '';
+    if (m && r && m.at < r.at) {
+      // 正常顺序: 观影记忆 → 前情提要
+      memory = cleanSlice(t, m.end, r.at);
+      recap = cleanSlice(t, r.end, t.length);
+    } else if (m && r) {
+      // 🔴 两段写反了 —— 第一版死认"标记一定在后面", 这种情况直接判成"没提要",
+      //   于是提要永远停在第一次那版。这次必须能认出来。
+      recap = cleanSlice(t, r.end, m.at);
+      memory = cleanSlice(t, m.end, t.length);
+      logWarn('[前情提要] 模型把两段写反了 (前情提要写在前面), 已按位置拆开');
+    } else if (m && !r) {
+      memory = cleanSlice(t, m.end, t.length);
+    } else {
+      // 只有前情提要标题: 前面那段没标题, 当观影记忆
+      var before = cleanSlice(t, 0, r.at);
+      memory = before;
+      recap = cleanSlice(t, r.end, t.length);
+    }
+
+    // 观影记忆被写没了 → 保守: 整段当观影记忆, 不更新提要
+    if (!memory) {
+      logWarn('[前情提要] 观影记忆那半段是空的, 保守起见整段当观影记忆, 本次不更新提要');
+      return { memory: t, recap: '' };
+    }
+    if (!recap) {
+      logWarn('[前情提要] 前情提要那半段是空的, 本次不更新提要');
+      return { memory: memory, recap: '' };
+    }
+
+    if (recap.length > RECAP_MAX_CHARS) {
+      logWarn('[前情提要] 超长 (' + recap.length + ' 字), 截断到 ' + RECAP_MAX_CHARS);
+      recap = recap.slice(0, RECAP_MAX_CHARS);
+    }
+    return { memory: memory, recap: recap };
+  }
 
   /**
    * 拿存储层, 拿不到就当没有。
@@ -1548,24 +1643,101 @@
   }
 
   /**
-   * 把模型那一次回复拆成【观影记忆】+【前情提要】。
+   * 写前情提要 (2026-10-15 加了兜底)。返回 Promise, 但**永远不 reject**。
    *
-   * ⚠️ 格式没跑对时的处理很关键 —— 宁可不要前情提要, 也绝不能动观影记忆:
-   *   · 找不到标记 → 整段当观影记忆 (等于退回 2026-10-15 之前的行为)
-   *   · 观影记忆那半段是空 → 整段当观影记忆
-   *   · 前情提要那半段是空 → 只要观影记忆
+   * 【为什么要兜底】用户实测: "第一次总结了前情提要, 之后怎么进出都不再总结, 看到 60 集还在 44"。
+   *   症状是观影记忆照常存、提要永远冻结、界面毫无提示 —— 因为写提要的函数
+   *   收到空内容时【第一行就返回】, 一条没写, 也没人知道。
+   *   根因是共享调用那次没吐出可识别的提要段落 (排版跑偏 / 被截断 / 模型只把旧提要
+   *   复述了一遍), 而"排版"是模型的事, 不是我们能指望的。
+   *
+   *   所以: 主路还是"一次调用出两份" (快), 但只要没拿到提要, 就【补一次只写提要的
+   *   专门调用】。宁可多花一次调用, 也不能让这个功能静悄悄地停摆 ——
+   *   静默失败是最难查的失败。
    */
-  function splitFinalSummaryAndRecap(text) {
-    var t = String(text || '').trim();
-    if (!t) return { memory: '', recap: '' };
-    var at = t.indexOf(RECAP_MARK);
-    if (at < 0) return { memory: t, recap: '' };
+  function saveSeriesRecapWithFallback(recapText) {
+    try {
+      var key = watchSession.seriesKey;
+      var hasNewEp = watchSession.kind === 'series' && key &&
+        watchSession.episodeMemories && watchSession.episodeMemories.length > 0;
 
-    var memory = t.slice(0, at).trim();
-    var recap = t.slice(at + RECAP_MARK.length).trim();
-    if (!memory) return { memory: t, recap: '' };          // 观影记忆被写没了 → 保守整段当它
-    if (!recap) return { memory: memory, recap: '' };
-    return { memory: memory, recap: recap.length > RECAP_MAX_CHARS ? recap.slice(0, RECAP_MAX_CHARS) : recap };
+      // 主路拿到了 → 直接写, 结束
+      if (String(recapText || '').trim()) {
+        persistSeriesRecapSafely(recapText);
+        return Promise.resolve(true);
+      }
+
+      // 没拿到。什么情况下值得补一次:
+      //   · 这次确实攒到了新的单集记忆(有东西可写)
+      //   · 以前存过提要(说明用户在看这部剧, 提要是要更新的), 或者这是第一次写
+      var hadRecap = !!(watchSession.seriesRecap && (watchSession.seriesRecap.text || '').trim());
+      if (!hasNewEp) { logWarn('[前情提要] 这次没产出提要, 且本次没有新的单集记忆, 跳过'); return Promise.resolve(false); }
+      if (!hadRecap && !(watchSession.episodeMemories.length >= 2)) {
+        logWarn('[前情提要] 这次没产出提要, 只攒了 1 集, 不补调用 (信息太少没意义)');
+        return Promise.resolve(false);
+      }
+      // 唯一硬条件是 Live 还在。finalSummaryRequested 不用管 —— 这个函数本来就只在
+      // 退出流程 / 手动生成那两条链上被调, 那时它必定是 true。
+      if (!S.client || !S.client.isReady()) {
+        logWarn('[前情提要] 想补一次专门的调用, 但 Live 没就绪, 放弃');
+        return Promise.resolve(false);
+      }
+
+      log('📖 共享调用没产出提要, 补一次【只写前情提要】的调用…');
+      return requestSummary('recapOnly', buildRecapOnlyInstruction())
+        .then(function (text) {
+          var t = String(text || '').trim();
+          // 这次只有一段, 模型可能自作主张加个标题, 顺手剥掉
+          t = stripHeadingNoise(t);
+          if (!t) { logWarn('[前情提要] 补调用也没写出内容, 本次不更新'); return false; }
+          persistSeriesRecapSafely(t);
+          return true;
+        })
+        .catch(function (e) {
+          logWarn('[前情提要] 补调用失败(不影响观影记忆):', e && e.message);
+          return false;
+        });
+    } catch (e) {
+      logWarn('[前情提要] 兜底逻辑异常(不影响观影记忆):', e && e.message);
+      return Promise.resolve(false);
+    }
+  }
+
+  /** 剥掉模型可能加的标题行 / 分隔线 */
+  function stripHeadingNoise(text) {
+    var t = String(text || '').trim();
+    t = t.replace(/^[【\[]?\s*(前情提要|已看到第\s*\d+\s*集)\s*[】\]]?\s*[:：]?\s*/i, '');
+    t = t.replace(/^[-=—*#]{2,}\s*/, '');
+    return t.trim();
+  }
+
+  /** 只写提要的专门指令 (共享调用失败时的兜底) */
+  function buildRecapOnlyInstruction() {
+    var title = watchSession.seriesTitle || '这部短剧';
+    var lines = [];
+    lines.push('【【后台任务】】刚才那份回复里没有可用的【前情提要】段落。');
+    lines.push('这次【只写前情提要】，不要写观影记忆，不要解释，不要加标题，不要写分隔线。');
+    lines.push('');
+    var prev = String((watchSession.seriesRecap && watchSession.seriesRecap.text) || '').trim();
+    if (prev) {
+      lines.push('# 已经有的前情提要（旧版本，必须保留并在其基础上更新）');
+      lines.push('');
+      lines.push(prev);
+      lines.push('');
+    }
+    var eps = watchSession.episodeMemories || [];
+    if (eps.length) {
+      lines.push('# 这次新看的各集');
+      lines.push('');
+      for (var i = 0; i < eps.length; i++) lines.push('第 ' + eps[i].ep + ' 集：' + eps[i].text);
+      lines.push('');
+    }
+    lines.push('# 要求');
+    lines.push('- 直接输出前情提要正文，第一句就是【已看到第 ' + Math.max(1, watchSession.seriesLastEp || 0) + ' 集】。');
+    lines.push('- 客观剧情、第三人称、连贯一段，不分点，不写"观影记忆"，不加任何标题或 --- 。');
+    lines.push('- 旧提要里的信息全部保留，只补新看的部分。');
+    lines.push('- 控制在 ' + RECAP_MAX_CHARS + ' 字以内。');
+    return lines.join('\n');
   }
 
   /**
@@ -1985,20 +2157,44 @@
       _retryTimer = null;
       if (!S.enabled || S._userDisabled || S._leaving) return;
       if (!S.client) { enable(); return; }
-      S.client.reconnect().then(function (ok) {
-        if (ok) {
+
+      // 🔴 2026-10-16 用户实测「连了断了连, 最后彻底连不上」的根因。
+      //
+      //   原来写的是 `reconnect().then(function (ok) { if (ok) { …报成功… } })`,
+      //   但 reconnect() 返回的是 connect() 的 Promise, 而 connect() 在
+      //   **ws.onopen** 就 resolve 了 —— 而且 resolve 的是【客户端实例本身】,
+      //   不是布尔值 (live-client.js:191 `resolve(self)`)。
+      //   于是 `ok` 永远为真 → 每次重连都报"✅ 重连成功, 上下文已恢复"并重启帧循环,
+      //   哪怕 setupComplete 根本没来、服务端下一秒就关掉了。
+      //   外面看日志全是绿的, 实际是个死连接 —— 用户完全看不出发生了什么。
+      //
+      //   修法: socket 打开【不等于】会话可用, 必须等 isReady() 真的为真。
+      S.client.reconnect()
+        .then(function () { return waitUntilReady(WAIT_READY_MS); })
+        .then(function (ready) {
+          if (!ready) {
+            logWarn('重连后 ' + Math.round(WAIT_READY_MS / 1000) + 's 内没进入可发送状态, 按失败处理');
+            // 这种连接多半是拿废存档点续上来的。清掉它 —— 注意要【连客户端对象里那个
+            // 一起清】, 只删 localStorage 没用: 下次 reconnect() 读的是 this._resumeHandle,
+            // 它还留着那个废 handle, 于是永远拿同一个死 handle 去续, 死循环。
+            saveHandle(null);
+            try { if (S.client) S.client.setResumeHandle(null); } catch (e) { /* noop */ }
+            scheduleReconnect('重连后没能进入可发送状态');
+            return;
+          }
           // 只有稳定连上才清退避计数 (flapped 时不清)
           if (!flapped) clearRetry();
           startFrameLoop();
           log('✅ 重连成功, 上下文已恢复');
           appendSystemLine('✅ 已重新连接（对话上下文保留）');
-        }
-      }).catch(function (err) {
-        log('重连失败:', err.message);
-        // 重连也失败 -> 存档点八成是废的, 直接扔掉, 下一轮从全新会话开始
-        if (S.connectedAt) saveHandle(null);
-        scheduleReconnect(err.message);
-      });
+        })
+        .catch(function (err) {
+          log('重连失败:', err.message);
+          // 重连也失败 -> 存档点八成是废的, 直接扔掉, 下一轮从全新会话开始
+          saveHandle(null);
+          try { if (S.client) S.client.setResumeHandle(null); } catch (e) { /* noop */ }
+          scheduleReconnect(err.message);
+        });
     }, delay);
   }
 
@@ -2030,6 +2226,10 @@
       scheduleStageSummary();
       renderPlotPanel();
     } else if (state === 'closed' && S.autoMode && !S._userDisabled) {
+      // 🔴 2026-10-16: 断线这一刻先把在途的摘要请求作废 (理由见 abortPendingSummary)。
+      //   少了这一句, 那个请求会赖到 45s 超时, 期间新一集一集都不再总结,
+      //   而且模型吐的字全被它吞掉 —— 用户实测"看完一集没总结起, 重看一遍还是没有"。
+      abortPendingSummary('连接断开');
       // 非用户主动关闭 → 走 session resumption 重连
       scheduleReconnect(detail || '连接被关闭');
     }
@@ -2112,13 +2312,28 @@
               log('等 setupComplete 超时 20s');
               // 拿旧存档点续不上 → 把它扔掉, 下次从全新会话开始。
               // 废掉的 handle 会让服务端一收到 setup 就关连接, 症状是"连上秒断"。
-              if (savedHandle) { saveHandle(null); log('⚠️ 存档点续不上, 已清除, 下次用全新会话'); }
-              appendSystemLine('⚠️ 等待 Gemini 初始化超时（20s）。已重置存档点，下次会开新会话。');
+              if (savedHandle) {
+                saveHandle(null);
+                // ⚠️ 2026-10-16: 光删 localStorage 没用 —— 客户端对象里那个
+                //   _resumeHandle 还留着, 下次重连照样拿废的去续。一起清。
+                try { S.client.setResumeHandle(null); } catch (e) { /* noop */ }
+                log('⚠️ 存档点续不上, 已清除, 下次用全新会话');
+              }
+              appendSystemLine('⚠️ 等待 Gemini 初始化超时（20s）。已重置存档点，正在重连…');
+              // 🔴 原来这里只 resolve(false) 就结束了 —— 而调用方 autoConnect 根本不看
+              //   返回值, 于是"把废 handle 清干净"做完了, 却【没有任何人再发起下一次连接】,
+              //   连接就死在这儿了 (用户实测"整死连不上模型")。这里主动排一次重连。
+              scheduleReconnect('等待 Gemini 初始化超时');
               resolve(false);
             } else if (S.client && (S.client.state === 'error' || S.client.state === 'closed')) {
               clearInterval(iv);
-              if (savedHandle) { saveHandle(null); log('⚠️ 带着旧存档点连不上, 已清除'); }
-              appendSystemLine('⚠️ 连接被服务端关闭（code ' + (S.client.state || '?') + '）。已重置存档点，下次开新会话。');
+              if (savedHandle) {
+                saveHandle(null);
+                try { S.client.setResumeHandle(null); } catch (e) { /* noop */ }
+                log('⚠️ 带着旧存档点连不上, 已清除');
+              }
+              appendSystemLine('⚠️ 连接被服务端关闭（code ' + (S.client.state || '?') + '）。已重置存档点，正在重连…');
+              scheduleReconnect('连接被服务端关闭');
               resolve(false);
             }
           }, 200);
@@ -2239,9 +2454,13 @@
         appendSystemLine('💾 正在保存观影记忆…');
         renderPlotPanel();
         return saveToLongTermMemory(chat, parts.memory).then(function () {
-          // 观影记忆【写库确认成功】之后才写前情提要。
-          // 顺序反过来会出现"前情提要记下了、观影记忆其实没存上"的错位状态。
-          persistSeriesRecapSafely(parts.recap);
+          // 观影记忆【写库确认成功】之后才处理提要。
+          // 顺序反过来会出现"提要记下了、观影记忆其实没存上"的错位状态。
+          //
+          // ⚠️ 必须 await: 兜底可能要补一次 Live 调用, 而下一次 .then 里紧跟着 hardLeave()
+          //   会把 Live 关掉 —— 不等的话补调用刚发出就断线, 提要照样丢。
+          //   这个函数永远 resolve 不 reject, 所以不会把主链路带崩。
+          return saveSeriesRecapWithFallback(parts.recap);
         });
       })
       .then(function () {
@@ -2270,6 +2489,32 @@
       });
   }
 
+  /**
+   * 作废当前在途的摘要请求。
+   *
+   * 🔴 2026-10-16 用户实测 (连不上 + 总结出岔子) 的真凶之一:
+   *   连接断掉时, 在途的那个摘要请求没人管, 会一直赖到它自己的 45s 超时。
+   *   这段窗口里:
+   *     ① requestEpisodeSummary 第一行 `if (pendingSummary) return ''` → 后面每一集
+   *       都不再总结 (用户原话"一集短剧看完了之后记忆总结出岔子了, 没总结起")
+   *     ② handleModelText 里 `if (pendingSummary)` 会把模型吐的【每一个字】都收进
+   *       这个僵尸 buffer, 一个字都不进气泡 → 看着像"连上了但不理我"
+   *   所以断线这一刻必须立刻把它作废, 而不是等它自己超时。
+   */
+  function abortPendingSummary(reason) {
+    var p = watchSession.pendingSummary;
+    if (!p) return false;
+    watchSession.pendingSummary = null;
+    watchSession.summaryBusy = false;
+    if (p.timer) clearTimeout(p.timer);
+    if (p.settleTimer) clearTimeout(p.settleTimer);
+    // 迟到的那些字一律丢掉, 别流进下一次摘要 (同 waitForNoPendingSummary 里的理由)
+    watchSession.summaryGhostUntil = Date.now() + 3000;
+    try { if (S.client) S.client._lastTranscription = ''; } catch (e) { /* noop */ }
+    logWarn('已作废在途的摘要请求(' + (reason || '未说明') + '), 那一次的内容作废');
+    return true;
+  }
+
   function waitForNoPendingSummary() {
     // ⚠️⚠️ 2026-10-09: 上限从 3000ms 提到 20000ms。
     //
@@ -2286,13 +2531,7 @@
         if (!watchSession.pendingSummary || waited > 20000) {
           if (watchSession.pendingSummary) {
             log('等待在途摘要超时 (' + waited + 'ms), 强制继续');
-            var p = watchSession.pendingSummary;
-            watchSession.pendingSummary = null;
-            if (p.timer) clearTimeout(p.timer);
-            watchSession.summaryBusy = false;
-            // 作废这次请求后, 它剩下的字一律不许进下一次摘要
-            watchSession.summaryGhostUntil = Date.now() + 3000;
-            try { if (S.client) S.client._lastTranscription = ''; } catch (e) { /* noop */ }
+            abortPendingSummary('等待超时');
           }
           clearInterval(iv);
           resolve();
@@ -2468,7 +2707,8 @@
         appendSystemLine('💾 正在保存观影记忆…');
         renderPlotPanel();
         return saveToLongTermMemory(chat, parts.memory).then(function () {
-          persistSeriesRecapSafely(parts.recap);
+          // 同 runFinalSummaryFlow: 兜底可能要补一次调用, 这里要等它 (见那边的注释)
+          return saveSeriesRecapWithFallback(parts.recap);
         });
       })
       .then(function () {
@@ -2668,7 +2908,6 @@
     watchSession.finalSummarySaved = false;
     watchSession.finalSummaryRequested = false;
     watchSession.chatLog = [];
-    plotPanelOpen = false;
     plotEditing = null;
     S.canvas = null;
     S.ctx = null;
@@ -2763,12 +3002,13 @@
       };
     },
 
-    // 剧情面板
-    togglePlotPanel: togglePlotPanel,
-    // 常驻折叠条: 房间打开聊天面板时主动拉一次, 保证那一行一定在
-    // (之前只在 Live 状态变化时被动刷, 没连上就永远不出现)
+    // 剧情面板 (2026-10-16: 不再有 togglePlotPanel, 开关在 cinema-room.js 的 setPlotSheet)
     renderPlotPanel: renderPlotPanel,
-    isPlotPanelOpen: function () { return plotPanelOpen; },
+    isPlotPanelOpen: function () {
+      // 现在"开着"= 独立页面带了 .open 类, 不再是内存里那个折叠标志
+      var sheet = document.getElementById('cinema-plot-sheet');
+      return !!(sheet && sheet.classList.contains('open'));
+    },
 
     // key
     getGeminiKey: getGeminiKey,

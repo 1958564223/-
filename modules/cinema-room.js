@@ -53,7 +53,9 @@
     gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
     user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
-    collapse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>'
+    collapse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
+    // 2026-10-16: 「Gemini 剧情记忆」拆成独立页面的入口 (用户要求别再跟聊天框混在一起)
+    memory: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h6a3 3 0 0 1 3 3v14a3 3 0 0 0-3-3H6"/><path d="M9 2a3 3 0 0 0-3 3v14a3 3 0 0 1 3-3h6"/></svg>'
   };
 
   const ROOM_HTML = [
@@ -77,6 +79,14 @@
     CINEMA_ICON.stop, '<span>停止</span></button>',
     '      <button class="cinema-room-icon-btn" id="cinema-settings-btn" title="设置" aria-label="打开设置">',
     CINEMA_ICON.gear, '<span>设置</span></button>',
+    // 🔴 2026-10-16 用户要求: 剧情记忆从聊天框里拆出来单独一页。
+    //   原来它是聊天面板顶部的一条折叠条 (cinema-live.js ensurePlotPanel 往那儿插),
+    //   结果"又要看剧情又要看聊天", 键盘一弹几乎看不见, 想改个总结都改不了。
+    //   现在改成顶栏按钮 → 独立底部上滑页, 跟设置/片单同一套手感。
+    //   ⚠️ 标签用两字「记忆」跟其他按钮齐平 (停止/设置/聊天/片单/退出 都是两字);
+    //      完整名字放在 title/aria-label 和页面标题上, 四字会把这一行挤到换行。
+    '      <button class="cinema-room-icon-btn" id="cinema-plot-btn" title="Gemini 剧情记忆" aria-label="打开 Gemini 剧情记忆">',
+    CINEMA_ICON.memory, '<span>记忆</span></button>',
     '      <button class="cinema-room-icon-btn" id="cinema-chat-toggle" title="聊天" aria-label="打开聊天面板">',
     CINEMA_ICON.chat, '<span>聊天</span></button>',
     '      <button class="cinema-room-icon-btn" id="cinema-drawer-toggle" title="片单" aria-label="打开片单">',
@@ -193,6 +203,19 @@
     '    <div class="cinema-episode-meta" id="cinema-episode-meta"></div>',
     '    <div class="cinema-episode-grid" id="cinema-episode-grid"></div>',
     '  </div>',
+    '  </div>',
+
+    // ---- Gemini 剧情记忆面板 (2026-10-16 从聊天框里拆出来) ----
+    // 用户原话: "又要显示剧情, 又要显示聊天记录, 想改点剧情总结, 键盘一弹看都不怎么看的见,
+    //            能不能上方设置那一排单独弄个按钮Gemini剧情记忆, 把这个剧情记忆单独拆个页面出来"
+    // 这里只放一个【空壳】: 标题 + 关闭。正文由 cinema-live.js 的 ensurePlotPanel()
+    // 把 #cinema-plot-panel 插进来 (原来插的是聊天面板)。
+    '  <div class="cinema-plot-sheet" id="cinema-plot-sheet">',
+    '    <div class="cinema-source-head">',
+    '      <span class="cinema-chat-head-title">Gemini 剧情记忆</span>',
+    '      <button class="cinema-chat-hbtn" id="cinema-plot-close" title="关闭" aria-label="关闭剧情记忆面板">',
+    CINEMA_ICON.close, '<span>关闭</span></button>',
+    '    </div>',
     '  </div>',
 
     // ---- 设置面板 (2026-10-04 新增) ----
@@ -329,6 +352,10 @@
       settingsBtn: document.getElementById('cinema-settings-btn'),
       settingsSheet: document.getElementById('cinema-settings-sheet'),
       settingsClose: document.getElementById('cinema-settings-close'),
+      // Gemini 剧情记忆独立页 (2026-10-16 从聊天面板里拆出来)
+      plotBtn: document.getElementById('cinema-plot-btn'),
+      plotSheet: document.getElementById('cinema-plot-sheet'),
+      plotClose: document.getElementById('cinema-plot-close'),
       charFileInput: document.getElementById('cinema-char-file-input'),
       charPrev: {
         left: document.getElementById('cinema-char-prev-left'),
@@ -685,6 +712,11 @@
     // 2026-10-04: 原来聊天头部那个「密钥」按钮和 key-box 一起删了, 收进这里。
     els.settingsBtn.addEventListener('click', function () { setSettingsSheet(true); });
     els.settingsClose.addEventListener('click', function () { setSettingsSheet(false); });
+
+    // ---- Gemini 剧情记忆页 (2026-10-16) ----
+    // 原来是聊天面板顶部的一条常驻折叠条, 用户嫌它跟聊天记录挤在一起看不清, 拆成独立页。
+    els.plotBtn.addEventListener('click', function () { setPlotSheet(true); });
+    els.plotClose.addEventListener('click', function () { setPlotSheet(false); });
     els.keySave.addEventListener('click', saveApiKey);
     // 人物图: 事件委托 (两个 slot 结构一样, 不逐个绑)
     els.settingsSheet.addEventListener('click', function (e) {
@@ -1616,7 +1648,8 @@
     setTimeout(function () { syncTopbarHeight(); syncVisualViewport(); }, 320);
     if (chatOpen) {
       setDrawer(false);
-      // 剧情条常驻在聊天面板顶上, 打开时主动刷一次
+      // 2026-10-16: 剧情记忆已经拆成独立页面 (顶栏「记忆」按钮), 不再挂在聊天面板里,
+      //   所以这里不再需要顺手刷它 —— 顺手留着无害, 但别以为聊天面板靠它才有内容。
       if (global.CinemaLive) global.CinemaLive.renderPlotPanel();
 
       // 🔴 2026-10-06 修复: 原来这里是「没填 key 就直接把设置面板推出来」。
@@ -1661,6 +1694,33 @@
         '先在房间右上角「设置」里填 Gemini Live API Key，然后播放视频，Gemini 就会连进来陪你一起看。');
     } else {
       alert('先在设置里填 Gemini Live API Key 再聊天');
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Gemini 剧情记忆页 (2026-10-16 从聊天面板里拆出来)
+  // --------------------------------------------------------------------------
+  //
+  // 用户原话: "那个Gemini剧情记忆弄在聊天对话框上, 又要显示剧情, 又要显示聊天记录,
+  //          想改点剧情总结, 键盘一弹看都不怎么看的见, 能不能上方设置那一排单独弄个按钮
+  //          Gemini剧情记忆, 把这个剧情记忆单独拆个页面出来, 不要和观剧聊天吐槽框混在一起"
+  //
+  // 打开时把聊天面板收掉: 用户要的就是"别跟吐槽框挤在一起",
+  // 两个都开着的话还是那回事 (手机屏就那么大)。
+  function setPlotSheet(open) {
+    ensureDom();
+    const on = open !== false;
+    if (!els.plotSheet) return;
+    els.plotSheet.classList.toggle('open', on);
+    if (on) {
+      setChatPanel(false);
+      setDrawer(false);
+      closeSourceSheet();
+      // 内容由 cinema-live.js 渲染。必须【先开面板再渲染】:
+      // 反过来的话首次渲染出来的容器没被看见, 有些量高(如滚动位置)会不对。
+      if (global.CinemaLive) global.CinemaLive.renderPlotPanel();
+    } else {
+      keepViewportPinned();
     }
   }
 
@@ -2532,7 +2592,8 @@
     diagLogPush('道具已加载: ' + S.CHAR_SLOTS.map(function (s) {
       return s + '=' + (charUrls[s] ? '有' : '空');
     }).join(' '));
-    // 剧情条一进房就建好并常驻 (不必等用户先点开聊天面板)
+    // 剧情记忆页的正文容器一进房就建好 (不必等用户点开页面)。
+    // 2026-10-16 起它挂在 #cinema-plot-sheet 里, 不再挂聊天面板。
     if (global.CinemaLive) global.CinemaLive.renderPlotPanel();
   }
 

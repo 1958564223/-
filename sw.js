@@ -22,7 +22,7 @@
 //   cinema-live.js / cinema-room.js / cinema-room.css 三个都在下面 URLS_TO_CACHE 里,
 //   而且 index.html 里的 ?v= 已经 bump (1.3.0 / 0.25.2 / 0.35.2),
 //   所以【必须】bump CACHE_VERSION, 否则 SW 继续吐旧版, 改动等于没改。
-const CACHE_VERSION = 'v0.2.42.1';
+const CACHE_VERSION = 'v0.2.42.2';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
