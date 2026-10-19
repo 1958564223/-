@@ -35,7 +35,7 @@
 //      靠 index.html 里的 ?v= 生效 —— 那个已经 bump 到 0.0.41。
 //      忘了 bump 的话手机上 Dexie 压根不建 v69 那张表, 逐条记忆全都写不进去
 //      (v66 cinemaChars 踩过这个坑; cinema-storage 的 ensureEpMemoryTable() 是第二道防线)。
-const CACHE_VERSION = 'v0.2.43.0';
+const CACHE_VERSION = 'v0.2.43.1';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
