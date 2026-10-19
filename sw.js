@@ -22,7 +22,20 @@
 //   cinema-live.js / cinema-room.js / cinema-room.css 三个都在下面 URLS_TO_CACHE 里,
 //   而且 index.html 里的 ?v= 已经 bump (1.3.0 / 0.25.2 / 0.35.2),
 //   所以【必须】bump CACHE_VERSION, 否则 SW 继续吐旧版, 改动等于没改。
-const CACHE_VERSION = 'v0.2.42.2';
+// v0.2.43.0 (2026-10-19): Cinema Room 剧情记忆改造 —— 取消退出精炼, 改成当场落库 + 手动导出。
+//   用户实测: 看 5 集短剧每集都总结得好好的, 退出时那次精炼被截断成只剩三个字,
+//   而"非空即成功"的判定照样放行 —— 三个字写进长期记忆、清掉那 5 条单集记忆, 真白看。
+//   根因: 那一次调用是整场唯一一次长上下文调用, 模型首字延迟超过"静默 2 秒就算说完"的判据。
+//   改造: 每集 / 每 5 分钟当场写进 Dexie(cinemaEpMemories, db v69),
+//        退出什么都不做(秒退), 要不要写进长期记忆由用户在「记忆」页点【导出】决定。
+//   cinema-live.js / cinema-room.js / cinema-room.css / cinema-storage.js
+//   四个都在下面 URLS_TO_CACHE 里, 且 index.html 的 ?v= 已 bump
+//   (1.8.0 / 0.27.0 / 0.37.0 / 0.5.0), 所以【必须】bump CACHE_VERSION。
+//   ⚠️ init-db-schema.js 【不在】下面这份预缓存清单里(查过了), 所以它走浏览器 HTTP 缓存,
+//      靠 index.html 里的 ?v= 生效 —— 那个已经 bump 到 0.0.41。
+//      忘了 bump 的话手机上 Dexie 压根不建 v69 那张表, 逐条记忆全都写不进去
+//      (v66 cinemaChars 踩过这个坑; cinema-storage 的 ensureEpMemoryTable() 是第二道防线)。
+const CACHE_VERSION = 'v0.2.43.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

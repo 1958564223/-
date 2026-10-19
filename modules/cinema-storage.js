@@ -201,6 +201,133 @@
   }
 
   // --------------------------------------------------------------------------
+  // 逐条剧情记忆 (db v69, 2026-10-19)
+  //
+  // 【它取代了什么】
+  //   以前单集记忆只活在 watchSession.episodeMemories (纯内存), 退出精炼成功后
+  //   一律清空, 页面一关就全没了 —— 而且退出那次精炼是【整场唯一一次长上下文
+  //   调用】, 用户实测它会静默 2 秒就把开头的三个字当成整篇收走 (见 cinema-live.js
+  //   SUMMARY_SETTLE_MS), 于是那几集真的白看。
+  //
+  //   现在改成【每写出一条就落库】: 每看完一集 / 每 5 分钟攒一段, 当场写一行。
+  //   退出时什么都不用做, 也就没有那个会输的环节了。
+  //
+  // 【一行是什么】
+  //   短剧: 一行 = 一集。key = 短剧文件夹名, ep = 集号。
+  //   长剧: 一行 = 一个 5 分钟段落。key = 'film:' + chatId, ep = 段落序号。
+  //
+  // 【导出语义】用户手动点「导出到长期记忆」→ 写进 longTermMemory → 成功后删行。
+  //   写失败【不删】, 用户还能再点一次。这跟"存不下就当成功"是两种完全不同的失败。
+  //
+  // 【为什么要有下限】截断过的内容比没有更糟 —— 用户会以为它记下来了。
+  //   MIN_EP_CHARS 以下的直接拒收, 宁可这一段没有。
+  // --------------------------------------------------------------------------
+
+  const EP_MEMORY = 'cinemaEpMemories';
+  const MIN_EP_CHARS = 80;      // 低于这个长度一律拒收 (截断/空跑都落在这里)
+
+  let epHealing = null;
+  async function ensureEpMemoryTable() {
+    const db = await whenDbReady();
+    if (db[EP_MEMORY]) return db[EP_MEMORY];
+    if (!epHealing) {
+      epHealing = (async function () {
+        try {
+          try { db.close(); } catch (e) { /* 本来就没开 */ }
+          db.version(69).stores({ [EP_MEMORY]: '&id, sessionKey, ep, updatedAt' });
+          await db.open();
+          if (db[EP_MEMORY]) {
+            console.warn('[CinemaStorage] 逐条记忆表缺失, 已现场补建 v69');
+            return db[EP_MEMORY];
+          }
+        } catch (e) {
+          console.error('[CinemaStorage] 逐条记忆表补建失败', (e && e.name) || '', (e && e.message) || e);
+        }
+        return null;
+      })();
+    }
+    return epHealing;
+  }
+
+  function epRowId(sessionKey, ep) {
+    return String(sessionKey) + '#' + String(ep);
+  }
+
+  /**
+   * 写一条。同一个 (sessionKey, ep) 覆盖 —— 重播同一集不会堆两条。
+   * 返回写进去的行; 被长度下限拒收时返回 null。
+   */
+  async function saveEpMemory(rec) {
+    const key = rec && rec.sessionKey ? String(rec.sessionKey) : '';
+    const text = String((rec && rec.text) || '').trim();
+    if (!key || !text) return null;
+    if (text.length < MIN_EP_CHARS) {
+      console.warn('[CinemaStorage] 内容只有 ' + text.length + ' 字, 低于下限, 已拒收:', text.slice(0, 30));
+      return null;
+    }
+    const t = await ensureEpMemoryTable();
+    if (!t) return null;
+    const ep = Number(rec.ep) || 0;
+    const row = {
+      id: epRowId(key, ep),
+      sessionKey: key,
+      kind: String((rec && rec.kind) || 'series'),
+      title: String((rec && rec.title) || ''),
+      ep: ep,
+      text: text,
+      at: Number((rec && rec.at) || Date.now()),
+      updatedAt: Date.now()
+    };
+    await t.put(row);
+    return row;
+  }
+
+  /** 列出某次观看攒下的全部条目, 按 ep 升序。读不到一律当空。 */
+  async function listEpMemories(sessionKey) {
+    if (!sessionKey) return [];
+    try {
+      const t = await ensureEpMemoryTable();
+      if (!t) return [];
+      const rows = await t.where('sessionKey').equals(String(sessionKey)).toArray();
+      rows.sort(function (a, b) { return (a.ep || 0) - (b.ep || 0); });
+      return rows || [];
+    } catch (e) {
+      console.warn('[CinemaStorage] 读逐条记忆失败(忽略):', (e && e.message) || e);
+      return [];
+    }
+  }
+
+  /** 删掉指定的若干条 (导出成功后清账用)。传不到 id 就算删成功。 */
+  async function deleteEpMemories(ids) {
+    const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+    if (!list.length) return false;
+    try {
+      const t = await ensureEpMemoryTable();
+      if (!t) return false;
+      await t.bulkDelete(list.map(String));
+      return true;
+    } catch (e) {
+      console.warn('[CinemaStorage] 删逐条记忆失败:', (e && e.message) || e);
+      return false;
+    }
+  }
+
+  /** 整场清空 (手动"全部删掉"用)。 */
+  async function clearEpMemories(sessionKey) {
+    if (!sessionKey) return false;
+    try {
+      const t = await ensureEpMemoryTable();
+      if (!t) return false;
+      const rows = await t.where('sessionKey').equals(String(sessionKey)).toArray();
+      await t.bulkDelete(rows.map(function (r) { return r.id; }));
+      return true;
+    } catch (e) {
+      console.warn('[CinemaStorage] 清空逐条记忆失败:', (e && e.message) || e);
+      return false;
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // 容量
   // --------------------------------------------------------------------------
 
@@ -585,7 +712,14 @@
     MAX_RECAP_CHARS: MAX_RECAP_CHARS,
     loadSeriesRecap: loadSeriesRecap,
     saveSeriesRecap: saveSeriesRecap,
-    deleteSeriesRecap: deleteSeriesRecap
+    deleteSeriesRecap: deleteSeriesRecap,
+    // 逐条剧情记忆 (2026-10-19) —— 每集/每段落当场落库, 不再等退出那次精炼
+    EP_MEMORY: EP_MEMORY,
+    MIN_EP_CHARS: MIN_EP_CHARS,
+    saveEpMemory: saveEpMemory,
+    listEpMemories: listEpMemories,
+    deleteEpMemories: deleteEpMemories,
+    clearEpMemories: clearEpMemories
   };
 
 })(window);

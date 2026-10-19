@@ -2597,168 +2597,17 @@
     if (global.CinemaLive) global.CinemaLive.renderPlotPanel();
   }
 
-  /**
-   * 退出房间。
-   *
-   * 🔴 2026-10-10 改了退出策略 (用户实测两集白看后的决定):
-   *   旧: 退出 → 自动总结 → 写库 → 关房间 (不可逆单向道, 失败就全丢)
-   *   新: 退出 → 弹框问一句 → [现在生成] 手动生成+写库 / [直接退出] 存草稿走人
-   *
-   * 关键点: 无论走哪条, 【都不能让"还没存进去的记忆"跟着页面一起消失】。
-   *   直接退出这条路由 CinemaLive.hardLeave 存 localStorage 草稿兜底,
-   *   下次进影院自动恢复 —— 这正是用户要的"换个时间再来总结"。
-   */
-  async function close() {
-    ensureDom();
-    flushProgress(true);
-    if (global.CinemaLive && global.CinemaLive.isEnabled()) {
-      // 有没存进去的记忆, 且已经还连着 Live → 问用户要不要现在生成
-      if (typeof global.CinemaLive.hasUnsavedMemory === 'function' && global.CinemaLive.hasUnsavedMemory()) {
-        const choice = await confirmLeaveWithMemory();
-        if (choice === 'generate') {
-          appendCinemaSystemLine('⏳ 正在整理这次观影记忆，请稍等……');
-          const r = await global.CinemaLive.generateFinalMemory({ quiet: true });
-          if (!r || r.saved !== true) {
-            // 生成失败: 【不能直接把人踢出去丢脸】, 弹框给一条"仍然退出"的出路。
-            // 单集记忆已经存草稿了, 走人也不会真丢。
-            await showLeaveFallback((r && r.error) || '未知原因');
-          }
-        }
-        // 'leave' → 直接往下走, finishClose 里 CinemaLive.forceLeave → hardLeave 存草稿
-      } else {
-        // 旧路径: 没有可总结内容时仍走原来的流程 (例如只剩聊天没剧情)
-        const r = await global.CinemaLive.onLeaveCinema();
-        if (r && r.saved === false && r.error) {
-          await showLeaveFallback(r.error);
-        }
-      }
-    }
-    finishClose();
-  }
 
-  function appendCinemaSystemLine(text) {
-    const box = document.getElementById('cinema-chat-messages');
-    if (!box) return;
-    const div = document.createElement('div');
-    // ⚠️ class 必须是 cinema-chat-sys —— 跟 cinema-live.js 的 appendSystemLine 同名,
-    //   写成别的就套不到那套样式, 提示会变成一坨没样式的裸文字。
-    div.className = 'cinema-chat-sys';
-    div.textContent = text;
-    box.appendChild(div);
-    box.scrollTop = box.scrollHeight;
-  }
+  // ⚠️ 2026-10-19 删掉了 confirmLeaveWithMemory() 和 showLeaveFallback()。
+  //   前者是"退出时要问一句要不要现在生成", 后者是"生成失败后的兜底出口"。
+  //   两者都是为"退出时那次生成"服务的, 而生成环节已取消 → 再无触发条件。
+  //   留着反而会让人以为退出还有风险 (showLeaveFallback 那段注释记过一个真事故:
+  //   生成失败 → leavePromise 被缓存 → 再点退出走同一条已 reject 的结果 →
+  //   用户被永远关在房间里。生成环节消失后, 这个死结也一起消失了。)
+  //
+  // 同批删掉的还有 close() 里那句 appendCinemaSystemLine('⏳ 正在整理…'),
+  // 它是给生成流程配的提示, 退出不再有生成。
 
-  /**
-   * 「这次还有记忆没存」时的退出确认框。
-   * 返回 'generate' (现在生成) / 'leave' (直接退出, 存草稿)。
-   * 无论用户点哪个、还是超时, 都一定会 resolve —— 不能把关房间卡死。
-   */
-  function confirmLeaveWithMemory() {
-    return new Promise(function (resolve) {
-      let done = false;
-      const timers = [];
-      function settle(v) {
-        if (done) return;
-        done = true;
-        timers.forEach(function (t) { try { clearTimeout(t); } catch (e) { /* noop */ } });
-        closeAnyModal();
-        resolve(v);
-      }
-      if (global.showCustomConfirm) {
-        global.showCustomConfirm(
-          '这次观影记忆还没存进长期记忆',
-          '要现在生成吗？生成后你随时可以点顶部「退出」离开。' +
-            '<br><br>如果现在不方便（比如 API 抽风），也可以直接退出 —— ' +
-            '<b>你这次攒下的剧情记忆会存在本地，下次进影院自动恢复</b>，到时候再生成就行，不会丢。',
-          {
-            confirmText: '现在生成',
-            cancelText: '直接退出（先存着）',
-            confirmButtonClass: ''
-          }
-        ).then(function (ok) {
-          settle(ok ? 'generate' : 'leave');
-        }).catch(function () { settle('leave'); });
-      } else {
-        // 没有确认弹框能力 → 保守起见直接存草稿走人, 绝不自动触发一次可能失败的生成
-        settle('leave');
-      }
-      // 兜底: 弹框任何异常/用户无视, 25 秒后一律放人
-      timers.push(setTimeout(function () { settle('leave'); }, 25000));
-    });
-  }
-
-  /** 关掉可能还开着的自定义弹框 (showCustomAlert/Confirm/Choice 共用那一个宿主节点) */
-  function closeAnyModal() {
-    try {
-      var el = document.getElementById('custom-modal-overlay');
-      if (el) el.style.display = 'none';
-      var ch = document.getElementById('custom-chat-overlay');
-      if (ch) ch.style.display = 'none';
-    } catch (e) { /* noop */ }
-  }
-
-  /**
-   * 记忆没存上时的兜底出口: 弹框 + 倒计时 + 「仍然退出」。
-   * 返回的 Promise 一定会 resolve —— 无论用户点哪个按钮、等多久, 保证 close() 不卡死。
-   */
-  function showLeaveFallback(reason) {
-    return new Promise(function (resolve) {
-      var done = false;
-      var tick = null;
-      var hardStop = null;
-
-      function settle(val) {
-        if (done) return;
-        done = true;
-        try { if (tick) clearInterval(tick); } catch (e) { /* noop */ }
-        try { if (hardStop) clearTimeout(hardStop); } catch (e) { /* noop */ }
-        closeAnyModal();
-        resolve(val);
-      }
-
-      var left = 10;
-
-      // 用 showCustomConfirm —— 它才有【标题 + 正文 + 两个按钮】的签名。
-      // ⚠️ 别用 showChoiceModal: 那个是【分页选项列表】(title, options) 返回 Promise,
-      //    语义完全不同, 传三个参数进去等于没给正文 (2026-10-07 一度写错过)。
-      var modalShown = false;
-      if (global.showCustomConfirm) {
-        try {
-          modalShown = true;
-          global.showCustomConfirm(
-            '观影记忆没存上',
-            '没能把这次的观影记忆写进长期记忆：' + (reason || '未知原因') +
-              '<br><br>记忆没存上只是这一次看不到了，房间照常退出，不会把你关在里面。' +
-              '<br><b>' + left + ' 秒后会自动退出。</b>',
-            {
-              // ⚠️ 两个按钮现在【都会退出】。
-              //   原来第二个按钮叫「再试一次」, 听着像能重试, 其实做不到 ——
-              //   CinemaLive 的 leavePromise 是缓存的, 再点退出走的是同一条
-              //   已 reject 的结果, 于是永远出不去。按钮文案不能骗人。
-              confirmText: '仍然退出',
-              cancelText: '退出房间',
-              confirmButtonClass: 'btn-danger'
-            }
-          ).then(function (ok) {
-            settle(ok ? 'leave' : 'retry');
-          }).catch(function () { settle('retry'); });
-        } catch (e) {
-          try { global.alert('观影记忆没存上\n\n' + (reason || '') + '\n\n' + left + ' 秒后自动退出房间。'); } catch (e2) { /* noop */ }
-        }
-      } else {
-        try { global.alert('观影记忆没存上\n\n' + (reason || '') + '\n\n' + left + ' 秒后自动退出房间。'); } catch (e) { /* noop */ }
-      }
-
-      tick = setInterval(function () {
-        left--;
-        if (left <= 0) settle('timeout');
-      }, 1000);
-
-      // 兜底: 无论弹框怎么表现, 15 秒后一律放人
-      hardStop = setTimeout(function () { settle('timeout'); }, 15000);
-      void modalShown;
-    });
-  }
 
   /** 真正关房间 (从 close() 拆出来, 兜底路径也能调) */
   function finishClose() {

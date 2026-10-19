@@ -254,4 +254,26 @@ db.version(68).stores({
   cinemaSeriesRecap: '&key, updatedAt'   // { key, title, text, lastEp, createdAt, updatedAt }
 });
 
+// 逐条剧情记忆 (db v69, 2026-10-19)
+//
+// 【为什么必须有这张表】以前每集记忆只活在内存, 退出时靠【一次长上下文调用】
+// 精炼完再写进长期记忆, 写完就清空。用户实测那次调用会把开头的三个字当整篇收走
+// (静默 2 秒就判说完, 而那个提示词塞了几千字, 模型首字延迟超过 2 秒),
+// 而"非空即成功"的判定照样放行 —— 那几集真白看。
+//
+// 改成: 每看完一集 / 每攒够 5 分钟, 当场写一行。退出时什么都不用做。
+// 用户自己点「导出到长期记忆」, 写进去才算账, 写失败行留着还能再点。
+//
+// id = sessionKey + '#' + ep (同集重播覆盖, 不堆两条)。
+//   短剧 sessionKey = 短剧文件夹名, ep = 集号
+//   长剧 sessionKey = 'film:' + chatId,  ep = 段落序号
+//
+// ⚠️ 加这张表必须同时 bump index.html 里 init-db-schema.js 的 ?v=,
+//    忘了手机上 Dexie 压根不建表 (v66 cinemaChars 踩过这个坑)。
+//    cinema-storage.js 的 ensureEpMemoryTable() 是第二道防线。
+db.version(69).stores({
+  cinemaEpMemories: '&id, sessionKey, ep, updatedAt'
+  // { id, sessionKey, kind, title, ep, text, at, updatedAt }
+});
+
 window.db = db;
