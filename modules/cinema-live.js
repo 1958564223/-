@@ -151,6 +151,10 @@
     exporting: false,
     // 🔴 2026-10-20 手动精炼前情提要正在进行中 (单通道, 防连点)
     refining: false,
+    // 🔴 2026-10-20 精炼的进度/结果 —— 必须显示在【记忆页这一栏里】。
+    //   原来只 appendSystemLine(发到聊天框), 而记忆页开着的时候聊天框是收着的
+    //   → 用户点完"没动静"。这条就是那个教训。
+    refineMsg: '',
     // ---- 跨场提要 (2026-10-15 起, 2026-10-19 改由后台合并产生) ----
     // 【它解决什么】各集记忆以前只活在内存, 退出精炼成功后一律清空,
     //   下次进来模型对这部剧是零认知 —— 用户看第 3 集时问"刚那个人是谁",
@@ -255,6 +259,7 @@
     watchSession.segCount = 0;
     watchSession.exporting = false;
     watchSession.refining = false;
+    watchSession.refineMsg = '';
     watchSession.seriesRecap = null;
     watchSession.seriesRecapInjectPending = false;
     log('新的 Cinema watch session:', watchSession.watchSessionId);
@@ -863,18 +868,33 @@
     // 🔴 2026-10-20 手动精炼按钮 (用户要求)。
     //   自动那条要攒够 10 集才跑, 用户看 4 集就退出的话模型还是零认知。
     //   这里的按钮随时能点, 而且【一条单集剧情都不删】—— 提要只是给模型看的压缩版。
-    var canRefine = !watchSession.refining && !watchSession.summaryBusy &&
-      (eps.length > 0 || !!(rec && (rec.text || '').trim()));
+    //
+    // ⚠️ 2026-10-20 修一个真事故: 反馈原来全走 appendSystemLine(聊天框),
+    //   而记忆页开着的时候聊天框是收着的 → 用户点了"没动静"。
+    //   现在进度和结果都显示在【这一栏里】(refineMsg), 聊天框那条只是顺带。
+    //   按钮也【不再因为各种原因变灰】—— 灰了就是点了真的没反应, 那更糟。
+    //   只有"正在精炼"才 disable, 其他情况点了都有明确反馈。
+    var refining = !!watchSession.refining;
+    var liveReady = !!(S.client && S.client.isReady());
+    var refineHint;
+    if (refining) {
+      refineHint = '正在精炼，请稍等…';
+    } else if (!liveReady) {
+      refineHint = '⚠️ Gemini 没连上，精炼不了（先在设置里填密钥、连上 Gemini）';
+    } else {
+      refineHint = (eps.length
+        ? '把看过的 ' + eps.length + ' 集压成一份提要，下次进来自动带上。'
+        : '把库里看过的各集压成一份提要。') + '各集剧情不会删。';
+    }
     var refineBar =
       '<div class="cinema-plot-edit-bar">' +
-      '<button class="cinema-plot-btn" data-plot="refine-recap"' + (canRefine ? '' : ' disabled') + '>' +
-      (watchSession.refining ? '⏳ 正在精炼…' : '📖 精炼前情提要') + '</button>' +
-      '<span class="cinema-plot-hint">' +
-      (eps.length
-        ? '把看过的 ' + eps.length + ' 集压成一份提要，下次进来自动带上。'
-        : '把库里看过的各集压成一份提要。') +
-      '各集剧情不会删。</span>' +
-      '</div>';
+      '<button class="cinema-plot-btn" data-plot="refine-recap"' + (refining ? ' disabled' : '') + '>' +
+      (refining ? '⏳ 正在精炼…' : '📖 精炼前情提要') + '</button>' +
+      '<span class="cinema-plot-hint">' + esc(refineHint) + '</span>' +
+      '</div>' +
+      (watchSession.refineMsg
+        ? '<div class="cinema-plot-text dim">' + esc(watchSession.refineMsg) + '</div>'
+        : '');
 
     return '<div class="cinema-plot-label">前情提要（跨场保留 · 下次进影院自动带上）</div>' +
         recapHtml +
@@ -1681,32 +1701,54 @@
    *   因为导出成功会把库里的单集剧情【清账删掉】, 删了就没素材给精炼用了。
    *   面板上两个按钮的先后就是按这个排的, 提示里也写明了。
    */
+  /**
+   * 精炼的进度/结果 —— 显示在【记忆页那一栏】。
+   * ⚠️ 别只 appendSystemLine: 记忆页开着的时候聊天框是收着的, 用户看不见 →
+   *   表现就是"点了没动静"(2026-10-20 真踩过)。
+   */
+  function setRefineMsg(text) {
+    watchSession.refineMsg = String(text || '');
+    if (!watchSession.closed && !S._leaving) renderPlotPanel();
+  }
+
   function refineSeriesRecap() {
-    if (watchSession.kind !== 'series') return Promise.resolve(false);
-    if (watchSession.refining) return Promise.resolve(false);
+    if (watchSession.kind !== 'series') {
+      setRefineMsg('只有短剧才有前情提要。');
+      return Promise.resolve(false);
+    }
+    if (watchSession.refining) {
+      setRefineMsg('已经在精炼了，等一下。');
+      return Promise.resolve(false);
+    }
     var CS = cinemaStorage();
     var key = currentSessionKey();
-    if (!CS || typeof CS.listEpMemories !== 'function' || !key) return Promise.resolve(false);
+    if (!CS || typeof CS.listEpMemories !== 'function' || !key) {
+      setRefineMsg('读不到记忆库，没法精炼。');
+      return Promise.resolve(false);
+    }
     if (!S.client || !S.client.isReady()) {
+      setRefineMsg('⚠️ Gemini 没连上，没法精炼（先在设置里填密钥、连上 Gemini）。');
       appendSystemLine('⚠️ Gemini 没连上，没法精炼（先在设置里填密钥、连上 Gemini）');
       return Promise.resolve(false);
     }
     watchSession.refining = true;
-    renderPlotPanel();
+    setRefineMsg('正在精炼，请稍等…（一般在十几秒）');
     appendSystemLine('📖 正在精炼前情提要，请稍等…');
 
     return CS.listEpMemories(key)
       .then(function (rows) {
         if (!rows || !rows.length) {
-          appendSystemLine('⚠️ 库里还没有攒下的单集剧情，没东西可以精炼');
+          setRefineMsg('库里还没有攒下的单集剧情，没东西可以精炼。先看一集再来。');
           return false;
         }
         var old = watchSession.seriesRecap;
         return runRecapMerge(old, rows, '手动精炼').then(function (ok) {
           if (ok) {
-            appendSystemLine('✅ 前情提要已精炼好（到第 ' + (rows[rows.length - 1].ep || 0) +
-              ' 集）。各集剧情一条都没删。');
+            var lastEp = rows[rows.length - 1].ep || 0;
+            setRefineMsg('✅ 前情提要已精炼好（到第 ' + lastEp + ' 集）。各集剧情一条都没删。');
+            appendSystemLine('✅ 前情提要已精炼好（到第 ' + lastEp + ' 集）。各集剧情一条都没删。');
           } else {
+            setRefineMsg('⚠️ 这次没精炼出来（可能是模型没写完）。旧提要保持不变，可以再点一次。');
             appendSystemLine('⚠️ 这次没精炼出来（可能是模型没写完）。旧提要保持不变，可以再点一次。');
           }
           return ok;
@@ -1714,7 +1756,9 @@
       })
       .catch(function (e) {
         logWarn('手动精炼前情提要失败(不影响单集记忆):', e && e.message);
-        appendSystemLine('⚠️ 精炼失败：' + ((e && e.message) || '未知错误') + '（各集剧情都还在）');
+        var msg = '⚠️ 精炼失败：' + ((e && e.message) || '未知错误') + '（各集剧情都还在，可以再点一次）';
+        setRefineMsg(msg);
+        appendSystemLine(msg);
         return false;
       })
       .then(function (r) {
