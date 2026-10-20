@@ -166,10 +166,68 @@
   let callRenderDiagTimer = null;
   let callRenderDiagFpsCap = 60;
   let callRenderDiagFrame = 0;
+  let callRenderDiagInjectedStyle = null;
+  let callDetachedScreens = null;
+  let callDiagMuteMic = false;
 
   function getCallLive2DApp() {
     const canvas = document.getElementById('live2d-canvas');
     return (canvas && canvas._live2dApp) ? canvas._live2dApp : null;
+  }
+
+  // ── 宿主隔离: 把除通话页外的所有屏幕/弹窗从 DOM 摘掉 ──────────
+  // 这是"9000 个节点"假设的决定性测试 —— 直接把 97 个 screen + 544 个 modal
+  // 一次性从文档里拿掉, 看还热不热。
+  // 保留引用, 所以能还原; 挂断前会强制还原 (否则 showScreen 找不到聊天屏会抛错)。
+  function setCallScreenIsolation(on) {
+    if (on) {
+      if (callDetachedScreens) return;
+      try {
+        const keep = document.getElementById('video-call-screen');
+        const frag = document.createDocumentFragment();
+        const moved = [];
+        const collect = (list) => {
+          list.forEach(el => {
+            if (!el || !el.parentElement) return;
+            moved.push({ el: el, parent: el.parentElement });
+            frag.appendChild(el);
+          });
+        };
+        const screens = Array.prototype.slice.call(document.querySelectorAll('.screen'));
+        collect(screens.filter(el => el !== keep));
+        collect(Array.prototype.slice.call(document.querySelectorAll('.modal')));
+        callDetachedScreens = moved;
+        callDiagNote('隔离宿主: 摘掉 ' + moved.length + ' 个屏幕/弹窗');
+        callDiagFlush();
+      } catch (e) {
+        console.warn('[通话诊断] 隔离宿主失败:', e);
+      }
+    } else {
+      restoreDetachedScreens();
+    }
+  }
+
+  function restoreDetachedScreens() {
+    if (!callDetachedScreens) return;
+    try {
+      callDetachedScreens.forEach(m => {
+        if (m.el && m.parent) m.parent.appendChild(m.el);
+      });
+    } catch (e) { /* ignore */ }
+    callDetachedScreens = null;
+  }
+
+  // ── 注入一条临时样式 (关动画 / 关毛玻璃) ──────────────────────
+  function setCallDiagStyle(css) {
+    if (callRenderDiagInjectedStyle) {
+      callRenderDiagInjectedStyle.remove();
+      callRenderDiagInjectedStyle = null;
+    }
+    if (!css) return;
+    const st = document.createElement('style');
+    st.textContent = css;
+    document.head.appendChild(st);
+    callRenderDiagInjectedStyle = st;
   }
 
   function updateCallRenderDiag() {
@@ -220,9 +278,82 @@
       '<div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap">' +
       '<button id="crd-fps" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#7CFC7C;color:#000">帧率:60</button>' +
       '<button id="crd-l2d" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#FFD24D;color:#000">关掉Live2D</button>' +
+      '<button id="crd-anim" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#9AD5FF;color:#000">关CSS动画</button>' +
+      '<button id="crd-blur" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#C6A8FF;color:#000">关毛玻璃</button>' +
+      '<button id="crd-iso" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#FF9F9F;color:#000">只留通话屏</button>' +
+      '<button id="crd-mic" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#FFC08A;color:#000">关麦克风监听</button>' +
+      '<button id="crd-cam" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#B0B0B0;color:#000">关摄像头</button>' +
       '</div>';
     screen.appendChild(panel);
     callRenderDiagPanel = panel;
+
+    // 消融开关: 每按一下就砍掉一个发热嫌疑, 一通电话里把候选全部分完。
+    panel.querySelector('#crd-anim').addEventListener('click', function () {
+      const on = this.dataset.on === '1';
+      if (on) {
+        setCallDiagStyle('');
+        this.textContent = '关CSS动画';
+        this.dataset.on = '0';
+        callDiagNote('恢复 CSS 动画');
+      } else {
+        setCallDiagStyle('#video-call-screen *, #video-call-screen *::before, #video-call-screen *::after {' +
+          'animation: none !important; transition: none !important; }');
+        this.textContent = '恢复CSS动画';
+        this.dataset.on = '1';
+        callDiagNote('关掉通话页全部 CSS 动画');
+      }
+      callDiagFlush();
+    });
+
+    panel.querySelector('#crd-blur').addEventListener('click', function () {
+      const on = this.dataset.on === '1';
+      if (on) {
+        setCallDiagStyle('');
+        this.textContent = '关毛玻璃';
+        this.dataset.on = '0';
+        callDiagNote('恢复毛玻璃');
+      } else {
+        setCallDiagStyle('#video-call-screen *, #video-call-screen *::before, #video-call-screen *::after {' +
+          'backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }');
+        this.textContent = '恢复毛玻璃';
+        this.dataset.on = '1';
+        callDiagNote('关掉通话页全部毛玻璃');
+      }
+      callDiagFlush();
+    });
+
+    panel.querySelector('#crd-iso').addEventListener('click', function () {
+      const on = this.dataset.on === '1';
+      setCallScreenIsolation(!on);
+      this.textContent = on ? '只留通话屏' : '恢复其他屏';
+      this.dataset.on = on ? '0' : '1';
+    });
+
+    panel.querySelector('#crd-mic').addEventListener('click', function () {
+      callDiagMuteMic = !callDiagMuteMic;
+      this.textContent = callDiagMuteMic ? '恢复麦克风' : '关麦克风监听';
+      if (callDiagMuteMic) {
+        // 停掉 rAF 监听循环
+        if (videoCallAutoListenAnimationFrame) {
+          cancelAnimationFrame(videoCallAutoListenAnimationFrame);
+          videoCallAutoListenAnimationFrame = null;
+        }
+        clearVideoCallAutoListenTimers();
+        cleanupVideoCallAudioAnalysis();
+        stopVideoCallMicStream();
+      }
+      callDiagNote(callDiagMuteMic ? '关掉麦克风监听循环' : '恢复麦克风监听');
+      callDiagFlush();
+    });
+
+    panel.querySelector('#crd-cam').addEventListener('click', function () {
+      if (typeof stopCamera === 'function') {
+        stopCamera();
+        this.textContent = '摄像头已关';
+        callDiagNote('关掉摄像头');
+        callDiagFlush();
+      }
+    });
 
     panel.querySelector('#crd-fps').addEventListener('click', function () {
       callRenderDiagFpsCap = (callRenderDiagFpsCap === 60) ? 30 : 60;
@@ -263,6 +394,13 @@
       clearInterval(callRenderDiagTimer);
       callRenderDiagTimer = null;
     }
+    if (callRenderDiagInjectedStyle) {
+      callRenderDiagInjectedStyle.remove();
+      callRenderDiagInjectedStyle = null;
+    }
+    // 隔离过的屏幕一定要装回去 —— 否则下次进任何页面都是空的
+    restoreDetachedScreens();
+    callDiagMuteMic = false;
     if (callRenderDiagPanel && callRenderDiagPanel.parentNode) {
       callRenderDiagPanel.parentNode.removeChild(callRenderDiagPanel);
     }
@@ -2319,6 +2457,8 @@ let voiceCallStatusHoldUntil = 0;
   }
 
   async function startVideoCallAutoListening() {
+    // v0.5.1 诊断开关: 麦克风监听被手动关掉后, 任何路径都不许再重启它
+    if (callDiagMuteMic) return;
     if (!videoCallState.isActive || !videoCallState.isUserParticipating || !videoCallAutoListenEnabled) return;
     if (videoCallState.isAiResponding || videoCallState.isAiSpeaking || videoCallState.isTtsPlaying || videoCallIsListening || videoCallIsRecognizing || isVideoCallRecording) return;
 
@@ -2414,6 +2554,11 @@ let voiceCallStatusHoldUntil = 0;
     if (!videoCallState.isActive) return;
 
     callDiagStage('hangup:start');
+
+    // v0.5.1: 如果诊断面板做过"只留通话屏"隔离, 这里必须先还原 ——
+    //   否则下面 openChat → showScreen('chat-interface-screen') 找不到节点会抛错,
+    //   挂断流程直接断在半路。
+    restoreDetachedScreens();
 
     // v0.5.0 P26: 挂断时强制收口 turn 状态机, 避免旧异步任务污染下一轮
     //   1) abort 当前 fetch (如果有) — fetch 接收到 abort 信号会抛 AbortError, 内层 catch
