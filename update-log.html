@@ -166,11 +166,29 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.21 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.21</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>顶栏「退出」点了没反应</strong> —— 用户实测：导出剧情记忆后想退出回聊天界面，点顶栏「退出」一点动静都没有，而且<strong>也不报任何错</strong>。根因：v4.20 重构时把 <code>close()</code> 这个函数误删了，但两处引用还在（按钮的 click 绑定和 <code>CinemaRoom.close</code> 的导出），于是 <code>close</code> 这个名字落到了浏览器的全局 <code>window.close</code> 上 —— 点下去等于去调浏览器的关窗口接口，手机上对非脚本打开的标签页是静默无效的。因为全局同名函数一直都在，整个模块加载时也不抛错，所以特别难发现。现在补回来了：退出 = 落盘播放进度 + 收尾关房间，秒退。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title change">变化</div>
+        <ul class="item-list">
+          <li><strong>顶栏的「停止」按钮删掉了</strong> —— 播放视频时顶栏会变成 6 个按钮，最后一个被挤到下一排，整个视频区都被往下推。删掉之后顶栏固定 5 个（设置 / 记忆 / 聊天 / 片单 / 退出），一行放得下。功能上不吃亏：<strong>停发帧和停计时，播放器自带的暂停早就接上了</strong>（暂停时 Gemini 那边自动停发帧、冻结播放时长、停掉 5 分钟摘要定时器）；而「彻底把这一部卸下来」这件事，点片单里另一部就会做，想彻底不看了还有顶栏的「退出」。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.20 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.20</span>
-        <span class="version-date">最新版本</span>
       </div>
       <div class="section">
         <div class="section-title new">新增</div>

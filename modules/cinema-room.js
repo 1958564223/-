@@ -75,8 +75,18 @@
     '      <div class="cinema-topbar-status" id="cinema-topbar-status"></div>',
     '    </div>',
     '    <div class="cinema-room-topbar-actions">',
-    '      <button class="cinema-room-icon-btn cinema-stop-btn" id="cinema-stop-btn" title="停止播放" aria-label="停止播放" hidden>',
-    CINEMA_ICON.stop, '<span>停止</span></button>',
+    // 🔴 2026-10-20 用户要求删掉顶栏的「停止」按钮。
+    //   原因: 播放时顶栏变成 6 个按钮, 最后一个被挤到下一排, 整个视频区被往下推。
+    //   顶栏 5 个按钮 (设置/记忆/聊天/片单/退出) 是一行放得下的, 少一个就回到原来那排。
+    //
+    //   为什么删得掉 (不是"暂停"的重复功能):
+    //   ① 停发帧/停计时这块, 播放器自带的暂停早就接上了 ——
+    //      cinema-room.js 的 video 'pause' 事件会调 CinemaLive.pauseFrames('video pause'),
+    //      它做的是: 停发帧 + markPaused 冻结播放时长 + 停 5 分钟摘要定时器。
+    //   ② 真正只有「停止」才做的, 是【彻底卸掉影片源】: revoke blob URL + destroyHls
+    //      + video.src 清空。这件事点片单里另一部片就会做(playFilm 会换 src),
+    //      想彻底不看了还有顶栏的「退出」—— 所以这个按钮不提供不可替代的能力。
+    //   ③ stopPlayback() 函数本身【保留】: 读不到影片文件时和删除正在播的那部时还在用它。
     '      <button class="cinema-room-icon-btn" id="cinema-settings-btn" title="设置" aria-label="打开设置">',
     CINEMA_ICON.gear, '<span>设置</span></button>',
     // 🔴 2026-10-16 用户要求: 剧情记忆从聊天框里拆出来单独一页。
@@ -339,7 +349,8 @@
       diagBox: document.getElementById('cinema-diag-box'),
       diagToggle: document.getElementById('cinema-diag-toggle'),
       closeBtn: document.getElementById('cinema-room-close'),
-      stopBtn: document.getElementById('cinema-stop-btn'),
+      // ⚠️ 2026-10-20: stopBtn 整个删掉了(顶栏按钮数别再往回加, 见 ROOM_HTML 里的说明)。
+      //   这里【不要】再加回来 —— 加回来顶栏就变 6 个, 会把视频区挤到下一排。
       chatToggle: document.getElementById('cinema-chat-toggle'),
       chatPanel: document.getElementById('cinema-chat-panel'),
       chatClose: document.getElementById('cinema-chat-close'),
@@ -650,7 +661,6 @@
   function bindEvents() {
     // addBtn / drawerAdd 的点击绑定在下面「片源」段 (走片源面板, 不是直接选文件)
     els.closeBtn.addEventListener('click', close);
-    els.stopBtn.addEventListener('click', function () { stopPlayback(); });
 
     // ---- 短剧库 (2026-10-07) ----
     if (els.seriesConnect) {
@@ -1061,7 +1071,6 @@
     //   文本照旧写进去 (调试/测试还能读到), 但 hidden 不解除。
     els.nowPlaying.textContent = film.name;
     els.nowPlaying.hidden = true;
-    els.stopBtn.hidden = false;
     syncTopbarHeight();
     setDrawer(false);
 
@@ -1283,8 +1292,13 @@
 
   // --------------------------------------------------------------------------
   // 停止播放
-  // 只停片, 不退房间 —— 右上角 ✕ 才是退房间。两者分开是 2026-10-04 用户明确要求的。
-  // 进度会先落盘, 之后从片单点"播放"能接着看。
+  // ⚠️ 2026-10-20: 顶栏那个「停止」按钮已经删掉了(见 ROOM_HTML 里的说明) ——
+  //   播放时顶栏变 6 个按钮会把视频区挤到下一排。
+  //   这个函数【保留】, 因为还有两处内部逻辑要它:
+  //     ① playFilm(): 影片文件读不出来时, 先把播放器清干净再报错
+  //     ② deleteFilm(): 删掉正在播的那部, 不然 blob 一直挂在 video 上
+  //   它做的事跟以前一样: 停片, 不退房间 —— 右上角 ✕ 才是退房间。
+  //   进度会先落盘, 之后从片单点"播放"能接着看。
   //
   // ⚠️ 2026-10-07 修正: 这里原来调的是 onVideoSourceChanged() (那是"换片"的钩子),
   // 而那函数内部会 disable() 掉整个 Gemini Live + 清空 currentPlotSummary。
@@ -1308,7 +1322,6 @@
     pendingResumeTime = 0;
     els.idle.hidden = false;
     els.nowPlaying.textContent = '';
-    els.stopBtn.hidden = true;
     stopAmbient();
     Promise.resolve(refreshList()).catch(function () { /* 片单刷新失败不影响停止 */ });
   }
@@ -1616,7 +1629,6 @@
 
     applyVideoSrc(url);
     els.idle.hidden = true;
-    els.stopBtn.hidden = false;
     syncTopbarHeight();
     setDrawer(false);
 
@@ -2607,6 +2619,27 @@
   //
   // 同批删掉的还有 close() 里那句 appendCinemaSystemLine('⏳ 正在整理…'),
   // 它是给生成流程配的提示, 退出不再有生成。
+
+
+  /**
+   * 退出房间 —— 2026-10-19 简化成秒退, 2026-10-20 补回
+   *
+   * 【为什么现在只剩三行】记忆已经当场落库(cinemaEpMemories), 退出时不需要做任何生成。
+   *   旧版 close() 会先弹框问"要不要现在生成记忆", 再等生成结果, 生成失败还弹兜底框 ——
+   *   那一整套都是给"退出时统一精炼"服务的, 而那个环节已经整个取消。
+   *   → 退出 = flushProgress(落盘播放进度) + finishClose(收尾, 里面会 forceLeave)。
+   *
+   * ⚠️ 2026-10-20 修一个真事故: 这个函数在 v4.20 重构里被误删了, 但两处引用都还在 ——
+   *   els.closeBtn.addEventListener('click', close) 和 global.CinemaRoom.close。
+   *   于是 close 落到了全局的 window.close, 点"退出"等于调浏览器的关窗口接口,
+   *   手机上对非脚本打开的标签页是【静默无效】的: 不报错、不动, 用户只看到"点了没反应"。
+   *   → 教训: 删函数前必须 grep 它在文件里的每一处引用, 光看"没人调了吧"会被全局同名函数接住。
+   */
+  async function close() {
+    ensureDom();
+    flushProgress(true);   // 退出前把播放进度落盘, 不然这一集白看
+    finishClose();
+  }
 
 
   /** 真正关房间 (从 close() 拆出来, 兜底路径也能调) */

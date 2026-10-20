@@ -642,16 +642,6 @@ body.cinema-room-active {
   transform: scale(.96);
 }
 
-.cinema-stop-btn {
-  color: #ffcbb8;
-  border-color: rgba(214, 130, 106, .42);
-  background: rgba(74, 34, 28, .62);
-}
-
-.cinema-stop-btn[hidden] {
-  display: none;
-}
-
 .cinema-chat-hbtn {
   display: inline-flex;
   align-items: center;

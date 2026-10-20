@@ -30,12 +30,29 @@
 //        退出什么都不做(秒退), 要不要写进长期记忆由用户在「记忆」页点【导出】决定。
 //   cinema-live.js / cinema-room.js / cinema-room.css / cinema-storage.js
 //   四个都在下面 URLS_TO_CACHE 里, 且 index.html 的 ?v= 已 bump
-//   (1.8.0 / 0.27.0 / 0.37.0 / 0.5.0), 所以【必须】bump CACHE_VERSION。
+//   (1.8.0 / 0.28.0 / 0.37.0 / 0.5.0), 所以【必须】bump CACHE_VERSION。
 //   ⚠️ init-db-schema.js 【不在】下面这份预缓存清单里(查过了), 所以它走浏览器 HTTP 缓存,
 //      靠 index.html 里的 ?v= 生效 —— 那个已经 bump 到 0.0.41。
 //      忘了 bump 的话手机上 Dexie 压根不建 v69 那张表, 逐条记忆全都写不进去
 //      (v66 cinemaChars 踩过这个坑; cinema-storage 的 ensureEpMemoryTable() 是第二道防线)。
-const CACHE_VERSION = 'v0.2.43.5';
+// v0.2.44.0 (2026-10-20): Cinema Room 顶栏「退出」点了没反应 —— 修回被误删的 close()。
+//   症状: 导完剧情记忆回聊天界面, 点顶栏「退出」毫无动静, 也不报错。
+//   根因: v4.20 重构时 close() 这个函数被误删了, 但两处引用还在 ——
+//        els.closeBtn.addEventListener('click', close) 和 global.CinemaRoom.close。
+//        于是 close 落到了全局的 window.close, 点下去等于调浏览器的关窗口接口,
+//        手机上对非脚本打开的标签页是【静默无效】的。
+//   修法: 把 close() 补回来(flushProgress 落盘进度 + finishClose 收尾), 不再有任何生成。
+//   index.html 的 ?v= 已 bump (cinema-room.js 0.27.0 → 0.28.0), 所以要 bump CACHE_VERSION。
+// v0.2.45.0 (2026-10-20): Cinema Room 顶栏删掉「停止」按钮。
+//   症状: 播放视频时顶栏变成 6 个按钮, 最后一个被挤到下一排, 视频区整个被往下推。
+//   改动: 删掉顶栏那个「停止」(HTML + 事件绑定 + els 字段 + 两处 hidden + CSS 规则),
+//        stopPlayback() 函数保留(读不到文件 / 删正在播的那部时还在用)。
+//   为什么删得掉: 停发帧和停计时, 播放器自带的暂停早就接上了
+//        (video 'pause' 事件 → CinemaLive.pauseFrames);
+//        而「彻底卸掉影片源」这件事, 点片单里另一部就会做。
+//   index.html 的 ?v= 已 bump (cinema-room.js 0.29.0 / cinema-room.css 0.38.0),
+//   所以要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.45.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
