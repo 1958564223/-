@@ -875,16 +875,21 @@
     //   按钮也【不再因为各种原因变灰】—— 灰了就是点了真的没反应, 那更糟。
     //   只有"正在精炼"才 disable, 其他情况点了都有明确反馈。
     var refining = !!watchSession.refining;
-    var liveReady = !!(S.client && S.client.isReady());
+    // ⚠️ 2026-10-20: 这里【不再看主会话连没连】(liveReady 删掉了)。
+    //   精炼改成【单独调一次观影模型】, 看完剧、没连接照样能做 ——
+    //   原来那句"Gemini 没连上，精炼不了"是把这条路直接堵死了。
+    //   现在只有"根本没填 key"才算真的调不了。
+    var hasKey = !!getGeminiKey();
     var refineHint;
     if (refining) {
-      refineHint = '正在精炼，请稍等…';
-    } else if (!liveReady) {
-      refineHint = '⚠️ Gemini 没连上，精炼不了（先在设置里填密钥、连上 Gemini）';
+      refineHint = '正在精炼（会单独调一次观影模型，一般十几秒）…';
+    } else if (!hasKey) {
+      refineHint = '⚠️ 还没填 Gemini API Key（右上角 ⚙ 里填），调不了模型。';
     } else {
       refineHint = (eps.length
         ? '把看过的 ' + eps.length + ' 集压成一份提要，下次进来自动带上。'
-        : '把库里看过的各集压成一份提要。') + '各集剧情不会删。';
+        : '把库里看过的各集压成一份提要。') +
+        '会【单独调一次观影模型】来写 —— 看完剧、Gemini 断开了照样能精炼。各集剧情不会删。';
     }
     var refineBar =
       '<div class="cinema-plot-edit-bar">' +
@@ -1711,6 +1716,115 @@
     if (!watchSession.closed && !S._leaving) renderPlotPanel();
   }
 
+  /**
+   * 单独调一次观影模型 —— 开一个【临时的一次性 Live 会话】, 拿到文字就关掉。
+   *
+   * 【为什么不能直接用主会话 S.client】
+   *   ① 用户要精炼的时机是"看完剧、没连接" —— 那时主会话根本不存在。
+   *      原来 refineSeriesRecap 里那道 `if (!S.client || !S.client.isReady())`
+   *      门把这条路整个堵死了 (用户原话"一般都是看完剧没连接的时候精炼")。
+   *   ② 主会话里塞着视频帧和闲聊, 让它写提要它会"搁那打胡乱说"(用户原话)。
+   *      干净的一次性会话里只有一条任务指令, 不会跑题。
+   *
+   * 【"观影模型"是哪台】
+   *   同一个 LiveClient、同一份 buildSystemPrompt(同一个人设)、同一把 key ——
+   *   调的就是那个观影模型, 只是这一次的会话里只有一条任务, 没有画面。
+   *
+   * 【收尾】不管成功失败都 close, 绝不留下野连接。
+   */
+  function callViewerModelOnce(instruction) {
+    var apiKey = getGeminiKey();
+    if (!apiKey) return Promise.reject(new Error('还没填 Gemini Live API Key'));
+    if (typeof window.LiveClient !== 'function') return Promise.reject(new Error('live-client.js 没加载'));
+    var task = String(instruction || '').trim();
+    if (!task) return Promise.reject(new Error('指令是空的'));
+    // ⚠️ 这一句必须【加在最后】: 指令开头是 【【后台任务】】, 观影模型的人设里
+    //   认这个前缀 ("遇到这类消息时只输出正文")。前缀后面再补说明, 不影响识别。
+    task += '\n\n（这一次没有画面输入，你只要处理上面这条任务。）';
+
+    var buffer = '';
+    var lastText = '';
+    var gotText = false;
+    var settleTimer = null;
+    var hardTimer = null;
+    var readyTimer = null;
+    var finished = false;
+    var temp = null;
+
+    return new Promise(function (resolve, reject) {
+      function cleanup() {
+        if (settleTimer) clearTimeout(settleTimer);
+        if (hardTimer) clearTimeout(hardTimer);
+        if (readyTimer) clearInterval(readyTimer);
+        settleTimer = null; hardTimer = null; readyTimer = null;
+        if (temp) {
+          try { temp.close('一次性调用结束'); } catch (e) { /* noop */ }
+          temp = null;
+        }
+      }
+      function finish(ok, payload) {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        if (ok) resolve(payload);
+        else reject(new Error(String(payload || '未知错误')));
+      }
+      /** 连续 SUMMARY_SETTLE_MS 没新字 → 判定它说完了 (跟主会话同一套判定) */
+      function armSettle() {
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(function () {
+          if (!gotText) return;   // 一个字都没吐 → 继续等硬超时
+          log('[一次性模型] 静默 ' + (SUMMARY_SETTLE_MS / 1000) + 's, 收 (' + buffer.length + ' 字)');
+          finish(true, buffer.trim());
+        }, SUMMARY_SETTLE_MS);
+      }
+      function onText(t) {
+        if (!t) return;
+        gotText = true;
+        buffer += takeDelta(lastText, t);   // 转写是累计全文, 必须去重
+        lastText = t;
+        armSettle();
+      }
+
+      temp = new window.LiveClient({
+        apiKey: apiKey,
+        systemPrompt: buildSystemPrompt(getCurrentChat()),
+        onModelText: onText,
+        // 一次性会话没有视频帧推回合, turnComplete 就是"说完了"的准信号
+        // (live-client 在 turnComplete 时会先把最后一段字重抛一次, 缓冲区拿到的是全文)
+        onTurnComplete: function () { if (gotText) finish(true, buffer.trim()); },
+        onError: function (err) { finish(false, (err && err.message) || '模型连接出错'); },
+        onState: function (state, detail) { log('[一次性模型] ' + state + (detail ? ' · ' + detail : '')); }
+      });
+
+      hardTimer = setTimeout(function () {
+        // 超时: 收到过字就收已收到的, 没收到才算失败
+        if (gotText) finish(true, buffer.trim());
+        else finish(false, '模型没回话（超时 ' + Math.round(SUMMARY_REQUEST_TIMEOUT_MS / 1000) + 's）');
+      }, SUMMARY_REQUEST_TIMEOUT_MS);
+
+      temp.connect()
+        .then(function () {
+          // connect() 只保证 WebSocket 开了, 还得等 setupComplete 才算 ready
+          var waited = 0;
+          readyTimer = setInterval(function () {
+            waited += 200;
+            if (finished) { clearInterval(readyTimer); readyTimer = null; return; }
+            if (temp && temp.isReady()) {
+              clearInterval(readyTimer); readyTimer = null;
+              if (!temp.sendUserText(task)) finish(false, '发送失败（连接没就绪）');
+            } else if (waited > 20000) {
+              clearInterval(readyTimer); readyTimer = null;
+              finish(false, '等模型初始化超时（20s）');
+            }
+          }, 200);
+        })
+        .catch(function (err) {
+          finish(false, (err && err.message) || '连接失败');
+        });
+    });
+  }
+
   function refineSeriesRecap() {
     if (watchSession.kind !== 'series') {
       setRefineMsg('只有短剧才有前情提要。');
@@ -1726,14 +1840,15 @@
       setRefineMsg('读不到记忆库，没法精炼。');
       return Promise.resolve(false);
     }
-    if (!S.client || !S.client.isReady()) {
-      setRefineMsg('⚠️ Gemini 没连上，没法精炼（先在设置里填密钥、连上 Gemini）。');
-      appendSystemLine('⚠️ Gemini 没连上，没法精炼（先在设置里填密钥、连上 Gemini）');
+    // ⚠️ 这里【不再要求 Gemini 已连接】(2026-10-20 用户要求):
+    //   精炼的正常时机就是"看完剧、没连接", 原来那道 isReady() 门把这条路堵死了。
+    //   现在改成【单独调一次观影模型】(临时开一个一次性会话) —— 连不连都在线都能做。
+    if (!getGeminiKey()) {
+      setRefineMsg('⚠️ 还没填 Gemini Live API Key（房间右上角 ⚙ 里填），调不了模型。');
       return Promise.resolve(false);
     }
     watchSession.refining = true;
-    setRefineMsg('正在精炼，请稍等…（一般在十几秒）');
-    appendSystemLine('📖 正在精炼前情提要，请稍等…');
+    setRefineMsg('正在精炼（会单独调一次观影模型，一般十几秒）…');
 
     return CS.listEpMemories(key)
       .then(function (rows) {
@@ -1742,23 +1857,31 @@
           return false;
         }
         var old = watchSession.seriesRecap;
-        return runRecapMerge(old, rows, '手动精炼').then(function (ok) {
+        // ⚠️ runRecapMerge 内部会把调用失败吞掉只返回 false, 那样用户只看到
+        //   "没精炼出来", 不知道是【模型没写完】还是【根本没连上】。
+        //   这里把真实原因截下来, 失败时写给用户看。
+        var callErr = '';
+        var call = function (instruction) {
+          return callViewerModelOnce(instruction).catch(function (err) {
+            callErr = (err && err.message) || '未知错误';
+            throw err;
+          });
+        };
+        return runRecapMerge(old, rows, '手动精炼', call).then(function (ok) {
           if (ok) {
             var lastEp = rows[rows.length - 1].ep || 0;
             setRefineMsg('✅ 前情提要已精炼好（到第 ' + lastEp + ' 集）。各集剧情一条都没删。');
-            appendSystemLine('✅ 前情提要已精炼好（到第 ' + lastEp + ' 集）。各集剧情一条都没删。');
+          } else if (callErr) {
+            setRefineMsg('⚠️ 精炼失败：' + callErr + '（各集剧情都还在，可以再点一次）');
           } else {
             setRefineMsg('⚠️ 这次没精炼出来（可能是模型没写完）。旧提要保持不变，可以再点一次。');
-            appendSystemLine('⚠️ 这次没精炼出来（可能是模型没写完）。旧提要保持不变，可以再点一次。');
           }
           return ok;
         });
       })
       .catch(function (e) {
         logWarn('手动精炼前情提要失败(不影响单集记忆):', e && e.message);
-        var msg = '⚠️ 精炼失败：' + ((e && e.message) || '未知错误') + '（各集剧情都还在，可以再点一次）';
-        setRefineMsg(msg);
-        appendSystemLine(msg);
+        setRefineMsg('⚠️ 精炼失败：' + ((e && e.message) || '未知错误') + '（各集剧情都还在，可以再点一次）');
         return false;
       })
       .then(function (r) {
@@ -1774,16 +1897,23 @@
    * @param {object} old    旧提要整行 (可能 null)
    * @param {array}  rows  要压进去的各集 (已按 ep 升序)
    * @param {string} reason 这是在干什么 (会写进提示词让模型知道语气)
+   * @param {function} [callFn] 怎么调模型。不传 = 用主会话 (自动那条),
+   *   手动那条传 callViewerModelOnce —— 单独开一次会话, 不看主会话有没有连着。
    * @returns {Promise<boolean>} true = 提要已更新
    */
-  function runRecapMerge(old, rows, reason) {
+  function runRecapMerge(old, rows, reason, callFn) {
     var list = rows || [];
     if (!list.length) return Promise.resolve(false);
+    var call = callFn || function (instruction) { return requestSummary('recapMerge', instruction); };
     var oldText = (old && old.text || '');
     var lastEp = list[list.length - 1].ep || 0;
     var title = watchSession.seriesTitle || '这部短剧';
     var lines = [];
-    lines.push('【【' + reason + '】】下面是我们一起看过的《' + title + '》的剧情记录。');
+    // ⚠️ 指令开头固定是 【【后台任务】】(不是把 reason 塞进括号里):
+    //   观影模型的人设里认这个前缀 —— "遇到这类消息时: 严格按要求输出摘要正文,
+    //   不要加称呼、不要问问题、不要加评论" (见 buildSystemPrompt 末尾)。
+    //   手动精炼和后台自动合并都走这一套, 所以前缀必须一样, 语气才一样。
+    lines.push('【【后台任务】】' + reason + '。下面是《' + title + '》的剧情记录。');
     lines.push('请把它们合并成【一份前情提要】, 供下次继续看这部剧时用。');
     lines.push('');
     if (oldText) {
@@ -1811,7 +1941,7 @@
     lines.push('');
     lines.push('直接输出前情提要正文，不要解释，不要写观影记忆。');
 
-    return requestSummary('recapMerge', lines.join('\n'))
+    return call(lines.join('\n'))
       .then(function (text) {
         var t = stripHeadingNoise(text);
         // ⚠️ 80 字下限 —— 截断过的提要比没有更糟(用户会以为存上了, 不再重试)。

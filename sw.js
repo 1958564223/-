@@ -61,16 +61,18 @@
 //        导出区加"先精炼后导出"的顺序提醒 (导出成功会删掉库里的各集剧情, 删了就没素材可精炼)。
 //   精炼【不删】单集剧情 —— 提要只是给模型看的压缩版, 库里那份才是原样。
 //   index.html 的 ?v= 已 bump (cinema-live.js 1.9.0), 所以要 bump CACHE_VERSION。
-// v0.2.47.0 (2026-10-20): 修「精炼前情提要」点了没动静。
-//   症状: 用户点了「精炼前情提要」, 屏幕上什么都不出现, 以为功能没实现。
-//   根因: ① 进度和结果全走 appendSystemLine(聊天框), 而记忆页开着的时候
-//        聊天框是收着的 → 反馈发到用户看不见的地方。
-//        ② 按钮会因为各种原因变灰(正在忙/没素材), 灰了就是点了真没反应。
-//   改法: 进度和结果改成显示在【记忆页那一栏里】(watchSession.refineMsg),
-//        按钮只在"正在精炼"时才 disable, 其他情况点了都有明确反馈;
-//        Gemini 没连上时按钮旁边直接写明, 不用点了才知道。
-//   index.html 的 ?v= 已 bump (cinema-live.js 1.9.1), 所以要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.47.0';
+// v0.2.48.0 (2026-10-20): 「精炼前情提要」改成【单独调一次观影模型】+ 反馈只留记忆页。
+//   用户原话: "精炼发去聊天框干嘛? 精炼的是前情提要, 要留在记忆页里的,
+//              而且需要单独调一次观影模型哦, 一般都是看完剧没连接的时候精炼"
+//   根因: ① 精炼走的是 requestSummary, 它硬依赖【已连接的 Live 会话】
+//        (S.client.isReady()), 而精炼的正常时机恰恰是"看完剧、没连接" → 那条路是死的。
+//        ② 进度/结果还留着一份 appendSystemLine(聊天框)。
+//   改法: 新增 callViewerModelOnce —— 临时开一个【一次性 Live 会话】,
+//        同一个模型 + 同一套人设(buildSystemPrompt) + 同一把 key,
+//        只喂一条任务指令, 拿到字就 close(不留野连接);
+//        精炼路径改走它, 不再看主会话连没连; 反馈全部留在记忆页那一栏。
+//   index.html 的 ?v= 已 bump (cinema-live.js 1.9.2), 所以要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.48.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

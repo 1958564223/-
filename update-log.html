@@ -166,11 +166,27 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.23 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.23</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title change">变化</div>
+        <ul class="item-list">
+          <li><strong>「精炼前情提要」改成单独调一次观影模型</strong> —— 用户原话："精炼发去聊天框干嘛？精炼的是前情提要，要留在记忆页里的，而且需要单独调一次观影模型哦，一般都是看完剧没连接的时候精炼"。原来精炼是借<strong>正在连着的</strong>那个会话去问的，所以"看完剧、Gemini 已经断开"这个最常见的时机反而点不动。现在按下去会<strong>临时开一次观影模型的一次性会话</strong>：同一个模型、同一套人设、同一把密钥，只喂这一条任务指令，拿到提要立刻断开（不留野连接）。</li>
+          <li>提要的指令开头统一成 <strong>【【后台任务】】</strong> —— 观影模型的人设里就认这个前缀（遇到就只输出正文，不寒暄、不提问、不加评论）。所以手动精炼和后台自动合并出来的提要，语气是一致的，也不会跑题去聊剧情。</li>
+          <li>精炼的进度和结果<strong>只留在记忆页</strong>，不再往聊天框发一条了（聊天框开着的时候没人看那一条）。</li>
+          <li>失败时把<strong>真实原因</strong>写出来（比如"WebSocket 连接错误"、"模型没回话"），不用自己猜是哪一步断了；旧提要照旧保持不变，可以再点一次。</li>
+          <li>按钮旁边的提示也改了：不再写"Gemini 没连上，精炼不了"（现在照样能精炼），改成"<strong>会单独调一次观影模型来写 —— 看完剧、Gemini 断开了照样能精炼</strong>"。只有真的没填 API Key 才会提示去填。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.22 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.22</span>
-        <span class="version-date">最新版本</span>
       </div>
       <div class="section">
         <div class="section-title new">新增</div>
