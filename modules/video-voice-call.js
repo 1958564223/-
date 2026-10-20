@@ -147,266 +147,7 @@
     callDiagFlush();
   }, true);
 
-  // ============================================================
-  // v0.5.1 通话渲染诊断面板 (临时, 排查「通话久了发烫」)
-  // ------------------------------------------------------------
-  // 为什么做这个: 前面两轮都靠猜, 猜错了两次 (挂断峰值 → 毛玻璃 → 都不是主因)。
-  // 与其再猜, 不如给用户一个能自己动手测的面板 —— 一通电话里就能定位热源。
-  //
-  // 面板显示: 实时 FPS / 画布逻辑尺寸 / 渲染分辨率 / 换算出的物理像素 / 全页节点数
-  // 两个按钮:
-  //   [帧率 60/30]  切渲染帧率。Live2D 内容本身就是 30fps 的, 降到 30 视觉几乎无损,
-  //                  但渲染量直接砍半 —— 这是"零画质代价"的降热手段。
-  //   [Live2D 开/关] 直接掐掉 Live2D 渲染。热不热立刻见分晓 ——
-  //                  如果关掉还照样热, 那热源根本不在渲染上, 省得再往这边查。
-  //
-  // ⚠️ 这是排查用面板, 结论出来后整块删掉即可 (含 index.html/sw.js 的版本号回滚)。
-  // ============================================================
-  let callRenderDiagPanel = null;
-  let callRenderDiagTimer = null;
-  let callRenderDiagFpsCap = 60;
-  let callRenderDiagFrame = 0;
-  let callRenderDiagInjectedStyle = null;
-  let callDetachedScreens = null;
-  let callDiagMuteMic = false;
 
-  function getCallLive2DApp() {
-    const canvas = document.getElementById('live2d-canvas');
-    return (canvas && canvas._live2dApp) ? canvas._live2dApp : null;
-  }
-
-  // ── 宿主隔离: 把除通话页外的所有屏幕/弹窗从 DOM 摘掉 ──────────
-  // 这是"9000 个节点"假设的决定性测试 —— 直接把 97 个 screen + 544 个 modal
-  // 一次性从文档里拿掉, 看还热不热。
-  // 保留引用, 所以能还原; 挂断前会强制还原 (否则 showScreen 找不到聊天屏会抛错)。
-  function setCallScreenIsolation(on) {
-    if (on) {
-      if (callDetachedScreens) return;
-      try {
-        const keep = document.getElementById('video-call-screen');
-        const frag = document.createDocumentFragment();
-        const moved = [];
-        const collect = (list) => {
-          list.forEach(el => {
-            if (!el || !el.parentElement) return;
-            moved.push({ el: el, parent: el.parentElement });
-            frag.appendChild(el);
-          });
-        };
-        const screens = Array.prototype.slice.call(document.querySelectorAll('.screen'));
-        collect(screens.filter(el => el !== keep));
-        collect(Array.prototype.slice.call(document.querySelectorAll('.modal')));
-        callDetachedScreens = moved;
-        callDiagNote('隔离宿主: 摘掉 ' + moved.length + ' 个屏幕/弹窗');
-        callDiagFlush();
-      } catch (e) {
-        console.warn('[通话诊断] 隔离宿主失败:', e);
-      }
-    } else {
-      restoreDetachedScreens();
-    }
-  }
-
-  function restoreDetachedScreens() {
-    if (!callDetachedScreens) return;
-    try {
-      callDetachedScreens.forEach(m => {
-        if (m.el && m.parent) m.parent.appendChild(m.el);
-      });
-    } catch (e) { /* ignore */ }
-    callDetachedScreens = null;
-  }
-
-  // ── 注入一条临时样式 (关动画 / 关毛玻璃) ──────────────────────
-  function setCallDiagStyle(css) {
-    if (callRenderDiagInjectedStyle) {
-      callRenderDiagInjectedStyle.remove();
-      callRenderDiagInjectedStyle = null;
-    }
-    if (!css) return;
-    const st = document.createElement('style');
-    st.textContent = css;
-    document.head.appendChild(st);
-    callRenderDiagInjectedStyle = st;
-  }
-
-  function updateCallRenderDiag() {
-    const panel = callRenderDiagPanel;
-    if (!panel) return;
-    const info = panel.querySelector('#crd-info');
-    if (!info) return;
-    callRenderDiagFrame++;
-    const canvas = document.getElementById('live2d-canvas');
-    const app = canvas && canvas._live2dApp;
-    if (!app) {
-      info.textContent = 'Live2D 未挂载\n→ 还热的话热源不在渲染上';
-      return;
-    }
-    const t = app.ticker || {};
-    const r = app.renderer || {};
-    const w = canvas.clientWidth || 0;
-    const h = canvas.clientHeight || 0;
-    const dpr = r.resolution || 1;
-    // 节点数每 30 次才刷一次 —— getElementsByTagName('*') 一次要扫一万个节点,
-    // 每帧扫会把面板自己变成新的发热源。
-    const showNodes = (callRenderDiagFrame % 30 === 0);
-    info.textContent =
-      'FPS ' + Math.round(t.FPS || 0) +
-      '  ' + w + 'x' + h + ' @' + dpr +
-      ' = ' + Math.round(w * dpr) + 'x' + Math.round(h * dpr) +
-      '\ncanvas ' + canvas.width + 'x' + canvas.height +
-      (showNodes ? ('  节点 ' + document.getElementsByTagName('*').length) : '');
-  }
-
-  function createCallRenderDiagPanel() {
-    if (callRenderDiagPanel) return callRenderDiagPanel;
-    const screen = document.getElementById('video-call-screen');
-    if (!screen) return null;
-
-    const panel = document.createElement('div');
-    panel.id = 'call-render-diag';
-    panel.style.cssText = [
-      'position:absolute', 'left:6px', 'top:6px', 'z-index:100002',
-      'background:rgba(0,0,0,0.62)', 'color:#7CFC7C',
-      'padding:5px 7px', 'border-radius:8px',
-      'font:10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace',
-      'pointer-events:auto', 'white-space:pre',
-      'user-select:none', '-webkit-user-select:none', '-webkit-tap-highlight-color:transparent'
-    ].join(';');
-    panel.innerHTML =
-      '<div id="crd-info">读数中…</div>' +
-      '<div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap">' +
-      '<button id="crd-fps" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#7CFC7C;color:#000">帧率:60</button>' +
-      '<button id="crd-l2d" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#FFD24D;color:#000">关掉Live2D</button>' +
-      '<button id="crd-anim" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#9AD5FF;color:#000">关CSS动画</button>' +
-      '<button id="crd-blur" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#C6A8FF;color:#000">关毛玻璃</button>' +
-      '<button id="crd-iso" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#FF9F9F;color:#000">只留通话屏</button>' +
-      '<button id="crd-mic" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#FFC08A;color:#000">关麦克风监听</button>' +
-      '<button id="crd-cam" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#B0B0B0;color:#000">关摄像头</button>' +
-      '</div>';
-    screen.appendChild(panel);
-    callRenderDiagPanel = panel;
-
-    // 消融开关: 每按一下就砍掉一个发热嫌疑, 一通电话里把候选全部分完。
-    panel.querySelector('#crd-anim').addEventListener('click', function () {
-      const on = this.dataset.on === '1';
-      if (on) {
-        setCallDiagStyle('');
-        this.textContent = '关CSS动画';
-        this.dataset.on = '0';
-        callDiagNote('恢复 CSS 动画');
-      } else {
-        setCallDiagStyle('#video-call-screen *, #video-call-screen *::before, #video-call-screen *::after {' +
-          'animation: none !important; transition: none !important; }');
-        this.textContent = '恢复CSS动画';
-        this.dataset.on = '1';
-        callDiagNote('关掉通话页全部 CSS 动画');
-      }
-      callDiagFlush();
-    });
-
-    panel.querySelector('#crd-blur').addEventListener('click', function () {
-      const on = this.dataset.on === '1';
-      if (on) {
-        setCallDiagStyle('');
-        this.textContent = '关毛玻璃';
-        this.dataset.on = '0';
-        callDiagNote('恢复毛玻璃');
-      } else {
-        setCallDiagStyle('#video-call-screen *, #video-call-screen *::before, #video-call-screen *::after {' +
-          'backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }');
-        this.textContent = '恢复毛玻璃';
-        this.dataset.on = '1';
-        callDiagNote('关掉通话页全部毛玻璃');
-      }
-      callDiagFlush();
-    });
-
-    panel.querySelector('#crd-iso').addEventListener('click', function () {
-      const on = this.dataset.on === '1';
-      setCallScreenIsolation(!on);
-      this.textContent = on ? '只留通话屏' : '恢复其他屏';
-      this.dataset.on = on ? '0' : '1';
-    });
-
-    panel.querySelector('#crd-mic').addEventListener('click', function () {
-      callDiagMuteMic = !callDiagMuteMic;
-      this.textContent = callDiagMuteMic ? '恢复麦克风' : '关麦克风监听';
-      if (callDiagMuteMic) {
-        // 停掉 rAF 监听循环
-        if (videoCallAutoListenAnimationFrame) {
-          cancelAnimationFrame(videoCallAutoListenAnimationFrame);
-          videoCallAutoListenAnimationFrame = null;
-        }
-        clearVideoCallAutoListenTimers();
-        cleanupVideoCallAudioAnalysis();
-        stopVideoCallMicStream();
-      }
-      callDiagNote(callDiagMuteMic ? '关掉麦克风监听循环' : '恢复麦克风监听');
-      callDiagFlush();
-    });
-
-    panel.querySelector('#crd-cam').addEventListener('click', function () {
-      if (typeof stopCamera === 'function') {
-        stopCamera();
-        this.textContent = '摄像头已关';
-        callDiagNote('关掉摄像头');
-        callDiagFlush();
-      }
-    });
-
-    panel.querySelector('#crd-fps').addEventListener('click', function () {
-      callRenderDiagFpsCap = (callRenderDiagFpsCap === 60) ? 30 : 60;
-      const app = getCallLive2DApp();
-      if (app && app.ticker) {
-        try { app.ticker.maxFPS = callRenderDiagFpsCap; } catch (e) { /* ignore */ }
-      }
-      this.textContent = '帧率:' + callRenderDiagFpsCap;
-      callDiagNote('渲染帧率切到 ' + callRenderDiagFpsCap);
-      callDiagFlush();
-    });
-
-    panel.querySelector('#crd-l2d').addEventListener('click', function () {
-      const app = getCallLive2DApp();
-      if (app) {
-        // 关掉: 走跟挂断同一条销毁路径 (含口型钩子/手势/背景 blob)
-        unmountLive2DForCall();
-        this.textContent = '开Live2D';
-        callDiagNote('手动关掉 Live2D');
-      } else {
-        const chat = state.chats[videoCallState.activeChatId];
-        if (!chat) return;
-        this.textContent = '关掉Live2D';
-        mountLive2DForCall(chat);
-        callDiagNote('手动开回 Live2D');
-      }
-      callDiagFlush();
-    });
-
-    // 4Hz 刷新就够 —— 每帧改 textContent 会触发布局, 反而制造新发热源
-    callRenderDiagTimer = setInterval(updateCallRenderDiag, 250);
-    updateCallRenderDiag();
-    return panel;
-  }
-
-  function destroyCallRenderDiagPanel() {
-    if (callRenderDiagTimer) {
-      clearInterval(callRenderDiagTimer);
-      callRenderDiagTimer = null;
-    }
-    if (callRenderDiagInjectedStyle) {
-      callRenderDiagInjectedStyle.remove();
-      callRenderDiagInjectedStyle = null;
-    }
-    // 隔离过的屏幕一定要装回去 —— 否则下次进任何页面都是空的
-    restoreDetachedScreens();
-    callDiagMuteMic = false;
-    if (callRenderDiagPanel && callRenderDiagPanel.parentNode) {
-      callRenderDiagPanel.parentNode.removeChild(callRenderDiagPanel);
-    }
-    callRenderDiagPanel = null;
-    callRenderDiagFrame = 0;
-  }
 
   // ============================================================
   // v0.2.0 Live2D 视频通话 - 挂载/卸载/fallback 辅助函数
@@ -2072,9 +1813,6 @@ let voiceCallStatusHoldUntil = 0;
     // v0.1.30 挂载 Live2D (异步, 不阻塞通话初始化)
     mountLive2DForCall(chat);
 
-    // v0.5.1 渲染诊断面板 (临时) —— 让用户能自己测出热源在哪
-    createCallRenderDiagPanel();
-
     if (callTimerInterval) clearInterval(callTimerInterval);
     callTimerInterval = setInterval(updateCallTimer, 1000);
     updateCallTimer();
@@ -2457,8 +2195,6 @@ let voiceCallStatusHoldUntil = 0;
   }
 
   async function startVideoCallAutoListening() {
-    // v0.5.1 诊断开关: 麦克风监听被手动关掉后, 任何路径都不许再重启它
-    if (callDiagMuteMic) return;
     if (!videoCallState.isActive || !videoCallState.isUserParticipating || !videoCallAutoListenEnabled) return;
     if (videoCallState.isAiResponding || videoCallState.isAiSpeaking || videoCallState.isTtsPlaying || videoCallIsListening || videoCallIsRecognizing || isVideoCallRecording) return;
 
@@ -2555,11 +2291,6 @@ let voiceCallStatusHoldUntil = 0;
 
     callDiagStage('hangup:start');
 
-    // v0.5.1: 如果诊断面板做过"只留通话屏"隔离, 这里必须先还原 ——
-    //   否则下面 openChat → showScreen('chat-interface-screen') 找不到节点会抛错,
-    //   挂断流程直接断在半路。
-    restoreDetachedScreens();
-
     // v0.5.0 P26: 挂断时强制收口 turn 状态机, 避免旧异步任务污染下一轮
     //   1) abort 当前 fetch (如果有) — fetch 接收到 abort 信号会抛 AbortError, 内层 catch
     //      + 外层 triggerAiInCallAction 兜底都会处理 (但已无 activeTurn, 不会再写状态)
@@ -2579,8 +2310,6 @@ let voiceCallStatusHoldUntil = 0;
     // v0.1.30 卸载 Live2D (释放 PIXI GL 资源)
     unmountLive2DForCall();
     stopTtsQueue();
-    // v0.5.1 渲染诊断面板 (临时) 随通话一起收掉
-    destroyCallRenderDiagPanel();
     // 诊断: WebGL 资源已放手 —— 这是挂断途中最可能崩的一步 (GPU destroy), 单独留个点
     callDiagStage('hangup:live2d-released');
 
