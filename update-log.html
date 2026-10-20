@@ -166,11 +166,31 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.22 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.22</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title new">新增</div>
+        <ul class="item-list">
+          <li><strong>「精炼前情提要」按钮</strong>（剧情记忆页 · 短剧那一栏）—— 以前前情提要要攒够 10 集才在后台自动整理一份，所以看完 4 集就退出的话，这部剧在观影模型眼里还是零认知，它只能瞎猜（用户原话"我刚才看了四集，因为没有前期提要，观影模型就搁那打胡乱说"）。现在随时能自己点一下，把看过的几集压成一份提要，下次进影院自动带上。</li>
+          <li>精炼<strong>不删单集剧情</strong> —— 提要只是"给模型看的压缩版"，库里那份逐集记录原样保留，导出也还是从库里那份走。两件事互相独立。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title change">变化</div>
+        <ul class="item-list">
+          <li>导出区加了一句顺序提醒：<strong>先精炼、再导出</strong>。因为导出成功会把库里的各集剧情清账删掉，删了就没素材给精炼用了。面板上两个按钮的先后就是按这个排的。</li>
+          <li>精炼只写一份新提要，<strong>旧提要保留到新提要写成功为止</strong>；模型要是只写出三个字（以前退出时那次精炼就是这么被截断的），当没生成，旧提要原封不动，提示可以再点一次。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.21 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.21</span>
-        <span class="version-date">最新版本</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

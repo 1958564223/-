@@ -149,6 +149,8 @@
     segCount: 0,
     // 导出到长期记忆正在进行中 (单通道, 防连点)
     exporting: false,
+    // 🔴 2026-10-20 手动精炼前情提要正在进行中 (单通道, 防连点)
+    refining: false,
     // ---- 跨场提要 (2026-10-15 起, 2026-10-19 改由后台合并产生) ----
     // 【它解决什么】各集记忆以前只活在内存, 退出精炼成功后一律清空,
     //   下次进来模型对这部剧是零认知 —— 用户看第 3 集时问"刚那个人是谁",
@@ -252,6 +254,7 @@
     watchSession.segments = [];
     watchSession.segCount = 0;
     watchSession.exporting = false;
+    watchSession.refining = false;
     watchSession.seriesRecap = null;
     watchSession.seriesRecapInjectPending = false;
     log('新的 Cinema watch session:', watchSession.watchSessionId);
@@ -816,7 +819,12 @@
       '<div class="cinema-plot-hint">' +
       (n
         ? '把攒着的 ' + n + memoryUnit() + '剧情写进长期记忆，写成功后这一栏会清空。' +
-          '没写成功就还在，可以再点一次。直接退出房间也没关系，内容已经存着。'
+          '没写成功就还在，可以再点一次。直接退出房间也没关系，内容已经存着。' +
+          // 🔴 2026-10-20 顺序提醒: 先精炼再导出。
+          //   导出成功会把库里的各集剧情【删掉】(清账), 删了就没素材给精炼用了。
+          (isSeries
+            ? '<br>⚠️ 导出前先点上面的「精炼前情提要」—— 导出后各集剧情会清掉，就没素材可精炼了。'
+            : '')
         : '看剧时会自动攒剧情，攒够了就能导出。') +
       '</div></div>';
 
@@ -849,11 +857,28 @@
         '</div>';
     } else {
       recapHtml = '<div class="cinema-plot-text dim">（还没有。看够 ' + RECAP_MERGE_EVERY +
-        ' 集会自动整理一份，下次进来就会自动带上）</div>';
+        ' 集会自动整理一份，也可以现在就点下面的「精炼前情提要」）</div>';
     }
+
+    // 🔴 2026-10-20 手动精炼按钮 (用户要求)。
+    //   自动那条要攒够 10 集才跑, 用户看 4 集就退出的话模型还是零认知。
+    //   这里的按钮随时能点, 而且【一条单集剧情都不删】—— 提要只是给模型看的压缩版。
+    var canRefine = !watchSession.refining && !watchSession.summaryBusy &&
+      (eps.length > 0 || !!(rec && (rec.text || '').trim()));
+    var refineBar =
+      '<div class="cinema-plot-edit-bar">' +
+      '<button class="cinema-plot-btn" data-plot="refine-recap"' + (canRefine ? '' : ' disabled') + '>' +
+      (watchSession.refining ? '⏳ 正在精炼…' : '📖 精炼前情提要') + '</button>' +
+      '<span class="cinema-plot-hint">' +
+      (eps.length
+        ? '把看过的 ' + eps.length + ' 集压成一份提要，下次进来自动带上。'
+        : '把库里看过的各集压成一份提要。') +
+      '各集剧情不会删。</span>' +
+      '</div>';
 
     return '<div class="cinema-plot-label">前情提要（跨场保留 · 下次进影院自动带上）</div>' +
         recapHtml +
+        refineBar +
         '<div class="cinema-plot-label">已攒 ' + eps.length + ' 集'
           + (watchSession.seriesLastEp ? ' · 看到第 ' + watchSession.seriesLastEp + ' 集' : '')
           + (eps.length ? ' · 点「改」可以自己修正' : '') + '</div>' +
@@ -963,6 +988,14 @@
       exportMemoriesToMemory();
       return;
     }
+    // 🔴 2026-10-20 手动精炼前情提要 (用户要求)。
+    //   不用 await —— 它自己会报进度/结果, 这里只是触发器。
+    //   精炼【不删】各集剧情, 跟「导出到长期记忆」是两件独立的事。
+    if (act === 'refine-recap') {
+      log('用户点了「精炼前情提要」');
+      refineSeriesRecap();
+      return;
+    }
     // 🔴 手动删除跨场提要 (短剧的前情提要 / 长剧的"上次看到哪")。
     //   ⚠️ 2026-10-19 文案跟着一起改了: 它以前那句"看完退出时会重新生成一份"
     //   已经不成立 —— 退出时不再有任何生成动作, 现在是"看够 N 集后台自动合并"。
@@ -973,7 +1006,8 @@
       var msg = isSeries
         ? '确定要删除《' + (r.title || watchSession.seriesTitle || '这部剧') + '》的前情提要吗？\n\n' +
           '删了下次进来 Gemini 就不知道前面演过什么了。\n' +
-          '已经攒下的各集剧情不受影响，继续看够 ' + RECAP_MERGE_EVERY + ' 集会重新整理一份。'
+          '已经攒下的各集剧情不受影响，继续看够 ' + RECAP_MERGE_EVERY + ' 集会自动整理一份，' +
+          '也可以随时点「精炼前情提要」。'
         : '确定要删除《上次看到哪》吗？\n\n' +
           '删了下次进来 Gemini 就不知道上次看到哪儿了。\n' +
           '已经攒下的各段剧情不受影响。';
@@ -1617,62 +1651,142 @@
       if (!rows || rows.length < RECAP_MERGE_EVERY) return false;
       // 已经覆盖到第几集了? 别反复拿同一批去压。
       var old = watchSession.seriesRecap;
-      var oldLen = (old && old.text || '').length;
       var mergedUpTo = old && Number(old.lastEp) || 0;
       var fresh = rows.filter(function (r) { return (r.ep || 0) > mergedUpTo; });
       if (fresh.length < RECAP_MERGE_EVERY) return false;   // 这批没攒够, 下一集再试
 
-      var title = watchSession.seriesTitle || '这部短剧';
-      var lines = [];
-      lines.push('【【后台任务】】下面是我们一起看过的《' + title + '》的剧情记录。');
-      lines.push('请把它们合并成【一份前情提要】, 供下次继续看这部剧时用。');
-      lines.push('');
-      if (oldLen) {
-        lines.push('# 已经有的前情提要（旧版本，必须保留并在其基础上更新）');
-        lines.push('');
-        lines.push(old.text);
-        lines.push('');
-        lines.push('⚠️ 新写的那份是【替换】掉上面这份的，所以旧提要里的信息必须全部带上。');
-        lines.push('人物、关系、关键转折要跟旧提要里写的一致，别换名字、别漏掉。');
-        lines.push('');
-      }
-      lines.push('# 新增的各集剧情（到第 ' + fresh[fresh.length - 1].ep + ' 集为止）');
-      lines.push('');
-      for (var i = 0; i < fresh.length; i++) {
-        lines.push('第 ' + fresh[i].ep + ' 集：' + fresh[i].text);
-      }
-      lines.push('');
-      lines.push('# 前情提要怎么写');
-      lines.push('- 客观剧情、第三人称。只讲这部剧本身发生的事。');
-      lines.push('- 连贯的一段话，不分点，不加标题，不用 --- 。');
-      lines.push('- 主要人物、关键事件、重要转折、现在停在哪。');
-      lines.push('- 不要写"如前所述""接着上次"这种依赖上下文的说法 —— 它必须独立完整。');
-      lines.push('- 第一句写【已看到第 ' + fresh[fresh.length - 1].ep + ' 集】。');
-      lines.push('- 控制在 ' + RECAP_MAX_CHARS + ' 字以内。');
-      lines.push('');
-      lines.push('直接输出前情提要正文，不要解释，不要写观影记忆。');
-
       log('📖 攒够 ' + fresh.length + ' 集, 更新前情提要…');
-      return requestSummary('recapMerge', lines.join('\n'))
-        .then(function (text) {
-          var t = stripHeadingNoise(text);
-          if (t.length < MIN_SUMMARY_CHARS) {
-            logWarn('前情提要只写出 ' + t.length + ' 字, 当作没生成, 旧提要保持不变');
-            return false;
-          }
-          return persistSeriesRecapSafely(t).then(function () {
-            log('✅ 前情提要已更新 (到第 ' + fresh[fresh.length - 1].ep + ' 集)');
-            return true;
-          });
-        })
-        .catch(function (err) {
-          logWarn('前情提要合并失败(不影响单集记忆, 它们都在库里):', err.message);
-          return false;
-        });
+      return runRecapMerge(old, fresh, '后台任务');
     }).catch(function (e) {
       logWarn('读单集记忆失败(忽略):', e && e.message);
       return false;
     });
+  }
+
+  /**
+   * 🔴 2026-10-20 手动精炼前情提要 —— 用户要求。
+   *
+   * 【为什么要有这个】自动那条每攒够 RECAP_MERGE_EVERY(10) 集才跑一次。
+   *   用户看 4 集就退出的话, 这部剧在模型眼里还是零认知 ——
+   *   用户原话"我刚才看了四集, 因为没有前期提要, 观影模型就搁那打胡乱说"。
+   *   现在随时能自己压一份, 不用等满 10 集。
+   *
+   * 【跟自动那条的区别】只有"什么时候跑"和"喂多少素材":
+   *   · 自动: 每集播完后跑, 门槛 10 集, 只喂【新攒的】那几集 (旧的已经在提要里)
+   *   · 手动: 用户点, 门槛 1 集, 喂【库里全部】还在的集 (连旧的一起重压)
+   *   两条都【一条单集剧情都不删】—— 提要只是"给模型看的压缩版",
+   *   库里那份才是原样, 导出也是从库里那份走。
+   *
+   * 【用户要的顺序】先精炼 → 再导出。
+   *   因为导出成功会把库里的单集剧情【清账删掉】, 删了就没素材给精炼用了。
+   *   面板上两个按钮的先后就是按这个排的, 提示里也写明了。
+   */
+  function refineSeriesRecap() {
+    if (watchSession.kind !== 'series') return Promise.resolve(false);
+    if (watchSession.refining) return Promise.resolve(false);
+    var CS = cinemaStorage();
+    var key = currentSessionKey();
+    if (!CS || typeof CS.listEpMemories !== 'function' || !key) return Promise.resolve(false);
+    if (!S.client || !S.client.isReady()) {
+      appendSystemLine('⚠️ Gemini 没连上，没法精炼（先在设置里填密钥、连上 Gemini）');
+      return Promise.resolve(false);
+    }
+    watchSession.refining = true;
+    renderPlotPanel();
+    appendSystemLine('📖 正在精炼前情提要，请稍等…');
+
+    return CS.listEpMemories(key)
+      .then(function (rows) {
+        if (!rows || !rows.length) {
+          appendSystemLine('⚠️ 库里还没有攒下的单集剧情，没东西可以精炼');
+          return false;
+        }
+        var old = watchSession.seriesRecap;
+        return runRecapMerge(old, rows, '手动精炼').then(function (ok) {
+          if (ok) {
+            appendSystemLine('✅ 前情提要已精炼好（到第 ' + (rows[rows.length - 1].ep || 0) +
+              ' 集）。各集剧情一条都没删。');
+          } else {
+            appendSystemLine('⚠️ 这次没精炼出来（可能是模型没写完）。旧提要保持不变，可以再点一次。');
+          }
+          return ok;
+        });
+      })
+      .catch(function (e) {
+        logWarn('手动精炼前情提要失败(不影响单集记忆):', e && e.message);
+        appendSystemLine('⚠️ 精炼失败：' + ((e && e.message) || '未知错误') + '（各集剧情都还在）');
+        return false;
+      })
+      .then(function (r) {
+        watchSession.refining = false;
+        renderPlotPanel();
+        return r;
+      });
+  }
+
+  /**
+   * 跑一次"把各集压成前情提要"的调用 —— 自动合并和手动精炼共用这一套。
+   *
+   * @param {object} old    旧提要整行 (可能 null)
+   * @param {array}  rows  要压进去的各集 (已按 ep 升序)
+   * @param {string} reason 这是在干什么 (会写进提示词让模型知道语气)
+   * @returns {Promise<boolean>} true = 提要已更新
+   */
+  function runRecapMerge(old, rows, reason) {
+    var list = rows || [];
+    if (!list.length) return Promise.resolve(false);
+    var oldText = (old && old.text || '');
+    var lastEp = list[list.length - 1].ep || 0;
+    var title = watchSession.seriesTitle || '这部短剧';
+    var lines = [];
+    lines.push('【【' + reason + '】】下面是我们一起看过的《' + title + '》的剧情记录。');
+    lines.push('请把它们合并成【一份前情提要】, 供下次继续看这部剧时用。');
+    lines.push('');
+    if (oldText) {
+      lines.push('# 已经有的前情提要（旧版本，必须保留并在其基础上更新）');
+      lines.push('');
+      lines.push(oldText);
+      lines.push('');
+      lines.push('⚠️ 新写的那份是【替换】掉上面这份的，所以旧提要里的信息必须全部带上。');
+      lines.push('人物、关系、关键转折要跟旧提要里写的一致，别换名字、别漏掉。');
+      lines.push('');
+    }
+    lines.push('# 各集剧情（到第 ' + lastEp + ' 集为止）');
+    lines.push('');
+    for (var i = 0; i < list.length; i++) {
+      lines.push('第 ' + list[i].ep + ' 集：' + list[i].text);
+    }
+    lines.push('');
+    lines.push('# 前情提要怎么写');
+    lines.push('- 客观剧情、第三人称。只讲这部剧本身发生的事。');
+    lines.push('- 连贯的一段话，不分点，不加标题，不用 --- 。');
+    lines.push('- 主要人物、关键事件、重要转折、现在停在哪。');
+    lines.push('- 不要写"如前所述""接着上次"这种依赖上下文的说法 —— 它必须独立完整。');
+    lines.push('- 第一句写【已看到第 ' + lastEp + ' 集】。');
+    lines.push('- 控制在 ' + RECAP_MAX_CHARS + ' 字以内。');
+    lines.push('');
+    lines.push('直接输出前情提要正文，不要解释，不要写观影记忆。');
+
+    return requestSummary('recapMerge', lines.join('\n'))
+      .then(function (text) {
+        var t = stripHeadingNoise(text);
+        // ⚠️ 80 字下限 —— 截断过的提要比没有更糟(用户会以为存上了, 不再重试)。
+        if (t.length < MIN_SUMMARY_CHARS) {
+          logWarn('前情提要只写出 ' + t.length + ' 字, 当作没生成, 旧提要保持不变');
+          return false;
+        }
+        // lastEp 传真实覆盖到的集号, 别用 seriesLastEp ——
+        // 它是"播完一集才推进"的, 可能落后于库里实际攒到的集数,
+        // 落后的话下一轮会拿同一批素材再压一遍。
+        return persistSeriesRecapSafely(t, lastEp).then(function (ok) {
+          if (ok) log('✅ 前情提要已更新 (到第 ' + lastEp + ' 集)');
+          return ok;
+        });
+      })
+      .catch(function (err) {
+        logWarn('前情提要合并失败(不影响单集记忆, 它们都在库里):', err.message);
+        return false;
+      });
   }
 
   /** 切到短剧模式 (进剧场时由 cinema-room.js 调) */
@@ -1976,7 +2090,7 @@
    * key 统一走 currentSessionKey(): 短剧 = 系列文件夹名, 长剧 = 'film:'+chatId。
    * 两种都存在 cinemaSeriesRecap 这张表里 —— 它本来就是"每场观看一份跨场底稿"。
    */
-  function persistSeriesRecapSafely(recapText) {
+  function persistSeriesRecapSafely(recapText, lastEpOverride) {
     try {
       var text = String(recapText || '').trim();
       var key = currentSessionKey();
@@ -1989,7 +2103,12 @@
         key: key,
         title: watchSession.seriesTitle || '',
         text: text,
-        lastEp: isSeries ? (watchSession.seriesLastEp || 0) : (watchSession.segCount || 0)
+        // ⚠️ 2026-10-20 lastEpOverride: 手动精炼时传【真实覆盖到的集号】。
+        //   不传就退回 seriesLastEp —— 那个是"播完一集才推进"的, 可能落后于
+        //   库里实际攒到的集数, 落后的话下一轮会拿同一批素材再压一遍。
+        lastEp: isSeries
+          ? (lastEpOverride != null ? (Number(lastEpOverride) || 0) : (watchSession.seriesLastEp || 0))
+          : (watchSession.segCount || 0)
       }).then(function (row) {
         if (!row) return false;
         watchSession.seriesRecap = row;          // 面板立刻显示新的

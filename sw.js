@@ -52,7 +52,16 @@
 //        而「彻底卸掉影片源」这件事, 点片单里另一部就会做。
 //   index.html 的 ?v= 已 bump (cinema-room.js 0.29.0 / cinema-room.css 0.38.0),
 //   所以要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.45.0';
+// v0.2.46.0 (2026-10-20): Cinema Room 加「精炼前情提要」手动按钮。
+//   症状: 用户看 4 集就退出, 自动提要要攒够 10 集才生成 → 这部剧在模型眼里还是零认知,
+//        观影模型"搁那打胡乱说"。
+//   改动: 剧情记忆页短剧那一栏加「📖 精炼前情提要」按钮, 随时能压一份;
+//        提示词构造抽成 runRecapMerge (自动合并 + 手动精炼共用);
+//        persistSeriesRecapSafely 加 lastEpOverride (存真实覆盖到的集号, 别用 seriesLastEp);
+//        导出区加"先精炼后导出"的顺序提醒 (导出成功会删掉库里的各集剧情, 删了就没素材可精炼)。
+//   精炼【不删】单集剧情 —— 提要只是给模型看的压缩版, 库里那份才是原样。
+//   index.html 的 ?v= 已 bump (cinema-live.js 1.9.0), 所以要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.46.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
