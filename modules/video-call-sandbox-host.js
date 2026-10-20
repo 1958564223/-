@@ -111,10 +111,56 @@
     frame = null;
     sandboxReady = false;
     currentChatId = null;
+
+    // 恢复宿主这边的准备页状态。
+    // ⚠️ 准备页的退出按钮走 Live2DCallPrep.close()，它会写 inline display:none
+    //    （它自己的注释就说了 inline display:none 会盖掉 .screen 的 display:flex）。
+    //    宿主这边如果还留着 display:none，下次打开准备页是一片空白。
+    try {
+      var prep = document.getElementById('live2d-call-prep-screen');
+      if (prep) prep.style.display = '';
+    } catch (e) { /* noop */ }
   }
 
   // ==========================================================================
-  // 3. ⚠️ 沙盒写库之后，宿主内存必须补同步
+  // 3b. 回聊天页
+  // --------------------------------------------------------------------------
+  // ⚠️ 不能用 window.openChat —— 宿主的 openChat 是 chat-interface.js 里的
+  //    内部函数，**从来没挂到 window**（我全项目搜过，只有 in-app-proactive-patrol.js
+  //    也在用 typeof window.openChat === 'function' 判断，那边同样是静默失效的）。
+  //    宿主暴露出来的是 window.showScreen（init-event-bindingsA.js:922）。
+  //
+  //    所以这里用 showScreen + 宿主自己的渲染函数组合。
+  // ==========================================================================
+  async function backToChat(chatId) {
+    if (!chatId) return;
+    try {
+      if (window.state) window.state.activeChatId = chatId;
+    } catch (e) { /* noop */ }
+
+    // 刷新聊天页内容
+    try {
+      if (typeof window.renderChatInterface === 'function') {
+        await window.renderChatInterface(chatId);
+      } else if (typeof window.renderChatInterfaceProxy === 'function') {
+        await window.renderChatInterfaceProxy(chatId);
+      }
+    } catch (e) {
+      console.warn('[通话沙盒] 渲染聊天页失败:', e);
+    }
+
+    // 切到聊天页
+    try {
+      if (typeof window.showScreen === 'function') {
+        window.showScreen('chat-interface-screen');
+      }
+    } catch (e) {
+      console.warn('[通话沙盒] 切聊天页失败:', e);
+    }
+  }
+
+  // ==========================================================================
+  // 4. ⚠️ 沙盒写库之后，宿主内存必须补同步
   // --------------------------------------------------------------------------
   // 为什么必须做：
   //   沙盒和宿主是同一个 origin、同一个 IndexedDB，但【两份内存里的 chat 对象
@@ -190,10 +236,19 @@
           var chatId = d.chatId || currentChatId;
           closeCallSandbox();
           await syncChatAfterSandbox(chatId);
-          if (chatId && typeof window.openChat === 'function') {
-            try { await window.openChat(chatId); } catch (err) { console.warn('[通话沙盒] openChat 失败:', err); }
-          }
+          await backToChat(chatId);
           flushPendingSummary(chatId);
+        })();
+        break;
+
+      case 'vcall:close':
+        // 沙盒里的「取消 / 退出」—— 还没通话, 没有任何落库, 直接收工回聊天页。
+        // ⚠️ 必须真的摘掉 iframe, 否则一个全屏 iframe 盖在宿主上,
+        //    沙盒里又已经全屏空白 → 用户看到的就是"死机"。
+        (async function () {
+          var chatId = d.chatId || currentChatId;
+          closeCallSandbox();
+          await backToChat(chatId);
         })();
         break;
 
@@ -253,29 +308,42 @@
   // ==========================================================================
   // 5. 在准备页注入「独立页通话」入口
   // --------------------------------------------------------------------------
-  // 只往宿主的 #live2d-call-prep-screen 里插，沙盒页里那份不插（避免套娃）。
-  // Live2DCallPrep 只 querySelector('[data-role="call"]') 绑事件，不会重建
-  // footer，所以往 footer 里追加按钮是安全的。
+  // ⚠️ 位置必须是【固定悬浮在屏幕底部】，不能塞进准备页的内容流里。
+  //    准备页是 position:fixed; inset:0; overflow-y:auto 的可滚动长页,
+  //    内容有 1300+ px 高 —— 塞在 footer 里的按钮在 y≈1323,
+  //    首屏 (844px) 完全看不见, 用户会以为"没有这个入口"。
+  //    改成 fixed 之后, 任何时候打开准备页都能立刻看到并点到。
+  //
+  // 只往宿主的 #live2d-call-prep-screen 里插, 沙盒页里那份不插（避免套娃）。
   // ==========================================================================
   var ENTRY_BTN_ID = 'sandbox-call-entry-btn';
   var entryObserved = false;
 
   function injectEntryButton() {
-    if (document.getElementById(ENTRY_BTN_ID)) return true;
+    var btn = document.getElementById(ENTRY_BTN_ID);
+    if (btn) {
+      // 已存在: 跟着准备页显隐
+      var screen = document.getElementById('live2d-call-prep-screen');
+      btn.style.display = (screen && screen.classList.contains('active')) ? 'block' : 'none';
+      return true;
+    }
     var screen = document.getElementById('live2d-call-prep-screen');
     if (!screen) return false;
-    var footer = screen.querySelector('.live2d-call-prep-footer');
-    if (!footer) return false;
 
-    var btn = document.createElement('button');
+    btn = document.createElement('button');
     btn.id = ENTRY_BTN_ID;
     btn.type = 'button';
     btn.textContent = '独立页通话（新）';
     btn.style.cssText = [
-      'display:block', 'width:100%', 'margin:10px auto 0',
-      'padding:11px 18px', 'border:1px dashed rgba(255,142,179,.85)',
-      'border-radius:999px', 'background:rgba(255,255,255,.72)',
-      'color:#c4537a', 'font:inherit', 'font-size:13px',
+      'position:fixed', 'left:50%', 'transform:translateX(-50%)',
+      // 放在原「视频接通」主按钮上方一点, 不挡主按钮
+      'bottom:calc(96px + env(safe-area-inset-bottom, 0px))',
+      'z-index:100002', 'display:block',
+      'width:calc(100% - 40px)', 'max-width:350px',
+      'padding:12px 18px', 'border:1.5px dashed rgba(255,142,179,.9)',
+      'border-radius:999px', 'background:rgba(255,255,255,.9)',
+      'color:#c4537a', 'font:inherit', 'font-size:14px', 'font-weight:600',
+      'box-shadow:0 4px 16px rgba(180,90,130,.22)',
       '-webkit-tap-highlight-color:transparent'
     ].join(';');
 
@@ -285,7 +353,7 @@
       openCallSandbox();
     });
 
-    footer.appendChild(btn);
+    document.body.appendChild(btn);
     return true;
   }
 

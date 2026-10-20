@@ -426,7 +426,6 @@
   // 5. 切屏 —— 沙盒里只有这 4 个屏
   // ==========================================================================
   const SANDBOX_SCREENS = [
-    'live2d-call-prep-screen',
     'outgoing-call-screen',
     'video-call-screen',
     'voice-call-screen'
@@ -436,11 +435,27 @@
     try {
       SANDBOX_SCREENS.forEach(id => {
         const el = document.getElementById(id);
-        if (el) el.classList.remove('active');
+        if (!el) return;
+        el.classList.remove('active');
+        // ⚠️ 必须一起清掉 inline display。
+        //    live2d-call-prep.js 的 close() 会写 `screenEl.style.display = 'none'`
+        //    (它自己的注释里就写了: inline display:none 会盖掉 .screen 的 display:flex,
+        //     导致第二次 open() 一片空白)。
+        //    沙盒的 showScreen 只切 .active, 不清 inline → 准备页退出后再进来是全白,
+        //    而且 close() 之后 .active 还在, 四个屏全灭 → 整个 iframe 一片空白 = 用户说的"死机"。
+        el.style.display = '';
       });
       if (screenId) {
         const target = document.getElementById(screenId);
-        if (target) target.classList.add('active');
+        if (target) {
+          target.classList.add('active');
+          target.style.display = '';
+        } else {
+          // 沙盒里没有的屏 (如 chat-interface-screen) → 请求宿主切回去
+          log('沙盒没有这个屏, 交回宿主:', screenId);
+          post({ type: 'vcall:openChat', chatId: window.state.activeChatId });
+          return;
+        }
       }
       hideBootLayer();
     } catch (e) {
@@ -737,6 +752,15 @@
     var callState = isVideoReq ? vs : vcs;
     if (!callState) return;
 
+    // ⚠️ 用户在等待期间点了「取消」→ 这一轮 AI 的决策作废, 不能自己接上。
+    //    否则用户已经退出到聊天页了, 沙盒却又自己 startVideoCall() 开通话 ——
+    //    iframe 已经没了, 通话在后台空跑, 麦克风一直开着。
+    if (window.__sandboxCancelled) {
+      log('用户已取消, 丢弃这一轮 AI 决策');
+      window.__sandboxCancelled = false;
+      return;
+    }
+
     var handled = false;
     for (var i = 0; i < responseArray.length; i++) {
       var msgData = responseArray[i] || {};
@@ -914,12 +938,21 @@
     on('voice-user-speak-btn', function () { if (typeof window.handleVoiceCallUserSpeak === 'function') window.handleVoiceCallUserSpeak(); });
 
     // ---- 取消呼叫（还没接通时挂掉）----
-    // 宿主原版最后是 showScreen('chat-interface-screen')，沙盒没有聊天页 → 交给宿主切
+    // 宿主原版最后是 showScreen('chat-interface-screen')，沙盒没有聊天页 →
+    // 走 vcall:close 让宿主摘掉 iframe 并切回聊天页。
+    // ⚠️ 不能用 openChat()：它 post 的是 vcall:openChat，宿主那边会当成
+    //    "挂断了"去跑 syncChatAfterSandbox，而这时根本没有通话记录要同步。
     on('cancel-call-btn', function () {
       if (window.videoCallState) window.videoCallState.isAwaitingResponse = false;
       if (window.voiceCallState) window.voiceCallState.isAwaitingResponse = false;
-      openChat(window.state.activeChatId);
+      // AI 如果正在决策, 那一轮回来会自己 startVideoCall —— 得拦住
+      window.__sandboxCancelled = true;
+      post({ type: 'vcall:close', chatId: window.state.activeChatId });
     });
+
+    // ---- 呼叫等待页的「取消」按钮走上面的 cancel-call-btn ----
+    //    沙盒里【没有准备页】: 宿主那边已经显示过准备页了, 用户就是从那儿点进来的。
+    //    再显示一个就是"准备页套准备页", 用户会以为进不去。
 
     // ---- 模型管理面板（表情 / 动作）----
     on('model-manage-btn', function () {
@@ -974,10 +1007,21 @@
   }
 
   /**
-   * 沙盒入口：填好 state 后走生产完全相同的入口函数 handleInitiateCall()。
-   * 它会自己打开 #live2d-call-prep-screen（准备页），用户在准备页里点
-   * 「视频接通」——【这个点击必须发生在 iframe 内】，iOS 才会给
-   * getUserMedia / AudioContext 的真实用户手势。
+   * 沙盒入口：填好 state 后直接进入【呼叫等待页】。
+   *
+   * ⚠️ 为什么不用 handleInitiateCall()：
+   *    宿主的 handleInitiateCall() 第一件事是 Live2DCallPrep.open() ——
+   *    打开【准备页】。而宿主那边已经显示过准备页了（用户就是从准备页点
+   *    「独立页通话（新）」进来的），沙盒再开一个准备页就成了"准备页套准备页"，
+   *    用户看到的是同一屏内容重复，还要在里面再点一次「视频接通」才通话 ——
+   *    这就是用户说的"根本进不去"。
+   *    而且准备页依赖 getUserAvatarUrl 等宿主函数，沙盒里没有。
+   *
+   *    所以这里直接走 doInitiateCall 的等价流程：显示呼叫等待页 →
+   *    写请求消息 → 让 AI 决定接不接。
+   *    ⚠️ 「视频接通」这个用户手势发生在【宿主】的准备页上（真实点击），
+   *       iOS 的 getUserMedia / AudioContext 解锁靠的是它 ——
+   *       沙盒里的呼叫等待页还有「启用音频」按钮可以再解一次，两道保险。
    */
   function boot(payload) {
     if (booted) return;
@@ -992,13 +1036,52 @@
       return;
     }
 
+    var chat = window.state.chats[chatId];
+    if (!chat) {
+      showBootMessage('没找到聊天数据。');
+      post({ type: 'vcall:error', reason: 'no-chat' });
+      return;
+    }
+
     try {
-      if (typeof window.handleInitiateCall === 'function') {
-        window.handleInitiateCall();
-        post({ type: 'vcall:ready', chatId: chatId });
-      } else {
-        throw new Error('handleInitiateCall 未加载');
+      // ---- 1. 呼叫等待页（等价宿主 doInitiateCall 的前半段）----
+      if (window.videoCallState) {
+        window.videoCallState.isGroupCall = !!chat.isGroup;
+        window.videoCallState.isAwaitingResponse = true;
+        window.videoCallState.initiator = 'user';
+        window.videoCallState.activeChatId = chatId;
+        window.videoCallState.isUserParticipating = true;
       }
+      var avatarEl = document.getElementById('outgoing-call-avatar');
+      var nameEl = document.getElementById('outgoing-call-name');
+      if (avatarEl) avatarEl.src = (chat.settings && (chat.isGroup ? chat.settings.myAvatar : chat.settings.aiAvatar)) || '';
+      if (nameEl) nameEl.textContent = chat.isGroup
+        ? ((chat.settings && chat.settings.myNickname) || '我')
+        : chat.name;
+      var callerText = document.querySelector('#outgoing-call-screen .caller-text');
+      if (callerText) callerText.textContent = chat.isGroup ? '正在呼叫所有成员...' : '正在呼叫...';
+
+      showScreen('outgoing-call-screen');
+
+      // ---- 2. 写请求消息 + 落库（同一份生产逻辑的等价物）----
+      var requestMessage = {
+        role: 'system',
+        content: chat.isGroup
+          ? '[系统提示：用户 (' + ((chat.settings && chat.settings.myNickname) || '我') + ') 发起了群视频通话请求。请你们各自决策，并使用 "group_call_response" 指令，设置 "decision" 为 "join" 或 "decline" 来回应。]'
+          : '[系统提示：用户向你发起了视频通话请求。请根据你的人设，使用 "video_call_response" 指令，并设置 "decision" 为 "accept" 或 "reject" 来回应。]',
+        timestamp: Date.now(),
+        isHidden: true
+      };
+      chat.history = chat.history || [];
+      chat.history.push(requestMessage);
+      Promise.resolve(window.db && window.db.chats ? window.db.chats.put(chat) : null)
+        .catch(function (e) { log('写请求消息失败', e && e.message); })
+        .then(function () {
+          // ---- 3. 让 AI 决定接不接（沙盒自己实现，见 handleCallDecision）----
+          triggerAiResponse();
+        });
+
+      post({ type: 'vcall:ready', chatId: chatId });
     } catch (e) {
       log('启动通话失败', e && e.message);
       showBootMessage('启动通话失败：' + (e && e.message ? e.message : e));
@@ -1020,9 +1103,89 @@
   // 向宿主要数据。宿主侧收到 needChat 会回一条 vcall:init。
   function requestInit() {
     post({ type: 'vcall:needChat' });
-    setTimeout(function () {
-      if (!booted) showBootMessage('没收到 330 的聊天数据…可以退出去重试。');
-    }, 2500);
+    // ⚠️ 收不到数据时不能就这么干等着 —— 沙盒是一个全屏 iframe,
+    //    它盖在宿主上, 用户看到的就是"点进去一片空白, 进不去"。
+    //    所以: 重试几次, 还不行就在启动遮罩上给一个「返回」按钮,
+    //    让用户能退回宿主, 而不是被关在这个 iframe 里。
+    var tries = 0;
+    var timer = setInterval(function () {
+      if (booted) { clearInterval(timer); return; }
+      tries++;
+      post({ type: 'vcall:needChat' });
+      if (tries >= 6) {
+        clearInterval(timer);
+        showBootMessage('连不上 330 主页面');
+        showBootBackButton();
+      }
+    }, 1500);
+  }
+
+  /** 启动遮罩上的「返回」按钮 —— 唯一的逃生门 */
+  function showBootBackButton() {
+    if (document.getElementById('sandbox-boot-back')) return;
+    var btn = document.createElement('button');
+    btn.id = 'sandbox-boot-back';
+    btn.type = 'button';
+    btn.textContent = '返回';
+    btn.style.cssText = [
+      'margin-top:6px', 'padding:10px 22px', 'border:0', 'border-radius:999px',
+      'background:#2a4a7c', 'color:#fff', 'font:inherit', 'font-size:13px'
+    ].join(';');
+    btn.addEventListener('click', function () {
+      post({ type: 'vcall:close', chatId: window.state.activeChatId });
+      // 宿主没接住的话, 自己也得能退 —— 否则用户彻底卡死在这个 iframe 里
+      setTimeout(function () {
+        try { window.parent.postMessage({ type: 'vcall:close', chatId: window.state.activeChatId }, '*'); } catch (e) { /* noop */ }
+        document.getElementById('sandbox-boot').style.display = 'none';
+        document.body.innerHTML = '<div style="padding:40px;text-align:center;color:#f0e3d4;font-family:-apple-system,sans-serif">已退出，可关闭此页</div>';
+      }, 300);
+    });
+    var boot = document.getElementById('sandbox-boot');
+    if (boot) boot.appendChild(btn);
+  }
+
+  /**
+   * 常驻的「返回主页面」按钮。
+   *
+   * ⚠️ 为什么必须有:
+   *   沙盒是一个【全屏 iframe】, 盖在宿主上。沙盒里没有准备页
+   *   (宿主那边已经显示过准备页了), 所以用户进沙盒后能按的只有
+   *   呼叫等待页的「取消」和通话页的「挂断」。
+   *   万一某个状态卡住 (AI 决策没回来 / 页面空白), 用户就彻底被关在这个
+   *   iframe 里出不来 —— 这就是"死机"。
+   *   所以必须有一个【任何时候都在】的出口。
+   */
+  function injectExitButton() {
+    if (document.getElementById('sandbox-exit-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'sandbox-exit-btn';
+    btn.type = 'button';
+    btn.textContent = '‹ 返回';
+    btn.style.cssText = [
+      'position:fixed', 'left:10px', 'top:calc(10px + env(safe-area-inset-top, 0px))',
+      'z-index:2147483002', 'padding:7px 14px',
+      'border:1px solid rgba(255,255,255,.35)', 'border-radius:999px',
+      'background:rgba(0,0,0,.45)', 'color:#fff',
+      'font:inherit', 'font-size:13px',
+      '-webkit-tap-highlight-color:transparent'
+    ].join(';');
+    btn.addEventListener('click', function () {
+      // 通话中按"返回" = 挂断 + 退出, 硬件资源必须放掉
+      try {
+        if (window.videoCallState && window.videoCallState.isActive && typeof window.endVideoCall === 'function') {
+          window.endVideoCall();
+        } else if (window.voiceCallState && window.voiceCallState.isActive && typeof window.endVoiceCall === 'function') {
+          window.endVoiceCall();
+        }
+      } catch (e) { /* noop */ }
+      window.__sandboxCancelled = true;
+      post({ type: 'vcall:close', chatId: window.state.activeChatId });
+      // 宿主没接住的话, 自己也退 —— 绝不能把用户关死在这个 iframe 里
+      setTimeout(function () {
+        try { window.parent.postMessage({ type: 'vcall:close', chatId: window.state.activeChatId }, '*'); } catch (e) { /* noop */ }
+      }, 500);
+    });
+    document.body.appendChild(btn);
   }
 
   window.__callSandbox = {
@@ -1034,10 +1197,12 @@
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () {
       bindCallButtons();
+      injectExitButton();
       requestInit();
     });
   } else {
     bindCallButtons();
+    injectExitButton();
     requestInit();
   }
 })();

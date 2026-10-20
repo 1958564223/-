@@ -61,7 +61,7 @@
 //        导出区加"先精炼后导出"的顺序提醒 (导出成功会删掉库里的各集剧情, 删了就没素材可精炼)。
 //   精炼【不删】单集剧情 —— 提要只是给模型看的压缩版, 库里那份才是原样。
 //   index.html 的 ?v= 已 bump (cinema-live.js 1.9.0), 所以要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.46.0';
+const CACHE_VERSION = 'v0.2.46.1';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

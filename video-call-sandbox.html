@@ -8,44 +8,51 @@
   ============================================================================
   330 视频通话 · 独立页面沙盒  (2026-10-20)
 
-  为什么有这个页：
-    通话本身（Live2D / 麦克风 / TTS / WebGL）装在主页面里久了会发烫。
-    主页面有 9146 个节点、100+ 个 JS 模块、34 个 CSS 文件常驻。
-    实测把其他屏幕摘掉也不能解决 —— 所以改成"换宿主"：整个通话搬到一个
-    只有约 150 节点的独立文档里跑。
+  为什么有这个页:
+    通话本身(Live2D / 麦克风 / TTS / WebGL)装在主页面里久了会发烫。
+    主页面有 9146 个节点、128 个 JS 模块、34 个 CSS 文件常驻。
+    实测把其它屏幕摘掉也不能解决 —— 所以改成"换宿主": 整个通话搬到一个
+    只有约 80 个节点的独立文档里跑。
 
-  和家庭影院 cinema-sandbox 是同一套思路：
-    模块文件【一行不改】，加载的是和生产完全同一份
+  和家庭影院 cinema-sandbox 是同一套思路:
+    模块文件【一行不改】, 加载的是和生产完全同一份
     ../modules/video-voice-call.js、live2d-loader.js、call-lip-sync.js、tts-audio.js …
 
-  本页放在项目根目录（不是子目录）是故意的：
-    通话模块里有 assets/audio/call-waiting.mp3 这类【相对页面 URL】的路径，
+  本页放在项目根目录(不是子目录)是故意的:
+    通话模块里有 assets/audio/call-waiting.mp3 这类【相对页面 URL】的路径,
     放在子目录会 404。放根目录 → assets/ modules/ css/ 全部零改动。
 
-  和宿主通信（postMessage）：
+  ⚠️ 本页【不含准备页】(#live2d-call-prep-screen):
+    宿主那边已经显示过准备页了, 用户是从那儿点「独立页通话(新)」进来的。
+    沙盒再显示一个就是"准备页套准备页" —— 用户会以为进不去,
+    而且准备页依赖 getUserAvatarUrl 等宿主函数, 沙盒里没有。
+    沙盒从【呼叫等待页】开始。
+
+  和宿主通信 (postMessage):
     宿主 → 本页  { type:'vcall:init', payload:{ chat, apiConfig, globalSettings,
                                                 character, worldBooks, qzoneSettings } }
-    本页 → 宿主  { type:'vcall:ready' }            入口已拉起（停在准备页）
-                  { type:'vcall:needChat' }        缺数据，请再发一次
+    本页 → 宿主  { type:'vcall:ready' }             入口已拉起(停在呼叫等待页)
+                  { type:'vcall:needChat' }         缺数据, 请再发一次
                   { type:'vcall:openChat', chatId }  挂断后请宿主回聊天页并摘掉 iframe
-                  { type:'vcall:summarizeCall', chatId, transcript }  记忆总结（宿主做）
+                  { type:'vcall:close', chatId }     取消/退出, 请宿主摘掉 iframe
+                  { type:'vcall:summarizeCall', chatId, transcript }  记忆总结(宿主做)
                   { type:'vcall:appendMessage', chatId, message }     拍一拍追加消息
                   { type:'vcall:chatUpdated', chatId }               内存 state 该刷新了
                   { type:'vcall:error', reason }
 
-  iOS 关键约束：
+  iOS 关键约束:
     getUserMedia 和 AudioContext.resume 必须由【iframe 内】的真实用户手势触发。
-    所以「视频接通」「启用音频」两个按钮都在本页里，宿主只负责建 iframe。
+    所以 iframe 带 allow="camera; microphone; autoplay",
+    呼叫等待页里的「启用音频」按钮也在本页里(点它可再解一次锁)。
   ============================================================================ -->
 <link rel="stylesheet" href="css/base.css?v=0.0.41">
 <link rel="stylesheet" href="css/chat-ui.css?v=0.0.37">
 <link rel="stylesheet" href="css/music-player.css?v=0.0.37">
 <link rel="stylesheet" href="css/video-voice-call.css?v=0.0.50">
-<link rel="stylesheet" href="css/live2d-call-prep.css?v=0.0.2">
 <link rel="stylesheet" href="css/live2d-manager.css?v=0.0.2">
 <link rel="stylesheet" href="css/live2d-bg-manager.css?v=0.0.1">
 <style>
-  /* 沙盒外壳：只服务这个文档，不影响生产样式 */
+  /* 沙盒外壳: 只服务这个文档, 不影响生产样式 */
   html, body {
     margin: 0;
     padding: 0;
@@ -72,159 +79,7 @@
 <body>
 <div id="sandbox-root">
 
-  <!-- ===================== 通话四个屏（与生产同一份 DOM） ===================== -->
-    <div id="live2d-call-prep-screen" class="screen live2d-call-prep">
-          <!-- 2026-09-29: 装饰层 (原 .live2d-call-prep-deco 容器 + prep-lace.png) 已整体移除,
-               页面装饰现在只剩角色卡内的蝴蝶结。 -->
-
-          <!-- 顶部: 页面标题 + 英文副标题 + 提示语 -->
-          <header class="live2d-call-prep-header">
-            <button type="button" class="live2d-call-prep-back-btn" data-role="back" aria-label="返回">‹</button>
-            <h1 class="live2d-call-prep-title">视频通话</h1>
-            <img class="live2d-call-prep-subtitle" src="assets/live2d-call/微信图片_20260904085633_2_42.png" alt="想见谁一面？挑个 Live2D 形象，拨过去吧">
-          </header>
-
-          <!-- 角色信息区域 (v0.4.3: 名字/头像/描述由 JS 根据 chat 动态填充) -->
-          <section class="live2d-call-prep-character">
-            <!-- v0.4.5: 蝴蝶结作为角色卡内部装饰 (右下角, 部分溢出卡片边缘) -->
-            <img class="live2d-call-prep-character-bow" src="assets/live2d-call/prep-bow.png" alt="" aria-hidden="true">
-            <div class="live2d-call-prep-avatar" data-role="avatar"></div>
-            <div class="live2d-call-prep-character-info">
-              <div class="live2d-call-prep-character-name" data-role="character-name"></div>
-              <div class="live2d-call-prep-character-desc" data-role="character-desc"></div>
-            </div>
-          </section>
-
-          <!-- Live2D 配置卡 -->
-          <section class="live2d-call-prep-card">
-            <div class="live2d-call-prep-card-header">
-              <h2 class="live2d-call-prep-card-title">
-                角色形象 · LIVE2D
-              </h2>
-              <button type="button" class="live2d-call-prep-card-link" data-role="manage-model">管理</button>
-            </div>
-            <div class="live2d-call-prep-card-body">
-              <div class="live2d-call-prep-preview" data-role="model-preview">
-                <span class="live2d-call-prep-preview-placeholder">尚未绑定动态模型</span>
-              </div>
-              <!-- v0.5.0 P2.4: 默认形象调试台保存后, 在此显示"已设默认形象"轻量提示 (Live2DCallPrep.render 填充) -->
-              <div class="live2d-call-prep-appearance-badge" data-role="appearance-badge" style="display:none"></div>
-              <button type="button" class="live2d-call-prep-card-action" data-role="upload-select-model">
-                <span class="live2d-call-prep-card-action-icon">＋</span>
-                上传 / 选择 Live2D
-              </button>
-            </div>
-          </section>
-
-          <!-- 通话舞台背景配置卡 -->
-          <section class="live2d-call-prep-card">
-            <div class="live2d-call-prep-card-header">
-              <h2 class="live2d-call-prep-card-title">
-                通话舞台背景
-              </h2>
-              <button type="button" class="live2d-call-prep-card-link" data-role="manage-bg">管理</button>
-            </div>
-            <div class="live2d-call-prep-card-body">
-              <div class="live2d-call-prep-preview" data-role="bg-preview">
-                <span class="live2d-call-prep-preview-placeholder">背景预览</span>
-              </div>
-              <div class="live2d-call-prep-status" data-role="bg-status">尚未设置</div>
-              <button type="button" class="live2d-call-prep-card-action" data-role="upload-bg">
-                <span class="live2d-call-prep-card-action-icon">＋</span>
-                上传舞台背景
-              </button>
-            </div>
-          </section>
-
-          <!-- v0.5.0 P3-1: 我的画面配置卡 (从原聊天设置页"视频通话优化"板块搬来, 仅配置, 不启动 camera) -->
-          <section class="live2d-call-prep-card">
-            <div class="live2d-call-prep-card-header">
-              <h2 class="live2d-call-prep-card-title">
-                <span class="live2d-call-prep-card-icon">🎥</span>
-                我的画面
-              </h2>
-            </div>
-            <div class="live2d-call-prep-card-body">
-
-              <!-- 当前画面预览 (静态图片) -->
-              <div class="live2d-call-prep-local-preview-wrap">
-                <img id="prep-local-video-preview" src=""
-                     style="width: 100%; height: 100%; object-fit: cover; border-radius: 12px; display: none;">
-                <!-- v0.5.0 P3-1.1: user 头像兜底层 (localVideoUrl 为空时显示当前用户头像; 由 Live2DCallPrep.refreshPrepLocalFallback 控显隐) -->
-                <img id="prep-local-video-user-avatar" alt="" style="display: none;">
-                <!-- 占位层 (P3-1.1: user 头像接管显示, 这里 hidden 留位避免旧 handler 抛 null 错) -->
-                <div id="prep-local-video-placeholder" style="display: none;"></div>
-              </div>
-
-              <!-- 操作按钮: 本地上传 / 重置 -->
-              <div class="live2d-call-prep-local-actions">
-                <button type="button" class="live2d-call-prep-card-action"
-                        onclick="document.getElementById('prep-local-video-input').click()">
-                  <span class="live2d-call-prep-card-action-icon">📁</span>
-                  本地上传
-                </button>
-                <button type="button" id="prep-local-video-reset-btn" class="live2d-call-prep-card-action"
-                        style="border-color: rgba(255, 80, 110, 0.5); color: #ff506e;">
-                  <span class="live2d-call-prep-card-action-icon">↺</span>
-                  重置
-                </button>
-                <input type="file" id="prep-local-video-input" accept="image/*" hidden>
-              </div>
-              <div style="font-size: 11px; color: #b58a9a; line-height: 1.5;">
-                未上传图片时, 视频通话将使用你当前的用户头像作为我方画面
-              </div>
-
-              <!-- 分隔: 真实摄像头区 -->
-              <div class="live2d-call-prep-local-camera-divider">
-                <span>使用真实摄像头</span>
-                <label class="live2d-call-prep-toggle">
-                  <input type="checkbox" id="prep-enable-real-camera-switch">
-                  <span class="live2d-call-prep-toggle-slider"></span>
-                </label>
-              </div>
-              <div style="font-size: 11px; color: #b58a9a; line-height: 1.5; margin-top: -4px;">
-                开启后, 正式视频通话中你的摄像头画面会作为我方画面, AI 可以看到你
-              </div>
-
-              <!-- 摄像头子设置 (仅开关开时显示) -->
-              <div id="prep-camera-interval-setting" style="display: none;">
-                <div class="live2d-call-prep-local-camera-row">
-                  <label style="font-size: 13px; color: #3a2a30; white-space: nowrap;">截图间隔</label>
-                  <input type="number" id="prep-camera-capture-interval"
-                         min="1" max="60" value="5"
-                         style="width: 64px; padding: 6px 8px; border: 1px solid rgba(255, 142, 179, 0.3); border-radius: 8px; font-size: 13px; background: #ffffff; color: #3a2a30;">
-                  <span style="font-size: 12px; color: #b58a9a;">秒</span>
-                </div>
-
-                <div class="live2d-call-prep-local-camera-row">
-                  <label style="font-size: 13px; color: #3a2a30;">使用后置摄像头</label>
-                  <label class="live2d-call-prep-toggle">
-                    <input type="checkbox" id="prep-enable-rear-camera-switch">
-                    <span class="live2d-call-prep-toggle-slider"></span>
-                  </label>
-                </div>
-
-                <!-- 摄像头状态 (仅在正式通话中才会被 updateCameraStatus 填充) -->
-                <div id="prep-camera-status" style="margin-top: 6px; padding: 8px 10px; background: linear-gradient(135deg, #fff5f9 0%, #ffffff 100%); border-radius: 10px; border: 1px solid rgba(255, 182, 193, 0.3); font-size: 12px; color: #3a2a30; display: none;">
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span id="prep-camera-status-icon" style="width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0;"></span>
-                    <span id="prep-camera-status-text" style="color: #b58a9a;">摄像头未激活</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <!-- 底部: 大型主按钮 -->
-          <footer class="live2d-call-prep-footer">
-            <button type="button" class="live2d-call-prep-call-btn" data-role="call">
-              <span class="live2d-call-prep-call-btn-deco">♡</span>
-              <span>视频接通 <span data-role="call-btn-name"></span></span>
-              <span class="live2d-call-prep-call-btn-deco">♡</span>
-            </button>
-          </footer>
-        </div>
-
+  <!-- ===================== 通话屏（与生产同一份 DOM） ===================== -->
     <div id="outgoing-call-screen" class="screen">
           <div class="outgoing-call-content">
             <div class="outgoing-call-avatar-wrap">
@@ -364,8 +219,8 @@
           </div>
         </div>
 
-  <!-- ===================== body 顶层：最小化恢复按钮 ===================== -->
-  <!-- minimizeVideoCall() 会去 getElementById 找这两个，缺了会抛错 -->
+  <!-- ===================== body 顶层: 最小化恢复按钮 ===================== -->
+  <!-- minimizeVideoCall() 会去 getElementById 找这两个, 缺了会抛错 -->
     <div id="video-call-restore-btn" style="display: none;">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="23 7 16 12 23 17 23 7"></polygon>
@@ -381,7 +236,7 @@
 </div>
 
 <!-- ===================== 音频播放器（tts-audio.js 必需） ===================== -->
-<!-- 这三个 id 是 tts-audio.js 硬依赖，缺了 TTS 播不出来 -->
+<!-- 这三个 id 是 tts-audio.js 硬依赖, 缺了 TTS 播不出来 -->
 <audio id="silent-audio-player" loop preload="auto" style="display:none;">
   <source src="https://phoebeboo.github.io/mewoooo/1-second-of-silence.mp3" type="audio/mpeg">
 </audio>
@@ -392,7 +247,7 @@
 <div id="sandbox-boot">
   <div class="t">视频通话</div>
   <div class="s" id="sandbox-boot-msg">正在连接…</div>
-  <div class="s" style="font-size:11px;opacity:.6;">如果一直停在这里，退出去重新拨一次</div>
+  <div class="s" style="font-size:11px;opacity:.6;">如果一直停在这里，点下面的「返回」退回主页面</div>
 </div>
 
 <!-- ============================================================================
@@ -400,11 +255,11 @@
      ----------------------------------------------------------------------------
      1. Live2D 引擎三件套 —— live2d-loader.js 依赖 PIXI 先就位
      2. Dexie —— init-db-schema.js 要 new Dexie()
-     3. globals.js —— 先把 window.state / 宿主桩 / 抄来的纯函数放好，
+     3. globals.js —— 先把 window.state / 宿主桩 / 抄来的纯函数放好,
                       后面所有模块加载时若摸到它们不会 undefined
-     4. 数据层 —— window.db（同源同库，直接读宿主那份 IndexedDB）
+     4. 数据层 —— window.db（同源同库, 直接读宿主那份 IndexedDB）
      5. 记忆层 —— 通话拼 prompt 要 serializeForPrompt / serializeCoreMemories
-     6. Live2D 链 —— storage → ui → loader → callPrep
+     6. Live2D 链 —— storage → ui → loader
      7. 口型 + TTS 链
      8. video-optimization（摄像头） / asr（语音识别） / api-endpoint-presets
      9. 最后才是 video-voice-call.js 本体
@@ -416,7 +271,7 @@
 
 <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
 
-<script src="video-call-sandbox/sandbox-globals.js?v=0.0.1"></script>
+<script src="video-call-sandbox/sandbox-globals.js?v=0.0.3"></script>
 
 <script src="modules/init-db-schema.js?v=0.0.41"></script>
 
@@ -426,7 +281,6 @@
 <script src="modules/live2d-storage.js?v=0.0.1"></script>
 <script src="modules/live2d-ui.js?v=0.0.5"></script>
 <script src="modules/live2d-loader.js?v=0.3.7"></script>
-<script src="modules/live2d-call-prep.js?v=0.0.3"></script>
 
 <script src="modules/call-lip-sync.js?v=0.0.2"></script>
 
