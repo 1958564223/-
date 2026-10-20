@@ -882,7 +882,7 @@
     var hasKey = !!getGeminiKey();
     var refineHint;
     if (refining) {
-      refineHint = '正在精炼（会单独调一次观影模型，一般十几秒）…';
+      refineHint = '正在精炼（会单独调一次观影模型，通常十几秒，最多一分钟）…';
     } else if (!hasKey) {
       refineHint = '⚠️ 还没填 Gemini API Key（右上角 ⚙ 里填），调不了模型。';
     } else {
@@ -1707,13 +1707,39 @@
    *   面板上两个按钮的先后就是按这个排的, 提示里也写明了。
    */
   /**
+   * 记忆页面板现在【能不能重绘】。
+   *
+   * ⚠️ 2026-10-20 真事故: 原来这里判的是 `!watchSession.closed && !S._leaving`。
+   *   这两个标志【只有退出房间时置 true, 只有重新连上 Gemini 时才复位】——
+   *   而"看完剧 → 退出 → 重进影院 → 点精炼"是用户的正常流程, 这条路上没人复位它们,
+   *   于是 setRefineMsg 永远不重绘 → 点了精炼界面一点变化都没有 (用户实测"点了没动静")。
+   *   更气人的是: 精炼其实跑完了 (模型调了、提要存进库了), 只是界面不刷新。
+   *
+   * 现在只判【房间还在不在 DOM 里】:
+   *   · 退出时房间元素还在 (只是摘了 .open 类), 重绘最多刷到一个看不见的页里, 无害;
+   *   · 房间真被拆干净了才不重绘 —— 那正是原来要防的"孤儿面板挂到 body 上"。
+   */
+  function plotPanelCanRender() {
+    try {
+      var room = document.getElementById('cinema-room');
+      return !!(room && room.parentNode);
+    } catch (e) { return false; }
+  }
+
+  /**
    * 精炼的进度/结果 —— 显示在【记忆页那一栏】。
    * ⚠️ 别只 appendSystemLine: 记忆页开着的时候聊天框是收着的, 用户看不见 →
    *   表现就是"点了没动静"(2026-10-20 真踩过)。
    */
   function setRefineMsg(text) {
     watchSession.refineMsg = String(text || '');
-    if (!watchSession.closed && !S._leaving) renderPlotPanel();
+    // ⚠️ 重绘失败【绝不能】把精炼本身带崩 —— 一崩, 后面所有步骤都不执行,
+    //   用户看到的就是"点了没动静"。所以这里吞掉异常。
+    try {
+      if (plotPanelCanRender()) renderPlotPanel();
+    } catch (e) {
+      logWarn('重绘记忆页面板失败(不影响精炼本身):', e && e.message);
+    }
   }
 
   /**
@@ -1848,7 +1874,7 @@
       return Promise.resolve(false);
     }
     watchSession.refining = true;
-    setRefineMsg('正在精炼（会单独调一次观影模型，一般十几秒）…');
+    setRefineMsg('正在精炼（会单独调一次观影模型，通常十几秒，最多一分钟）…');
 
     return CS.listEpMemories(key)
       .then(function (rows) {
@@ -1886,7 +1912,7 @@
       })
       .then(function (r) {
         watchSession.refining = false;
-        renderPlotPanel();
+        if (plotPanelCanRender()) renderPlotPanel();
         return r;
       });
   }
@@ -2291,8 +2317,10 @@
         // ⚠️ 退出流程里这条回调可能跟 hardLeave() 只差几十毫秒, 那时房间已经在拆。
         //   renderPlotPanel() 里的 ensurePlotPanel() 发现元素被摘了就【重新造一个
         //   挂回 DOM】, 房间已经不在就 fallback 挂 document.body —— 主页面上会留个
-        //   孤儿面板。退出途中一律不刷面板 (内存里的值已经记好了, 下次进来照样读得到)。
-        if (!watchSession.closed && !S._leaving) renderPlotPanel();
+        //   孤儿面板。房间真不在了才不刷面板 (内存里的值已经记好了, 下次进来照样读得到)。
+        //   ⚠️ 判据是"房间还在不在", 不是 watchSession.closed —— 后者退出后一直是 true,
+        //   而用户退出后再进影院是常态, 拿它当判据会让界面永远不刷新 (2026-10-20 真踩)。
+        if (plotPanelCanRender()) renderPlotPanel();
         return true;
       }).catch(function (e) {
         logWarn('跨场提要写入失败(单集/分段记忆都不受影响):', e && e.message);

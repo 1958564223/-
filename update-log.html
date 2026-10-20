@@ -166,11 +166,31 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.25 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.25</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>「精炼前情提要」点了没动静</strong>（真根因，跟上一版说的不是一回事）—— 用户实测："我怎么点精炼前情还是没动静"。根因在<strong>反馈画不出来</strong>：进度和结果要靠重绘记忆页那一栏才能看见，而重绘被两个老标志卡着（<code>watchSession.closed</code> 和 <code>S._leaving</code>）。这两个标志<strong>只有退出房间时才置真，只有重新连上 Gemini 时才复位</strong>——而"看完剧 → 退出 → 重进影院 → 点精炼"是正常流程，这条路上没人复位它们，于是每一条反馈都画不出来；而"没填 key / 库里没素材 / 正在精炼"那几条提前返回的分支，连最后一次重绘都没有，等于一片死寂。</li>
+          <li>这里最气人的地方是：<strong>精炼其实跑完了</strong>（模型调了、提要也存进库里了），只是界面不刷新，所以看着像没动静。现在改判"房间还在不在页面上"，退出后重进照样能立刻看到反馈。</li>
+          <li>另外，<strong>重绘失败不许再把精炼本身带崩</strong>——以前重绘一抛异常，后面所有步骤都不执行，表现出来又是"点了没动静"。现在重绘的异常被单独兜住。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title change">变化</div>
+        <ul class="item-list">
+          <li>精炼中的提示改成"<strong>通常十几秒，最多一分钟</strong>"，免得等得心里没底。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.24 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.24</span>
-        <span class="version-date">最新版本</span>
       </div>
       <div class="section">
         <div class="section-title change">变化</div>

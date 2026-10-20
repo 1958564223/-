@@ -82,7 +82,17 @@
 //   沙盒那套 (video-call-sandbox.html + sandbox-globals.js + video-call-sandbox-host.js)
 //   全部删除, 准备页的「独立页通话（新）」按钮随之消失, 回到只有旧入口的状态。
 //   index.html 少了那个 script 标签 → 要 bump CACHE_VERSION, 否则 SW 继续吐旧 index.html。
-const CACHE_VERSION = 'v0.2.48.2';
+// v0.2.49.0 (2026-10-20): 修「精炼前情提要点了没动静」的真根因。
+//   症状: 用户点了「精炼前情提要」, 界面一点变化都没有(用户实测, 连着两次)。
+//   根因: setRefineMsg 里的重绘被 `!watchSession.closed && !S._leaving` 卡着。
+//        这两个标志【只有退出房间时置真, 只有重新连上 Gemini 时才复位】——
+//        而"看完剧 → 退出 → 重进影院 → 点精炼"是正常流程, 这条路上没人复位它们,
+//        于是每一条反馈都不重绘; 四个早退分支更是连最终那次重绘都没有 → 一片死寂。
+//        (精炼其实跑完了: 模型调了、提要存进库了, 只是界面不刷新。)
+//   改法: 判据换成"房间还在不在 DOM 里"(新增 plotPanelCanRender);
+//        重绘失败也不许把精炼本身带崩(try/catch 包住)。
+//   index.html 的 ?v= 已 bump (cinema-live.js 1.9.3), 所以要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.49.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
