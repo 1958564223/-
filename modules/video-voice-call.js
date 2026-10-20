@@ -148,6 +148,129 @@
   }, true);
 
   // ============================================================
+  // v0.5.1 通话渲染诊断面板 (临时, 排查「通话久了发烫」)
+  // ------------------------------------------------------------
+  // 为什么做这个: 前面两轮都靠猜, 猜错了两次 (挂断峰值 → 毛玻璃 → 都不是主因)。
+  // 与其再猜, 不如给用户一个能自己动手测的面板 —— 一通电话里就能定位热源。
+  //
+  // 面板显示: 实时 FPS / 画布逻辑尺寸 / 渲染分辨率 / 换算出的物理像素 / 全页节点数
+  // 两个按钮:
+  //   [帧率 60/30]  切渲染帧率。Live2D 内容本身就是 30fps 的, 降到 30 视觉几乎无损,
+  //                  但渲染量直接砍半 —— 这是"零画质代价"的降热手段。
+  //   [Live2D 开/关] 直接掐掉 Live2D 渲染。热不热立刻见分晓 ——
+  //                  如果关掉还照样热, 那热源根本不在渲染上, 省得再往这边查。
+  //
+  // ⚠️ 这是排查用面板, 结论出来后整块删掉即可 (含 index.html/sw.js 的版本号回滚)。
+  // ============================================================
+  let callRenderDiagPanel = null;
+  let callRenderDiagTimer = null;
+  let callRenderDiagFpsCap = 60;
+  let callRenderDiagFrame = 0;
+
+  function getCallLive2DApp() {
+    const canvas = document.getElementById('live2d-canvas');
+    return (canvas && canvas._live2dApp) ? canvas._live2dApp : null;
+  }
+
+  function updateCallRenderDiag() {
+    const panel = callRenderDiagPanel;
+    if (!panel) return;
+    const info = panel.querySelector('#crd-info');
+    if (!info) return;
+    callRenderDiagFrame++;
+    const canvas = document.getElementById('live2d-canvas');
+    const app = canvas && canvas._live2dApp;
+    if (!app) {
+      info.textContent = 'Live2D 未挂载\n→ 还热的话热源不在渲染上';
+      return;
+    }
+    const t = app.ticker || {};
+    const r = app.renderer || {};
+    const w = canvas.clientWidth || 0;
+    const h = canvas.clientHeight || 0;
+    const dpr = r.resolution || 1;
+    // 节点数每 30 次才刷一次 —— getElementsByTagName('*') 一次要扫一万个节点,
+    // 每帧扫会把面板自己变成新的发热源。
+    const showNodes = (callRenderDiagFrame % 30 === 0);
+    info.textContent =
+      'FPS ' + Math.round(t.FPS || 0) +
+      '  ' + w + 'x' + h + ' @' + dpr +
+      ' = ' + Math.round(w * dpr) + 'x' + Math.round(h * dpr) +
+      '\ncanvas ' + canvas.width + 'x' + canvas.height +
+      (showNodes ? ('  节点 ' + document.getElementsByTagName('*').length) : '');
+  }
+
+  function createCallRenderDiagPanel() {
+    if (callRenderDiagPanel) return callRenderDiagPanel;
+    const screen = document.getElementById('video-call-screen');
+    if (!screen) return null;
+
+    const panel = document.createElement('div');
+    panel.id = 'call-render-diag';
+    panel.style.cssText = [
+      'position:absolute', 'left:6px', 'top:6px', 'z-index:100002',
+      'background:rgba(0,0,0,0.62)', 'color:#7CFC7C',
+      'padding:5px 7px', 'border-radius:8px',
+      'font:10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace',
+      'pointer-events:auto', 'white-space:pre',
+      'user-select:none', '-webkit-user-select:none', '-webkit-tap-highlight-color:transparent'
+    ].join(';');
+    panel.innerHTML =
+      '<div id="crd-info">读数中…</div>' +
+      '<div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap">' +
+      '<button id="crd-fps" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#7CFC7C;color:#000">帧率:60</button>' +
+      '<button id="crd-l2d" style="font:10px/1.4 inherit;padding:2px 5px;border:0;border-radius:5px;background:#FFD24D;color:#000">关掉Live2D</button>' +
+      '</div>';
+    screen.appendChild(panel);
+    callRenderDiagPanel = panel;
+
+    panel.querySelector('#crd-fps').addEventListener('click', function () {
+      callRenderDiagFpsCap = (callRenderDiagFpsCap === 60) ? 30 : 60;
+      const app = getCallLive2DApp();
+      if (app && app.ticker) {
+        try { app.ticker.maxFPS = callRenderDiagFpsCap; } catch (e) { /* ignore */ }
+      }
+      this.textContent = '帧率:' + callRenderDiagFpsCap;
+      callDiagNote('渲染帧率切到 ' + callRenderDiagFpsCap);
+      callDiagFlush();
+    });
+
+    panel.querySelector('#crd-l2d').addEventListener('click', function () {
+      const app = getCallLive2DApp();
+      if (app) {
+        // 关掉: 走跟挂断同一条销毁路径 (含口型钩子/手势/背景 blob)
+        unmountLive2DForCall();
+        this.textContent = '开Live2D';
+        callDiagNote('手动关掉 Live2D');
+      } else {
+        const chat = state.chats[videoCallState.activeChatId];
+        if (!chat) return;
+        this.textContent = '关掉Live2D';
+        mountLive2DForCall(chat);
+        callDiagNote('手动开回 Live2D');
+      }
+      callDiagFlush();
+    });
+
+    // 4Hz 刷新就够 —— 每帧改 textContent 会触发布局, 反而制造新发热源
+    callRenderDiagTimer = setInterval(updateCallRenderDiag, 250);
+    updateCallRenderDiag();
+    return panel;
+  }
+
+  function destroyCallRenderDiagPanel() {
+    if (callRenderDiagTimer) {
+      clearInterval(callRenderDiagTimer);
+      callRenderDiagTimer = null;
+    }
+    if (callRenderDiagPanel && callRenderDiagPanel.parentNode) {
+      callRenderDiagPanel.parentNode.removeChild(callRenderDiagPanel);
+    }
+    callRenderDiagPanel = null;
+    callRenderDiagFrame = 0;
+  }
+
+  // ============================================================
   // v0.2.0 Live2D 视频通话 - 挂载/卸载/fallback 辅助函数
   // 设计: 配了 live2dModelPath 就挂 Live2D, 失败回退静态图, 没配保持原样
   // 库升级: PIXI v6.5.0 + pixi-live2d-display 0.4.0 → PIXI v8 + untitled-pixi-live2d-engine 1.3.5 + Cubism Core 5
@@ -1811,6 +1934,9 @@ let voiceCallStatusHoldUntil = 0;
     // v0.1.30 挂载 Live2D (异步, 不阻塞通话初始化)
     mountLive2DForCall(chat);
 
+    // v0.5.1 渲染诊断面板 (临时) —— 让用户能自己测出热源在哪
+    createCallRenderDiagPanel();
+
     if (callTimerInterval) clearInterval(callTimerInterval);
     callTimerInterval = setInterval(updateCallTimer, 1000);
     updateCallTimer();
@@ -2308,6 +2434,8 @@ let voiceCallStatusHoldUntil = 0;
     // v0.1.30 卸载 Live2D (释放 PIXI GL 资源)
     unmountLive2DForCall();
     stopTtsQueue();
+    // v0.5.1 渲染诊断面板 (临时) 随通话一起收掉
+    destroyCallRenderDiagPanel();
     // 诊断: WebGL 资源已放手 —— 这是挂断途中最可能崩的一步 (GPU destroy), 单独留个点
     callDiagStage('hangup:live2d-released');
 
