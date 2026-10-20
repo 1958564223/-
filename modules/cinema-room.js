@@ -2695,36 +2695,19 @@
     isChatOpen: function () { return chatOpen; }
   };
 
-  // 入口按钮
-  function bindEntry() {
-    const btn = document.getElementById('open-cinema-room-btn');
-    if (btn && !btn.__cinemaBound) {
-      btn.__cinemaBound = true;
-      btn.addEventListener('click', function () { open(); });
-    }
-    hideLegacyEntry();
-    bindSandboxEntry();
-  }
-
-  // --------------------------------------------------------------------------
-  // 旧影院入口隐藏兜底 (2026-10-09)
+  // ------------------------------------------------------------------------
+  // 旧影院入口 (open-cinema-room-btn) 已于 2026-10-20 整个删掉。
   //
-  // 正式入口只剩沙盒 iframe 那一个 (点输入框不卡)。旧按钮要藏住, 但 CSS 那条
-  // `display:none !important` 会被角色的 customCss 盖掉 ——
-  // chat.settings.customCss 经 applyScopedCss() 注入 <style id="custom-bubble-style">,
-  // 只给 .message-bubble 加前缀, 别的选择器原样全页生效 (appearance-theme.js:440)。
+  // 【为什么删】它是"影院直接装在宿主页面里"那条老路 —— 同一个 cinema-room.js
+  //   装在三千多节点的宿主里, 点输入框主线程冻 4~5 秒; 装进 187 节点的
+  //   cinema-sandbox/index.html (iframe) 里就完全不卡。正式入口只剩沙盒那一个,
+  //   老按钮就没用了。原来是"只藏不删"(藏了三道), 现在连按钮带
+  //   hideLegacyEntry() 一起清掉, 免得留着看不见的死代码让人以为还能回退。
   //
-  // 【为什么还要 JS 再藏一次】inline !important 在 HTML 里已经够硬了, 这里是第三道:
-  //   - 万一以后有人把 HTML 里的 inline style 删了, 这里还兜着
-  //   - 覆盖按钮是由 customCss 造成的, customCss 随时可能被清掉重填, 每次绑定都重申一次
-  //
-  // 恢复旧入口: 删掉这里 + index.html 的 inline style + cinema-room.css 那条规则, 三处。
-  // --------------------------------------------------------------------------
-  function hideLegacyEntry() {
-    const btn = document.getElementById('open-cinema-room-btn');
-    if (!btn) return;
-    try { btn.style.setProperty('display', 'none', 'important'); } catch (e) { /* noop */ }
-  }
+  // ⚠️ open() 本身【必须留着】—— 沙盒页加载的是同一份 cinema-room.js,
+  //   它自己调 window.CinemaRoom.open() 开房 (cinema-sandbox/index.html:224)。
+  //   删的只是宿主页面里那个按钮和它的绑定, 不是房间本身。
+  // ------------------------------------------------------------------------
 
   // ------------------------------------------------------------------------
   // 🧪 影院沙盒验证入口 (2026-10-09, 临时)
@@ -2896,10 +2879,12 @@
     });
   }
 
+  // ⚠️ 2026-10-20: 原来这里调的是 bindEntry(), 它同时干三件事(绑旧影院按钮 /
+  //   藏旧影院按钮 / 绑沙盒入口)。旧影院入口已整个删掉, 这里直接绑沙盒入口。
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bindEntry);
+    document.addEventListener('DOMContentLoaded', bindSandboxEntry);
   } else {
-    bindEntry();
+    bindSandboxEntry();
   }
 
 })(window);

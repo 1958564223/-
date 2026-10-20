@@ -166,11 +166,25 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.26 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.26</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title change">变化</div>
+        <ul class="item-list">
+          <li><strong>旧影院入口彻底删掉</strong>（之前只是藏起来）—— 那个"影院"按钮以前是<strong>藏</strong>在旧聊天页面上的，三道锁：HTML 里一道 <code>display:none !important</code>、样式表里一道、JS 每次绑定再藏一道。但按钮和它的点击绑定<strong>都还在</strong>，看着像没了、其实一直留着。现在连按钮带绑定一起清干净了。</li>
+          <li>删它的原因：它走的是"影院直接装在这个页面里"那条老路 —— 同一个影院代码装在三千多个节点的页面里，点输入框会卡四五秒；装进那个干净的独立小页面里就一点不卡。<strong>现在正式入口只剩小页面那一个</strong>，老按钮没用了。</li>
+          <li>顺带说明：<strong>影院本身一点没动</strong> —— 房间、剧情记忆、精炼前情提要，全是原来那套，只是入口换了个地方。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.25 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.25</span>
-        <span class="version-date">最新版本</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

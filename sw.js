@@ -92,7 +92,13 @@
 //   改法: 判据换成"房间还在不在 DOM 里"(新增 plotPanelCanRender);
 //        重绘失败也不许把精炼本身带崩(try/catch 包住)。
 //   index.html 的 ?v= 已 bump (cinema-live.js 1.9.3), 所以要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.49.0';
+// v0.2.50.0 (2026-10-20): 旧影院入口(open-cinema-room-btn)整个删掉。
+//   原来它只是【藏起来】(index.html 的 inline !important + CSS 一条 + JS 再藏一次),
+//   按钮和绑定都还在, 现在连按钮带 hideLegacyEntry() 一起清掉 —— 免得留着看不见的
+//   死代码让人以为还能回退。
+//   ⚠️ open() 本身留着: 沙盒页加载同一份 cinema-room.js, 自己调 CinemaRoom.open()。
+//   index.html 少了那个 button、cinema-room.css 少了一条规则 → 要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.50.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
