@@ -72,7 +72,10 @@
 //        只喂一条任务指令, 拿到字就 close(不留野连接);
 //        精炼路径改走它, 不再看主会话连没连; 反馈全部留在记忆页那一栏。
 //   index.html 的 ?v= 已 bump (cinema-live.js 1.9.2), 所以要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.48.0';
+// v0.2.48.1: 修「独立页通话（新）」入口横幅盖住每一个页面 + 沙盒 AI 说话报
+//   Can't find variable: formatTimeAgo。
+//   index.html 的 ?v= 已 bump (video-call-sandbox-host.js 0.0.2 → 0.0.3), 要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.48.1';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

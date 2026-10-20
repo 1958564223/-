@@ -271,6 +271,16 @@
 
 <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
 
+<!-- ⚠️ modules/ui-loaders.js 必须排在 sandbox-globals.js 【前面】
+     原因: sandbox-globals.js:347 自己有一份 getTimeOfDayGreeting (分档更细:
+     凌晨/早上/上午/中午/下午/傍晚/晚上/深夜), 排在后面会把这份覆盖掉。
+     这个文件在宿主 index.html 里也是靠 ui-loaders.js 提供, 沙盒不加载它就会:
+       - video-voice-call.js:2699 / :4182  → formatTimeAgo(...) ReferenceError
+         (AI 开口说话时炸, 报 "Can't find variable: formatTimeAgo")
+       - tts-audio.js:1182 / :1218          → parseMarkdown(...) ReferenceError
+     ui-loaders.js 加载时零副作用 (全是函数定义 + 末尾统一挂 window), 不会碰 DOM。 -->
+<script src="modules/ui-loaders.js?v=0.0.36"></script>
+
 <script src="video-call-sandbox/sandbox-globals.js?v=0.0.3"></script>
 
 <script src="modules/init-db-schema.js?v=0.0.41"></script>

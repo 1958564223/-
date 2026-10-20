@@ -21,7 +21,10 @@
 (function () {
   'use strict';
 
-  var SANDBOX_SRC = 'video-call-sandbox.html';
+  // ⚠️ 必须带 ?v= —— 沙盒页是 iframe 里的独立 URL, 不带版本号时浏览器可能
+  //    直接用本地缓存的旧副本, 改了 video-call-sandbox.html 等于没改。
+  //    (sw.js 的 isLocalAsset 白名单里没有它, 所以 SW 不拦, 靠 ?v= 破浏览器缓存)
+  var SANDBOX_SRC = 'video-call-sandbox.html?v=0.0.5';
   var FRAME_ID = 'video-call-sandbox-frame';
 
   var frame = null;
@@ -308,25 +311,32 @@
   // ==========================================================================
   // 5. 在准备页注入「独立页通话」入口
   // --------------------------------------------------------------------------
-  // ⚠️ 位置必须是【固定悬浮在屏幕底部】，不能塞进准备页的内容流里。
-  //    准备页是 position:fixed; inset:0; overflow-y:auto 的可滚动长页,
-  //    内容有 1300+ px 高 —— 塞在 footer 里的按钮在 y≈1323,
-  //    首屏 (844px) 完全看不见, 用户会以为"没有这个入口"。
-  //    改成 fixed 之后, 任何时候打开准备页都能立刻看到并点到。
+  // ⚠️⚠️ 这个按钮曾经「覆盖在每一个页面上」——首页、聊天页、设置页全都盖着。
+  //    根因是两个叠在一起:
+  //      1. 创建时 cssText 里写死 'display:block' —— 不管准备页在不在都显示;
+  //      2. MutationObserver 的回调是
+  //             if (screen.classList.contains('active')) injectEntryButton();
+  //         只在【准备页变成 active】时才执行 —— 离开准备页时它根本不跑,
+  //         按钮就永远留在页面上。而 showScreen 切屏时正是把 .active 从准备页
+  //         拿掉 (chat-list.js:81-83), 所以「切到聊天页 = 准备页失去 active
+  //         = 按钮该藏却没藏」。
   //
-  // 只往宿主的 #live2d-call-prep-screen 里插, 沙盒页里那份不插（避免套娃）。
+  // ✅ 现在的做法: 把按钮【挂进准备页内部】, 不再挂 document.body。
+  //    .screen 靠 opacity:0 + visibility:hidden 隐藏, .screen.active 才 visible
+  //    (css/base.css:159-176), Live2DCallPrep.close() 还会写 inline display:none。
+  //    → 准备页不可见时, 里面的按钮跟着一起不可见, 结构上就不可能盖到别的页面。
+  //    不需要任何 display 开关逻辑, 也就没有「忘了藏」的第二种可能。
+  //
+  //    按钮仍然是 position:fixed —— 准备页是 1300+px 的可滚动长页, 塞在内容流里
+  //    会跑到 y≈1323 的首屏之外, 用户根本看不见。
   // ==========================================================================
   var ENTRY_BTN_ID = 'sandbox-call-entry-btn';
   var entryObserved = false;
 
   function injectEntryButton() {
     var btn = document.getElementById(ENTRY_BTN_ID);
-    if (btn) {
-      // 已存在: 跟着准备页显隐
-      var screen = document.getElementById('live2d-call-prep-screen');
-      btn.style.display = (screen && screen.classList.contains('active')) ? 'block' : 'none';
-      return true;
-    }
+    if (btn) return true;
+
     var screen = document.getElementById('live2d-call-prep-screen');
     if (!screen) return false;
 
@@ -338,7 +348,7 @@
       'position:fixed', 'left:50%', 'transform:translateX(-50%)',
       // 放在原「视频接通」主按钮上方一点, 不挡主按钮
       'bottom:calc(96px + env(safe-area-inset-bottom, 0px))',
-      'z-index:100002', 'display:block',
+      'z-index:100002',
       'width:calc(100% - 40px)', 'max-width:350px',
       'padding:12px 18px', 'border:1.5px dashed rgba(255,142,179,.9)',
       'border-radius:999px', 'background:rgba(255,255,255,.9)',
@@ -353,7 +363,8 @@
       openCallSandbox();
     });
 
-    document.body.appendChild(btn);
+    // ⚠️ 挂进准备页【内部】, 不是 document.body —— 见上面的大段说明
+    screen.appendChild(btn);
     return true;
   }
 
@@ -366,13 +377,14 @@
     if (!screen) return;
     injectEntryButton();
 
+    // class / inline style 变了就确保按钮还在 (open/close 会改 style.display)
     try {
       new MutationObserver(function () {
-        if (screen.classList.contains('active')) injectEntryButton();
-      }).observe(screen, { attributes: true, attributeFilter: ['class'] });
+        injectEntryButton();
+      }).observe(screen, { attributes: true, attributeFilter: ['class', 'style'] });
     } catch (e) {
       setInterval(function () {
-        if (screen.classList.contains('active')) injectEntryButton();
+        injectEntryButton();
       }, 800);
     }
   }
