@@ -166,11 +166,25 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.24 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.24</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title change">变化</div>
+        <ul class="item-list">
+          <li><strong>撤回「独立页通话（新）」这个入口</strong> —— 视频通话准备页上多出来的那个按钮整个撤掉了，回到只有老入口（准备页 → 视频接通）的状态。</li>
+          <li>撤掉的原因是<strong>实测下来它没解决问题</strong>：独立页跑了不到三分钟照样烫得不行。整份宿主页面都已经隔离出去了还是烫 —— 这就说明<strong>发热根本不在页面的 DOM 上</strong>（之前把其它 97 个屏、544 个弹窗全从 DOM 里摘掉也照样烫），真凶是 Live2D 渲染（3 倍分辨率 + 抗锯齿 + 60 帧满帧）、摄像头解码、麦克风识别这三样，跟页面结构没关系。</li>
+          <li>顺带说明一下：<strong>视频通话本身一点没动</strong> —— 通话模块的代码一行都没改，摄像头、麦克风、Live2D 角色、挂断落库、挂断闪退的修复都还是原来那套，只是不再有那个独立页入口而已。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.23 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.23</span>
-        <span class="version-date">最新版本</span>
       </div>
       <div class="section">
         <div class="section-title change">变化</div>

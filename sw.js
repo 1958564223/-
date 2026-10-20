@@ -75,7 +75,14 @@
 // v0.2.48.1: 修「独立页通话（新）」入口横幅盖住每一个页面 + 沙盒 AI 说话报
 //   Can't find variable: formatTimeAgo。
 //   index.html 的 ?v= 已 bump (video-call-sandbox-host.js 0.0.2 → 0.0.3), 要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.48.1';
+// v0.2.48.2: 【撤回】视频通话「独立页通话（新）」功能整体撤掉 ——
+//   实测独立页跑了不到 3 分钟照样烫得不行, 说明发热根本不在宿主页面的 DOM 上
+//   (整份宿主文档都隔离了还是烫 → DOM 这条线彻底排除), 真凶是 Live2D 渲染
+//   (3x DPR + 抗锯齿 + 60fps 满帧) / 摄像头解码 / 麦克风 ASR, 跟页面结构无关。
+//   沙盒那套 (video-call-sandbox.html + sandbox-globals.js + video-call-sandbox-host.js)
+//   全部删除, 准备页的「独立页通话（新）」按钮随之消失, 回到只有旧入口的状态。
+//   index.html 少了那个 script 标签 → 要 bump CACHE_VERSION, 否则 SW 继续吐旧 index.html。
+const CACHE_VERSION = 'v0.2.48.2';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
