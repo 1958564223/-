@@ -118,7 +118,23 @@
 //   cinema-storage.js 0.5.0 → 0.5.1), 沙盒页的 script 标签也补上了 ?v=
 //   (原来漏了, 沙盒 iframe 可能一直吃浏览器 HTTP 缓存里的老副本),
 //   所以要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.51.0';
+// v0.2.52.0 (2026-10-21): 修「图片传不上去」—— DatabaseClosedError: Database has been closed。
+//   症状: 用户实测截图 —— 设置里选图片存人物/茶几, 弹"存不下 /
+//   影片没能存进本地数据库: DatabaseClosedError Database has been closed"。
+//   人物图、影片、道具全都存不进去, 整页刷新之前什么都传不了。
+//   根因: cinema-storage.js 的三处补表自愈 (v66 人物 / v68 前情提要 / v69 逐条)
+//   都要对同一个库做 close() → version() → open()。并发时后一个的 db.close()
+//   会【取消】前一个正在进行的 open, 库停在
+//   autoOpen=false + openComplete=true + idbdb=false 的脏状态 ——
+//   那个状态下任何数据库操作都抛 Database has been closed, 而且永远好不了。
+//   为什么昨天才炸: v69 那张表是 2026-10-19 才加的, 之前只有一个自愈撞不起来。
+//   改法: ① 沙盒库把 v66/v68/v69 三张表都声明齐 → 根本不会自愈
+//         ② 三处 close() 都改成 close({disableAutoOpen:false}) →
+//            不取消别人的 open, 也不把"自动重开库"永久关掉
+//         ③ 三处自愈走 runHeal() 排队, 不再互相踩
+//   index.html 的 ?v= 已 bump (cinema-storage.js 0.5.1 → 0.5.2), 沙盒页同步。
+//   所以要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.52.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

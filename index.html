@@ -253,7 +253,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
        旧「一起看电影」已于 2026-10-07 整体删除(代码+入口), 只保留本模块。
        Gemini 协议层仍是 live-client.js (与旧观影共用过, 现为影院独占)。
        顺序要求: cinema-storage.js 必须在前 —— cinema-room.js 在加载时就捕获了 window.CinemaStorage 引用。 -->
-  <script src="modules/cinema-storage.js?v=0.5.1" defer></script>
+  <script src="modules/cinema-storage.js?v=0.5.2" defer></script>
   <!-- 图片压缩 (2026-10-05): 上传房间背景时把 3~5MB 的 iPhone 照片压到 ~100KB。
        必须在 cinema-room.js 之前 —— 它在加载时就要拿到 window.CinemaImage。 -->
   <script src="modules/cinema-img.js?v=1.0.1" defer></script>

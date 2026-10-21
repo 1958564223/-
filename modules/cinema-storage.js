@@ -74,19 +74,58 @@
   // 【为什么不自动重建整个 db】db.version(66) 只声明新增表, 不改任何已有表,
   // 所以 upgrade 是纯增量, 不会丢用户数据 —— 这是 Dexie 文档保证的。
   // --------------------------------------------------------------------------
+  // 🔴 2026-10-21: 三处补表自愈 (v66 人物 / v68 前情提要 / v69 逐条) 必须【排队】。
+  //
+  // 【真事故】用户实测截图: "存不下 / 影片没能存进本地数据库:
+  //   DatabaseClosedError: Database has been closed" —— 人物图、影片、道具全存不进去,
+  //   整页刷新之前全都好不了。
+  //
+  // 【根因】三处自愈都要对【同一个库】做 close() → version() → open()。
+  //   两个撞在一起时, 后一个的 close() 会把前一个【正在进行的 open 取消掉】
+  //   (Dexie 的 close() 在 isBeingOpened 时会 cancelOpen)。
+  //   结果库停在这种状态:
+  //       autoOpen=false  openComplete=true  idbdb=false  dbOpenError=DatabaseClosedError
+  //   这个状态下【任何】数据库操作都直接抛 Database has been closed,
+  //   而且永远恢复不了 —— 因为 openComplete 还是 true, Dexie 认为"库已经开好了"。
+  //
+  // 【为什么昨天才炸】v69 那张表是 2026-10-19 才加的。
+  //   之前只有 v66 一个自愈(每次开房跑一次), 撞不起来;
+  //   加上 v68/v69 之后, 一开房就有三个自愈同时跑 → 必踩。
+  //
+  // 【两道防线】
+  //   ① 根子上: 沙盒库把表声明齐(cinema-sandbox/index.html), 就【根本不会自愈】。
+  //   ② 这里: 三处自愈排队跑, 顺便把 close() 改成 close({disableAutoOpen:false}) ——
+  //      那个参数让 close 不取消别人的 open, 也不把 autoOpen 关掉。
+  // --------------------------------------------------------------------------
+  let healChain = Promise.resolve();
+  function runHeal(fn) {
+    // 前一个失败也要让后一个继续 (then(fn, fn) 的第二个参数就是"失败时也往下走")
+    const run = healChain.then(fn, fn);
+    healChain = run.then(function () {}, function () {});
+    return run;
+  }
+
+  // --------------------------------------------------------------------------
   let charsHealing = null;
   async function ensureCharTable() {
     const db = await whenDbReady();
     if (db[CHARS]) return db[CHARS];
     if (!charsHealing) {
-      charsHealing = (async function () {
+      charsHealing = runHeal(async function () {
         try {
           // ⚠️ 必须先 close() —— Dexie 不允许在库【已打开】时加版本号,
           //    否则直接抛 SchemaError: Cannot add version when database is open。
           //    (第一版自愈合在这, 真机一走兜底就报错, 是这次测试抓出来的。)
           //    close 之后 db.open() 会由 330 自己的 dbReadyPromise 那条链重新拉起来,
           //    这里紧接着自己 open 一次, 不用等别的地方。
-          try { db.close(); } catch (e) { /* 本来就没开 */ }
+          //
+          // 🔴 2026-10-21 必须传 { disableAutoOpen: false }!!
+          //    Dexie 的 db.close() 默认是 disableAutoOpen: true —— 它会把
+          //    state.autoOpen 设成 false(这个库从此不会自动重开),
+          //    还会把 openComplete 留在 true 而 idbdb 已经置空 ——
+          //    那个状态下再做任何操作都是 Database has been closed, 永远好不了。
+          //    (详细原因见上面 runHeal 那段注释)
+          try { db.close({ disableAutoOpen: false }); } catch (e) { /* 本来就没开 */ }
 
           db.version(66).stores({ [CHARS]: '&id, updatedAt' });
           await db.open();
@@ -98,7 +137,7 @@
           console.error('[CinemaStorage] 人物表补建失败', (e && e.name) || '', (e && e.message) || e);
         }
         return null;
-      })();
+      });
     }
     return charsHealing;
   }
@@ -129,10 +168,14 @@
     const db = await whenDbReady();
     if (db[SERIES_RECAP]) return db[SERIES_RECAP];
     if (!recapHealing) {
-      recapHealing = (async function () {
+      recapHealing = runHeal(async function () {
         try {
           // ⚠️ 必须先 close() —— Dexie 不允许在库已打开时加版本号 (同 ensureCharTable)
-          try { db.close(); } catch (e) { /* 本来就没开 */ }
+          // 🔴 2026-10-21: 必须传 { disableAutoOpen: false } —— 默认的 close()
+          //    会把【自动重开库】永久关掉, 还会留下 openComplete=true 的脏状态,
+          //    之后所有写入都抛 Database has been closed。
+          //    详细原因见 ensureCharTable() 那段注释。
+          try { db.close({ disableAutoOpen: false }); } catch (e) { /* 本来就没开 */ }
           db.version(68).stores({ [SERIES_RECAP]: '&key, updatedAt' });
           await db.open();
           if (db[SERIES_RECAP]) {
@@ -143,7 +186,7 @@
           console.error('[CinemaStorage] 前情提要表补建失败', (e && e.name) || '', (e && e.message) || e);
         }
         return null;
-      })();
+      });
     }
     return recapHealing;
   }
@@ -231,9 +274,13 @@
     const db = await whenDbReady();
     if (db[EP_MEMORY]) return db[EP_MEMORY];
     if (!epHealing) {
-      epHealing = (async function () {
+      epHealing = runHeal(async function () {
         try {
-          try { db.close(); } catch (e) { /* 本来就没开 */ }
+          // 🔴 2026-10-21: 必须传 { disableAutoOpen: false } —— 默认的 close()
+          //    会把【自动重开库】永久关掉, 还会留下 openComplete=true 的脏状态,
+          //    之后所有写入都抛 Database has been closed。
+          //    详细原因见 ensureCharTable() 那段注释。
+          try { db.close({ disableAutoOpen: false }); } catch (e) { /* 本来就没开 */ }
           db.version(69).stores({ [EP_MEMORY]: '&id, sessionKey, ep, updatedAt' });
           await db.open();
           if (db[EP_MEMORY]) {
@@ -244,7 +291,7 @@
           console.error('[CinemaStorage] 逐条记忆表补建失败', (e && e.name) || '', (e && e.message) || e);
         }
         return null;
-      })();
+      });
     }
     // ⚠️ 2026-10-21 补: 补建失败【不能永久缓存失败结果】。
     //

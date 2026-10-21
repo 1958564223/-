@@ -166,11 +166,27 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.28 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.28</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>图片传不上去</strong>（你昨天搞装修遇到的，弹"存不下 / 影片没能存进本地数据库：DatabaseClosedError Database has been closed"）—— 人物图、影片、道具<strong>全都传不了</strong>，整页刷新之前什么都存不进去。</li>
+          <li>根因不复杂：有个"数据库里少一张表就现场补建"的兜底逻辑，它要先把库<strong>关掉</strong>再重新打开。而现在一开房就有<strong>三处</strong>兜底同时在跑（人物表 / 前情提要表 / 单集剧情表），后一个把前一个正在进行的"重新打开"给<strong>取消了</strong>。库就卡在一个半死不活的状态里，之后任何写入都报"库已关闭"。</li>
+          <li><strong>为什么昨天才炸</strong>：单集剧情那张表是前天才加的，加之前只有一处兜底，撞不起来；加完变成三处，一开房就必踩。</li>
+          <li>修法是两层：<strong>① 小页面把三张表都自己声明齐</strong>，这样根本不会走那条兜底；<strong>② 兜底本身也修</strong> —— 关门时不再"永久关闭自动重开"，三处兜底改成排队，一个一个来，不再互相踩。</li>
+          <li>这个坑我<strong>在本地完整复现过</strong>：旧写法跑一遍，报错跟你截图上一模一样；新写法跑一遍，三处兜底全部正常、库状态健康、传图传片全部成功。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.27 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.27</span>
-        <span class="version-date">最新版本</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>
