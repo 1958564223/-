@@ -166,11 +166,37 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.29 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.29</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title new">新增</div>
+        <ul class="item-list">
+          <li><strong>「今日私选」—— AI 每天给你挑一首歌单</strong>。「一起听歌」那个 App 里多了一个「今日私选」页签, 打开就是今天给你挑的歌: 歌名、歌手、一句推荐理由、一个小标签, 底下能点「播放全部」整张听, 也能一首一首点。</li>
+          <li><strong>打开 App 就会提醒你</strong>。每天第一次打开时它自己把歌挑好, 然后弹一条通知 + 应用内提示, 点通知直接跳到「今日私选」。同一天只生成一次, 不会反复消耗接口。</li>
+          <li><strong>专门不推你红心里的歌</strong>。你自己加进红心的那些, 一首都不会出现在日推里 —— 你说听腻了, 所以它只往外找。红心只用来"判断方向", 不用来"选歌"。</li>
+          <li><strong>每首都能给反馈</strong>: 喜欢 / 听过了 / 多推这种 / 少推这种 / 不喜欢。这五个不是摆设 —— 点了真的会改变明天的推荐: 「多推这种」的歌手下次优先, 「少推这种」降权, 「不喜欢」这位歌手的歌直接不出现。</li>
+          <li><strong>AI 只负责排序和写理由, 不负责编歌</strong>。所有歌都是程序先从网易云真找出来、再逐个验过"真的能播"才进候选池; AI 只能在这个名单里挑, 编出来的歌名和 ID 一律丢掉。它还会用你角色的语气写推荐理由, 所以不同 AI 挑出来的味道不一样。</li>
+          <li><strong>不会给你一张空卡</strong>。AI 那边超时或抽风时, 程序会自己按口味排序兜底出一张 —— 顶多理由写得机械一点, 歌还是真的能播。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title change">变化</div>
+        <ul class="item-list">
+          <li>网易云那层接了几个原来白名单里就有、但前端一个都没用的接口（每日推荐、推荐新音乐、推荐歌单、排行榜、歌手的歌), 还加了<strong>批量</strong>查歌曲详情和批量验音源 —— 以前一首一首地拉, 现在一次一批。</li>
+          <li>「一起听歌」的歌单栏里会多出一个「今日私选」。点「播放全部」就是把今天这批歌塞进播放器队列, 跟平时导歌单一模一样, <strong>不影响你自己整理的歌单</strong>。</li>
+          <li>新增两张本地表存日推卡和反馈记录, 不上传、不外传, 全在本机。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.28 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.28</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-21</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

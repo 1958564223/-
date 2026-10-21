@@ -276,4 +276,22 @@ db.version(69).stores({
   // { id, sessionKey, kind, title, ep, text, at, updatedAt }
 });
 
+// 「今日私选」日推卡 + 用户反馈 (db v70, 2026-10-21)
+//
+// 【为什么按 chatId 存】教程是"单用户单一品味画像", 但 330 是多角色的 ——
+// 画像按角色(chatId)分开, 不同 AI 给同一个用户挑的歌可以完全不同。
+// 同一个角色每天一张卡, 所以 id = `${chatId}::${date}`。
+//
+// 【卡里不存音频 URL】网易云的 CDN 链接几分钟就过期, 存下来必然是死链。
+// 卡里只存 songId + 元数据, 真正播放时走 music-player.js 已有的
+// refreshNeteaseTrackUrl() 现取现用。
+//
+// ⚠️ 加这张表必须同时 bump index.html 里 init-db-schema.js 的 ?v=,
+//    忘了手机上 Dexie 压根不建表 (v66 cinemaChars / v69 cinemaEpMemories 踩过)。
+db.version(70).stores({
+  dailyDiscovery: '&id, chatId, date',                  // { id, chatId, date, title, subtitle, note, generatedAt, strategy, songs:[], seen }
+  dailyDiscoveryFeedback: '++id, chatId, songId, action, createdAt'
+  // { id, chatId, songId, artist, action, createdAt }
+});
+
 window.db = db;

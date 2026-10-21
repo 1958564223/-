@@ -134,7 +134,15 @@
 //         ③ 三处自愈走 runHeal() 排队, 不再互相踩
 //   index.html 的 ?v= 已 bump (cinema-storage.js 0.5.1 → 0.5.2), 沙盒页同步。
 //   所以要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.52.0';
+// v0.2.53.0 (2026-10-21): 新增「今日私选」AI 每日荐歌。
+//   新增 js/music-daily-discovery.js (引擎) + css/music-daily-discovery.css (样式),
+//   两个都进 URLS_TO_CACHE + fetch 拦截清单, 离线也能打开今日私选 tab。
+//   同时 index.html 里 js/netease-music.js (?v 0.0.39→0.0.40, 加了推荐类端点 + 批量接口)
+//   和 js/netease-music-app.js (?v 0.0.42→0.0.43, 加了今日私选 tab) 的 ?v= 都 bump 了,
+//   init-db-schema.js (?v 0.0.41→0.0.42, 加了 db v70 的 dailyDiscovery / dailyDiscoveryFeedback)。
+//   ⚠️ init-db-schema.js 不在预缓存清单里, 靠 index.html 的 ?v= 生效 —— 忘了 bump
+//      手机上 Dexie 压根不建 v70 那两张表 (v66 / v69 踩过这个坑)。
+const CACHE_VERSION = 'v0.2.53.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
@@ -150,6 +158,9 @@ const URLS_TO_CACHE = [
   // v0.1.29 新增：AI 原创�?IndexedDB 持久化层
   './js/ai-songs-store.js',
   './js/netease-music.js',
+  // v0.2.53.0 新增: 「今日私选」AI 每日荐歌引擎 + 样式
+  './js/music-daily-discovery.js',
+  './css/music-daily-discovery.css',
   // v1.0.0 改�? 通用 MCP 工具（删 mcd/luckin 硬编�? 删旧 mcp-ui-init + 3 �?css, �?generic-client + ui-list�?
   './js/mcp-generic-client.js',
   './js/mcp-tool-bridge.js',
@@ -266,6 +277,9 @@ self.addEventListener('fetch', event => {
      url.includes('/js/role-voice-sample-ui.js') ||
      // v0.1.29 新增：AI 原创曲存储层
      url.includes('/js/ai-songs-store.js') ||
+     // v0.2.53.0 新增: 「今日私选」引擎 + 样式
+     url.includes('/js/music-daily-discovery.js') ||
+     url.includes('/css/music-daily-discovery.css') ||
      // v1.0.0 改�? 通用 MCP 文件命中拦截, 走缓存（请求带回 ?v= 时也�?fetch�?
      url.includes('/js/mcp-generic-client.js') ||
      url.includes('/js/mcp-tool-bridge.js') ||
