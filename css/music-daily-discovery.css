@@ -74,6 +74,19 @@
   color: #fff;
 }
 
+/* ---------- 生成失败时的「再试一次」 ---------- */
+.nmd-daily-retry {
+  display: block;
+  margin: 0 auto;
+}
+
+/* ---------- 加载中显示已用秒数 (让人知道它还活着) ---------- */
+#nmd-elapsed {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  opacity: 0.9;
+}
+
 /* ---------- 角色说的一句话 ---------- */
 .nmd-note {
   margin: 0 14px 8px;

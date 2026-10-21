@@ -166,11 +166,27 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.30 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.30</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>「今日私选」一直卡在"正在挑今天的歌"没动静</strong> —— 你昨天打开发现的, 选歌进度一直转, 歌单就是不出来。</li>
+          <li>根因是<strong>三处"等网络"的地方</strong>: ① 找候选歌的时候, 8 个搜索、3 个歌单、5 位歌手是一个一个排队等的, 手机上慢一点就拖成好几分钟; ② AI 那趟请求在"用主代理"这条路上<strong>漏了超时设置</strong>, 网络一挂就永远不返回 (同一个函数在项目别处都传了, 只有这一处漏); ③ 批量验音源的兜底逻辑写错了 —— 网易云明明回了"这首歌没版权", 程序却当成"没回", 于是又一轮轮单独去问, 越问越慢。</li>
+          <li>修法: 找歌、验音源全部改成<strong>同时开跑</strong>; 补上 AI 请求的超时; 兜底只对"上游压根没提过的歌"才单独再问, 而且也是同时问。</li>
+          <li>另外加了个<strong>兜底上限</strong>: 整轮挑歌最多等 90 秒, 到点一定给你一个明确的提示 + 一个「再试一次」按钮, <strong>不会再无限转圈</strong>。挑歌的时候还会显示已经等了几秒, 你能看出它是在动还是真卡死了。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.29 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.29</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-21</span>
       </div>
       <div class="section">
         <div class="section-title new">新增</div>

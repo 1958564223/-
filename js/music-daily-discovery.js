@@ -29,19 +29,67 @@
 
   const CFG = {
     targetCount: 20,          // 最终出多少首
-    maxQueries: 12,           // 最多几个搜索查询
+    maxQueries: 8,            // 最多几个搜索查询 (再多是浪费 —— 每次都要跑一趟网络)
     maxCandidates: 100,       // 喂给 LLM 的候选上限
     verifyBatch: 50,          // 批量验可播的批大小
+    verifyConcurrency: 3,     // 验可播的批并发数
+    searchConcurrency: 4,     // 搜索并发数
     maxPerArtist: 2,          // 每位歌手最多几首
     maxPerArtistBoost: 4,     // 被"多推这种"的歌手放宽到几首
     maxPerArtistHard: 4,      // 硬上限 —— 凑不够歌时最多放宽到这么多, 再多宁可给张小卡
-    llmTimeoutMs: 45000,
+    llmTimeoutMs: 30000,      // LLM 策展超时
+    totalTimeoutMs: 90000,    // 整轮生成的总预算 —— 到了就停, 绝不无限等
     feedbackLimit: 500,       // 反馈最多留多少条
     startupDelayMs: 6000,     // App 启动后等多久开始生成
     tagWhitelist: ['稳准', '旁白', '私心', '小冒险'],
     // 探索用的风格词 —— 从用户口味往旁边挪一点, 制造"惊喜"
     exploreWords: ['华语新歌', '独立民谣', 'city pop', '深夜', '卧室', '治愈系'],
   };
+
+  /**
+   * 并发受限地跑一批异步任务 —— 手机上串行跑十几趟网络是卡死的头号原因。
+   * @param {Array<() => Promise<any>>} tasks
+   * @param {number} limit 同时最多跑几个
+   */
+  async function runWithConcurrency(tasks, limit) {
+    const list = (tasks || []).filter(Boolean);
+    if (!list.length) return [];
+    const results = new Array(list.length);
+    let cursor = 0;
+    const workers = new Array(Math.max(1, Math.min(limit || 1, list.length))).fill(0).map(async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= list.length) return;
+        try {
+          results[index] = { ok: true, value: await list[index]() };
+        } catch (e) {
+          results[index] = { ok: false, error: e };
+        }
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
+
+  /**
+   * 给一整轮生成套上"总预算" —— 无论中间哪一环挂住,
+   * 到点必须抛错, 绝不让界面无限转圈。
+   *
+   * ⚠️ 这里 race 的只是"等待", 底下那趟活可能还在跑;
+   *    但对界面来说, 报个错比永远转圈强一万倍。
+   */
+  function withDeadline(promise, ms, label) {
+    if (!ms || ms <= 0) return promise;
+    let timer = null;
+    const guard = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${label || '生成'}超时 (${Math.round(ms / 1000)}秒), 已中止`));
+      }, ms);
+    });
+    return Promise.race([promise, guard]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
 
   // 反馈规则: 权重改动 + 是否把这首歌永久排除
   const FEEDBACK_RULES = {
@@ -241,17 +289,22 @@
       } catch (e) { console.warn('[daily-discovery] likelist failed:', e); }
 
       // 1.2 网易云歌单 —— 歌单名本身也是口味信号
+      //     ⚠️ 歌单之间【并行】拉 —— 串行 5 趟网络在手机上就是十几秒白等
       try {
         const pls = await api.userPlaylist(user.userId, 30);
         profile.stats.playlists = pls.length;
         const top = pls.slice().sort((a, b) => (b.playCount || 0) - (a.playCount || 0)).slice(0, 5);
-        for (const pl of top) {
-          if (pl.name) profile.playlistNames.push(pl.name);
-          const tracks = await api.playlistTracks(pl.id, 200);
-          tracks.forEach((t) => {
+        top.forEach((pl) => { if (pl.name) profile.playlistNames.push(pl.name); });
+        const results = await runWithConcurrency(
+          top.map((pl) => () => api.playlistTracks(pl.id, 150)),
+          5
+        );
+        results.forEach((r) => {
+          if (!r || !r.ok || !Array.isArray(r.value)) return;
+          r.value.forEach((t) => {
             (t.artists || []).forEach((a) => bumpArtist(profile, a.name, 1, a.id));
           });
-        }
+        });
       } catch (e) { console.warn('[daily-discovery] userPlaylist failed:', e); }
     }
 
@@ -370,10 +423,14 @@
       const pls = await api.personalizedPlaylists(30);
       const top = pls.slice().sort((a, b) => (b.playCount || 0) - (a.playCount || 0)).slice(0, 3);
       const out = [];
-      for (const pl of top) {
-        const tracks = await api.playlistTracks(pl.id, 100);
-        tracks.forEach((t) => { const n = normalizeSong(t, 'personalized'); if (n) out.push(n); });
-      }
+      const res = await runWithConcurrency(
+        top.map((pl) => () => api.playlistTracks(pl.id, 100)),
+        3
+      );
+      res.forEach((r, i) => {
+        if (!r || !r.ok || !Array.isArray(r.value)) return;
+        r.value.forEach((t) => { const n = normalizeSong(t, 'personalized'); if (n) out.push(n); });
+      });
       return out;
     })());
 
@@ -381,10 +438,14 @@
     jobs.push((async () => {
       const lists = await api.toplist();
       const out = [];
-      for (const l of lists.slice(0, 2)) {
-        const tracks = await api.topPlaylistTracks(l.id);
-        tracks.forEach((t) => { const n = normalizeSong(t, 'toplist'); if (n) out.push(n); });
-      }
+      const res = await runWithConcurrency(
+        lists.slice(0, 2).map((l) => () => api.topPlaylistTracks(l.id)),
+        2
+      );
+      res.forEach((r) => {
+        if (!r || !r.ok || !Array.isArray(r.value)) return;
+        r.value.forEach((t) => { const n = normalizeSong(t, 'toplist'); if (n) out.push(n); });
+      });
       return out;
     })());
 
@@ -392,10 +453,14 @@
     jobs.push((async () => {
       const out = [];
       const artists = profile.topArtists.filter((a) => a.id != null).slice(0, 5);
-      for (const a of artists) {
-        const songs = await api.artistSongs(a.id, 50, 0);
-        songs.forEach((s) => { const n = normalizeSong(s, 'artist'); if (n) out.push(n); });
-      }
+      const res = await runWithConcurrency(
+        artists.map((a) => () => api.artistSongs(a.id, 50, 0)),
+        3
+      );
+      res.forEach((r) => {
+        if (!r || !r.ok || !Array.isArray(r.value)) return;
+        r.value.forEach((s) => { const n = normalizeSong(s, 'artist'); if (n) out.push(n); });
+      });
       return out;
     })());
 
@@ -403,10 +468,14 @@
     jobs.push((async () => {
       const out = [];
       const queries = buildQueries(profile);
-      for (const q of queries) {
-        const songs = await api.search(q, 20);
-        songs.forEach((s) => { const n = normalizeSong(s, 'search'); if (n) out.push(n); });
-      }
+      const res = await runWithConcurrency(
+        queries.map((q) => () => api.search(q, 20)),
+        CFG.searchConcurrency
+      );
+      res.forEach((r) => {
+        if (!r || !r.ok || !Array.isArray(r.value)) return;
+        r.value.forEach((s) => { const n = normalizeSong(s, 'search'); if (n) out.push(n); });
+      });
       return out;
     })());
 
@@ -425,34 +494,42 @@
   async function verifyPlayable(candidates) {
     const api = NM();
     const level = getPreferredQuality();
-    const out = [];
     const chunks = [];
     for (let i = 0; i < candidates.length; i += CFG.verifyBatch) {
       chunks.push(candidates.slice(i, i + CFG.verifyBatch));
     }
 
-    for (const chunk of chunks) {
-      const ids = chunk.map((c) => c.id);
-      let playable = [];
-      try {
-        playable = await api.getSongUrlsBatch(ids, level);
-      } catch (e) {
-        console.warn('[daily-discovery] verify chunk failed:', e);
-        continue;
-      }
-      const okIds = new Set(playable.map((p) => String(p.id)));
-
-      // 降级: 拿不到 exhigh 的, 用 standard 再试一次 (教程 Ch6.2 的有序回退)
-      const failed = chunk.filter((c) => !okIds.has(c.id));
-      if (failed.length && level !== 'standard') {
+    // 分批并行 (每批内部还有一层单发兜底) —— 串行 batches 在手机上就是卡死
+    const results = await runWithConcurrency(
+      chunks.map((chunk) => async () => {
+        const ids = chunk.map((c) => c.id);
+        let playable = [];
         try {
-          const fallback = await api.getSongUrlsBatch(failed.map((c) => c.id), 'standard');
-          fallback.forEach((p) => okIds.add(String(p.id)));
-        } catch (e) { /* 降级失败就算了 */ }
-      }
+          playable = await api.getSongUrlsBatch(ids, level);
+        } catch (e) {
+          console.warn('[daily-discovery] verify chunk failed:', e);
+          return [];
+        }
+        const okIds = new Set(playable.map((p) => String(p.id)));
 
-      chunk.forEach((c) => { if (okIds.has(c.id)) out.push(c); });
-    }
+        // 降级: 拿不到 exhigh 的, 用 standard 再试一次 (教程 Ch6.2 的有序回退)
+        const failed = chunk.filter((c) => !okIds.has(c.id));
+        if (failed.length && level !== 'standard') {
+          try {
+            const fallback = await api.getSongUrlsBatch(failed.map((c) => c.id), 'standard');
+            fallback.forEach((p) => okIds.add(String(p.id)));
+          } catch (e) { /* 降级失败就算了 */ }
+        }
+
+        return chunk.filter((c) => okIds.has(c.id));
+      }),
+      CFG.verifyConcurrency
+    );
+
+    const out = [];
+    results.forEach((r) => {
+      if (r && r.ok && Array.isArray(r.value)) out.push(...r.value);
+    });
     return out;
   }
 
@@ -642,6 +719,9 @@
           apiKey,
           payload,
           method: 'POST',
+          // ⚠️ 必须传 signal —— 漏了的话主代理通道【完全没有超时】,
+          //    网络一挂就永远不返回, 手机上就是"正在挑今天的歌"转圈转到天荒地老。
+          signal: ctrl.signal,
         });
       } else {
         response = await fetch(`${String(proxyUrl).replace(/\/+$/, '')}/chat/completions`, {
@@ -668,19 +748,46 @@
     }
   }
 
+  /**
+   * 从模型输出里捞 JSON。
+   * 真模型不一定乖乖只吐一个 JSON —— 它可能:
+   *   - 用 ```json 包起来
+   *   - 前后加一段解释文字
+   *   - 吐两个 JSON 块
+   *   - 直接吐一个数组而不是对象
+   * 所以这里都试一遍, 别因为格式脏就丢掉一整轮策展。
+   */
+  function tryParseJsonSlice(s, open, close) {
+    const start = s.indexOf(open);
+    if (start < 0) return null;
+    let end = s.lastIndexOf(close);
+    let tries = 0;
+    while (end > start && tries < 6) {
+      try {
+        const parsed = JSON.parse(s.slice(start, end + 1));
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch (e) { /* 换个结尾符再试 */ }
+      end = s.lastIndexOf(close, end - 1);
+      tries++;
+    }
+    return null;
+  }
+
   function parseLLMJson(text) {
     if (!text) return null;
     let s = String(text).trim();
-    // 去掉 ```json 包裹
+    // 去掉 ```json / ``` 包裹
     s = s.replace(/^```[a-zA-Z]*\s*/, '').replace(/```\s*$/, '').trim();
-    const start = s.indexOf('{');
-    const end = s.lastIndexOf('}');
-    if (start < 0 || end <= start) return null;
-    try {
-      return JSON.parse(s.slice(start, end + 1));
-    } catch (e) {
-      return null;
-    }
+
+    // 先试对象 (期望的格式)
+    const obj = tryParseJsonSlice(s, '{', '}');
+    if (obj && !Array.isArray(obj)) return obj;
+
+    // 再试数组 (模型直接吐歌单数组)
+    const arr = tryParseJsonSlice(s, '[', ']');
+    if (Array.isArray(arr)) return { note: '', songs: arr };
+
+    return null;
   }
 
   /** LLM 结果校验 —— 只接受白名单里的 id */
@@ -772,11 +879,30 @@
     return { note, songs };
   }
 
+  // 格式不对时的追加指令 —— 只在【输出解析不出来】时追加一次, 让模型重来一遍
+  const STRICT_FORMAT_SUFFIX = [
+    '',
+    '【重要】上一条输出没能被解析出来。这次只输出一个 JSON 对象, 第一个字符必须是 {, 最后一个字符必须是 },',
+    '中间不要加任何说明文字, 不要用 markdown 代码块, id 用数字。',
+    '格式: {"note":"...","songs":[{"id":123,"reason":"...","tag":"小冒险"}]}',
+  ].join('\n');
+
   async function curate(pool, profile, targetCount) {
     if (!pool.length) return null;
-    try {
-      const prompt = buildCurationPrompt(pool, profile, targetCount);
-      const text = await callLLM(prompt);
+    const prompt = buildCurationPrompt(pool, profile, targetCount);
+
+    // 最多试两次:
+    //   第 1 次正常问; 解析不出来 → 第 2 次追加"只吐 JSON"的硬要求再问一次
+    //   网络失败/超时 → 不重试 (再问一次也还是不通, 直接兜底)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let text = '';
+      try {
+        text = await callLLM(attempt === 0 ? prompt : prompt + STRICT_FORMAT_SUFFIX);
+      } catch (e) {
+        console.warn('[daily-discovery] LLM 调用失败, 走确定性兜底:', (e && e.message) || e);
+        break;
+      }
+
       const raw = parseLLMJson(text);
       const valid = validateLLMResult(raw, pool, targetCount);
       if (valid) {
@@ -790,11 +916,12 @@
             valid.songs.push(s);
           });
         }
+        if (attempt > 0) console.log('[daily-discovery] LLM 重试后成功');
         return valid;
       }
-      console.warn('[daily-discovery] LLM 结果不可用, 走确定性兜底');
-    } catch (e) {
-      console.warn('[daily-discovery] LLM 策展失败, 走确定性兜底:', e);
+      console.warn(attempt === 0
+        ? '[daily-discovery] LLM 输出格式不对, 重试一次'
+        : '[daily-discovery] LLM 重试后还是不对, 走确定性兜底');
     }
     return deterministicPick(pool, profile, targetCount);
   }
@@ -861,8 +988,10 @@
 
     // 防并发: 同一个角色同时只跑一轮
     if (inflight.has(id)) return inflight.get(id);
-    const p = generate(id, opts)
-      .finally(() => { inflight.delete(id); });
+    const raw = generate(id, opts);
+    // 底下那趟活跑完再清 inflight —— 万一超时了, 别让第二轮重复开一整趟活
+    raw.catch(() => {}).finally(() => { inflight.delete(id); });
+    const p = withDeadline(raw, CFG.totalTimeoutMs, '今日私选');
     inflight.set(id, p);
     return p;
   }

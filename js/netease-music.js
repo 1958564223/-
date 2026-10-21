@@ -648,6 +648,32 @@
   }
 
   /**
+   * 并发受限地跑一批异步任务 (失败不抛, 返回 {ok, value|error})。
+   * 手机上串行跑十几趟网络是"卡住不动"的头号原因 —— 宁可并行也别排着队等。
+   * @param {Array<() => Promise<any>>} tasks
+   * @param {number} limit 同时最多跑几个
+   */
+  async function runLimited(tasks, limit) {
+    const list = (tasks || []).filter(Boolean);
+    if (!list.length) return [];
+    const results = new Array(list.length);
+    let cursor = 0;
+    const workers = new Array(Math.max(1, Math.min(limit || 1, list.length))).fill(0).map(async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= list.length) return;
+        try {
+          results[index] = { ok: true, value: await list[index]() };
+        } catch (e) {
+          results[index] = { ok: false, error: e };
+        }
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
+
+  /**
    * 批量拿播放直链 —— 「先验证再智能」的关键一步。
    * 只有返回了 url 的歌才算"真的能播"。
    *
@@ -663,32 +689,47 @@
 
     const playable = [];
     const found = new Set();
+    // 【关键】分开记两件事:
+    //   returned = 上游【提到过】这个 id (不管有没有 url)
+    //   found    = 这个 id 【有可播 url】
+    // 上游返回了但 url 为 null = 这首歌本来就不可播 (没版权 / 非 VIP / 地区限制),
+    // 逐首再问一遍也是白问 —— 只有"上游压根没提到这个 id"才值得单发一次。
+    // ⚠️ 之前没分这两种, 导致每批 15 次串行重试, 手机上能卡好几分钟。
+    const returned = new Set();
     try {
       const r = await callNetease('song/url', { ids: list, level });
       const data = Array.isArray(r?.data) ? r.data : [];
       data.forEach((item) => {
-        if (item && item.id != null && item.url) {
+        if (!item || item.id == null) return;
+        const key = String(item.id);
+        returned.add(key);
+        if (item.url) {
           playable.push({
             id: item.id,
             url: String(item.url).replace(/^http:\/\//i, 'https://'),
             level: item.level || level,
             size: item.size,
           });
-          found.add(item.id);
+          found.add(key);
         }
       });
     } catch (e) {
       console.warn('[netease] getSongUrlsBatch (batch) failed:', e);
     }
 
-    // 兜底: 批量没回来的逐首试 (最多补 15 首, 免得请求爆炸)
-    const missing = list.filter((id) => !found.has(id)).slice(0, 15);
-    for (const id of missing) {
-      try {
-        const one = await getSongUrl(id, level);
-        if (one && one.url) playable.push(one);
-      } catch (e) { /* 单首失败无所谓, 跳过 */ }
-    }
+    // 兜底: 只对【上游压根没提到】的 id 单发一次, 最多补 8 首 (免得请求爆炸)
+    // ⚠️ 单发必须并行 —— 串行 8 次最坏能拖 80 秒, 手机上就是"转圈转不出结果"。
+    const missing = list
+      .map((id) => String(id))
+      .filter((id) => !returned.has(id))
+      .slice(0, 8);
+    const singles = await runLimited(
+      missing.map((id) => () => getSongUrl(id, level)),
+      4
+    );
+    singles.forEach((r) => {
+      if (r && r.ok && r.value && r.value.url) playable.push(r.value);
+    });
     return playable;
   }
 

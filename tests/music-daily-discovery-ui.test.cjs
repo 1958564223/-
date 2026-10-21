@@ -63,13 +63,86 @@ const MIME = {
   '.mp4': 'video/mp4',
 };
 
+// ============================================================
+// CDN 代理 (让测试自给自足, 不用干等外网)
+//
+// 【为什么】index.html 里挂了 10 个外部脚本 (crypto-js / dexie / Tone / hls ...),
+//   其中好几个是【阻塞式】的 —— 它们不加载完, DOMContentLoaded 就不触发。
+//   外网每个 3~5 秒, 串起来能把页面加载拖到 60 秒开外, 测试直接超时崩掉。
+//   所以这里把 index.html 里的外链 script 改写成 /__cdn?u=<encoded>,
+//   由本服务器代取并【缓存】(同一次跑只取一次), 页面照常拿到真库。
+// ============================================================
+const CDN_HOSTS = [
+  'cdnjs.cloudflare.com',
+  'unpkg.com',
+  'cdn.jsdelivr.net',
+  'phoebeboo.github.io',
+  'files.catbox.moe',
+];
+const cdnCache = new Map();
+
+function fetchCdn(url) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(url); } catch (e) { resolve(null); return; }
+    if (CDN_HOSTS.indexOf(u.hostname) < 0) { resolve(null); return; }
+    if (cdnCache.has(url)) { resolve(cdnCache.get(url)); return; }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    fetch(url, { signal: ctrl.signal, redirect: 'follow' })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((text) => {
+        cdnCache.set(url, text);
+        resolve(text);
+      })
+      .catch((e) => {
+        console.log('  [CDN] 取不到 ' + url + ' (' + (e && e.message) + ') —— 用空脚本顶上');
+        cdnCache.set(url, '');
+        resolve('');
+      })
+      .finally(() => clearTimeout(timer));
+  });
+}
+
+// 把 index.html 里的外链 script 改写成走本地代理
+function rewriteCdnScripts(html) {
+  return html.replace(
+    /(<script\b[^>]*\ssrc=")(https?:\/\/[^"]+)(")/gi,
+    (m, a, url, c) => a + '/__cdn?u=' + encodeURIComponent(url) + c
+  );
+}
+
 function startServer() {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       let p = decodeURIComponent(req.url.split('?')[0]);
+
+      // --- CDN 代理 ---
+      if (p === '/__cdn') {
+        const q = decodeURIComponent((req.url.split('?')[1] || '').split('&').find((s) => s.startsWith('u=')) || '').slice(2);
+        fetchCdn(q).then((text) => {
+          if (text === null) { res.writeHead(403); res.end('blocked'); return; }
+          res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+          res.end(text);
+        });
+        return;
+      }
+
       if (p === '/') p = '/index.html';
       const file = path.join(ROOT, p);
       if (!file.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
+
+      // --- index.html 要先改写外链 ---
+      if (p === '/index.html') {
+        fs.readFile(file, (err, buf) => {
+          if (err) { res.writeHead(404); res.end('not found'); return; }
+          const html = rewriteCdnScripts(buf.toString('utf8'));
+          res.writeHead(200, { 'Content-Type': MIME['.html'] });
+          res.end(html);
+        });
+        return;
+      }
+
       fs.readFile(file, (err, buf) => {
         if (err) { res.writeHead(404); res.end('not found'); return; }
         res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' });
@@ -161,6 +234,11 @@ async function main() {
     check('顶部多出「今日私选」tab', tabInfo.hasDailyTab, 'tabs=' + tabInfo.tabs.join('/'));
 
     // 塞一张假卡进去 (本地没有 netlify functions, 真卡生成不出来)
+    //
+    // ⚠️ 【竞态】App 自己会异步把角色列表从 DB 载进 window.state.chats,
+    //    要是我们先塞后被它覆盖掉, resolveChatId() 就找不到角色,
+    //    页面会显示"没找到角色, 先开个聊天再来" —— 看着像功能坏了, 其实是测试自己抢跑。
+    //    所以: 等 App 加载完 → 塞 → 再确认 resolveChatId() 真的认这个角色。
     await page.evaluate(async () => {
       const chatId = 'ui-test-chat';
       const songs = [];
@@ -184,16 +262,34 @@ async function main() {
         title: '今日私选', subtitle: '测试副标题', note: '这是角色说的话',
         generatedAt: Date.now(), strategy: {}, songs, seen: true,
       });
-      // 让 resolveChatId 能找到这张卡
-      window.state.activeChatId = chatId;
-      window.state.chats = window.state.chats || {};
-      window.state.chats[chatId] = {
-        id: chatId, name: '测试角色',
-        settings: {},
-        history: [],
-        musicData: { totalTime: 0 },
+
+      const inject = () => {
+        window.state.activeChatId = chatId;
+        window.state.chats = window.state.chats || {};
+        window.state.chats[chatId] = {
+          id: chatId, name: '测试角色',
+          settings: {},
+          history: [],
+          musicData: { totalTime: 0 },
+        };
       };
+
+      // 等 App 把自己的角色列表加载完 (最多 20 秒)
+      for (let i = 0; i < 100; i++) {
+        if (window.state && window.state.chats && Object.keys(window.state.chats).length) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      // 塞进去, 并且确认引擎真的能认出这个角色 (被 App 覆盖就再塞一次)
+      for (let i = 0; i < 25; i++) {
+        inject();
+        if (window.MusicDailyDiscovery.resolveChatId() === chatId) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
     });
+
+    // 确认角色真的进去了 (不然下面的断言会变成"测试自己的锅")
+    const roleOk = await page.evaluate(() => window.MusicDailyDiscovery.resolveChatId() === 'ui-test-chat');
+    check('测试角色已就位 (引擎能认出它)', roleOk);
 
     // 切到今日私选 tab, 等渲染
     await page.evaluate(() => {

@@ -126,6 +126,8 @@ function makeDb(seed) {
 function makeNetease(cfg) {
   const c = cfg || {};
   const calls = { search: 0, urlBatch: 0 };
+  // 每个方法各自的最大并发数 —— 用来抓"串行网络调用"这个坑
+  const conc = {};
 
   function song(id, name, artist, extra) {
     return Object.assign({
@@ -141,8 +143,9 @@ function makeNetease(cfg) {
     }, extra || {});
   }
 
-  return {
+  const api = {
     _calls: calls,
+    _conc: conc,
     isLoggedIn: () => c.loggedIn !== false,
     getLoginStatus: async () => ({ userId: 999, nickname: 'tester' }),
     likelist: async () => (c.likedIds || []).map(String),
@@ -168,6 +171,56 @@ function makeNetease(cfg) {
       }).map((id) => ({ id: String(id), url: 'https://cdn.example/' + id + '.mp3', level: level || 'exhigh' }));
     },
   };
+
+  // 包一层: 统计每个方法的并发峰值 (isLoggedIn 是同步的, 别包)
+  Object.keys(api).forEach((k) => {
+    if (typeof api[k] !== 'function' || k === 'isLoggedIn') return;
+    const orig = api[k];
+    conc[k] = { cur: 0, max: 0, total: 0 };
+    api[k] = async function (...args) {
+      const t = conc[k];
+      t.cur++; t.total++;
+      if (t.cur > t.max) t.max = t.cur;
+      try {
+        // delayMs 用【宿主进程的】真 setTimeout —— 沙箱里的 setTimeout 是假的不触发
+        if (c.delayMs) await new Promise((r) => setTimeout(r, c.delayMs));
+        return await orig.apply(this, args);
+      } finally {
+        t.cur--;
+      }
+    };
+  });
+
+  return api;
+}
+
+// ============================================================
+// 可控假定时器 —— 沙箱里默认不真的走时间, 但测试可以【手动点火】
+// ============================================================
+function makeFakeTimers() {
+  const pending = [];
+  let seq = 0;
+  return {
+    setTimeout(fn, ms) {
+      const id = ++seq;
+      pending.push({ id, fn, ms: Number(ms) || 0 });
+      return id;
+    },
+    clearTimeout(id) {
+      const i = pending.findIndex((p) => p.id === id);
+      if (i >= 0) pending.splice(i, 1);
+    },
+    // 把【到点】的定时器全部跑一遍 (maxMs 之内到点的)
+    flush(maxMs) {
+      const due = pending.filter((p) => maxMs == null || p.ms <= maxMs);
+      due.forEach((p) => {
+        const i = pending.indexOf(p);
+        if (i >= 0) pending.splice(i, 1);
+        try { p.fn(); } catch (e) { /* 忽略 */ }
+      });
+    },
+    count() { return pending.length; },
+  };
 }
 
 // ============================================================
@@ -177,14 +230,16 @@ function makeSandbox(opts) {
   const options = opts || {};
   const netease = options.netease || makeNetease();
   const db = options.db || makeDb(options.dbSeed);
+  const timers = options.timers || makeFakeTimers();
 
   const notifications = [];
   const toasts = [];
+  const llmRequests = [];
 
   const sandbox = {
     console: console,
-    setTimeout: () => 0,
-    clearTimeout: () => {},
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
     Date: Date,
     JSON: JSON,
     Math: Math,
@@ -224,26 +279,31 @@ function makeSandbox(opts) {
     showToast: (msg, type) => { toasts.push({ msg, type }); },
     isMainApiProxyEnabled: () => true,
     fetchViaOpenAICompatibleProxy: async (req) => {
+      llmRequests.push(req);
       if (options.llmError) throw new Error(options.llmError);
-      if (options.llmResponse) {
-        return {
-          ok: true,
-          async json() { return { choices: [{ message: { content: options.llmResponse } }] }; },
-        };
+      // llmResponses: 数组形式 = 第一次给第 0 个, 第二次给第 1 个, 之后都用最后一个
+      let content = options.llmResponse;
+      if (Array.isArray(options.llmResponses)) {
+        const list = options.llmResponses;
+        const idx = Math.min(llmCallCount, list.length - 1);
+        llmCallCount++;
+        content = list[idx];
       }
-      // 默认: 假装是个听话的模型 —— 从 prompt 里把候选数组抠出来, 原样选回去。
-      // 这样默认用例走的是【真的 LLM 链路】(校验 / 去重 / 补齐), 而不是一上来就兜底。
-      const prompt = (req && req.payload && req.payload.messages && req.payload.messages[0]
-        && req.payload.messages[0].content) || '';
-      const m = prompt.match(/\n(\[\{"id"[\s\S]*?\}\])\n/);
-      let songs = [];
-      if (m) {
-        try {
-          const arr = JSON.parse(m[1]);
-          songs = arr.map((s) => ({ id: s.id, reason: '模型给的理由: ' + s.name, tag: '稳准' }));
-        } catch (e) { songs = []; }
+      if (content === undefined) {
+        // 默认: 假装是个听话的模型 —— 从 prompt 里把候选数组抠出来, 原样选回去。
+        // 这样默认用例走的是【真的 LLM 链路】(校验 / 去重 / 补齐), 而不是一上来就兜底。
+        const prompt = (req && req.payload && req.payload.messages && req.payload.messages[0]
+          && req.payload.messages[0].content) || '';
+        const m = prompt.match(/\n(\[\{"id"[\s\S]*?\}\])\n/);
+        let songs = [];
+        if (m) {
+          try {
+            const arr = JSON.parse(m[1]);
+            songs = arr.map((s) => ({ id: s.id, reason: '模型给的理由: ' + s.name, tag: '稳准' }));
+          } catch (e) { songs = []; }
+        }
+        content = JSON.stringify({ note: '模型的开场白', songs });
       }
-      const content = JSON.stringify({ note: '模型的开场白', songs });
       return {
         ok: true,
         async json() { return { choices: [{ message: { content } }] }; },
@@ -261,7 +321,7 @@ function makeSandbox(opts) {
   vm.createContext(sandbox);
   vm.runInContext(code, sandbox, { filename: 'music-daily-discovery.js' });
 
-  return { sandbox, netease, db, notifications, toasts };
+  return { sandbox, netease, db, notifications, toasts, timers, llmRequests };
 }
 
 function idsOf(card) {
@@ -548,6 +608,65 @@ async function main() {
       'A=' + Array.from(p1.boostArtists).join(',') + ' | B=' + Array.from(p2.boostArtists).join(','));
     check('角色级隔离: 角色A 推过的歌不会排除到角色B',
       p1.knownIds.has('1300') && !p2.knownIds.has('1300'));
+  }
+
+  // ------------------------------------------------------------
+  section('⑫ 防卡死三件套 (串行网络 / 无超时 / 总预算)');
+  {
+    // 【背景】用户在手机上实测: 打开「今日私选」一直卡在"正在挑今天的歌"没动静。
+    //   根因有三个, 这里逐个钉死, 免得以后改回去:
+    //     ① 候选收集里一堆串行网络调用 (8 个搜索一个一个来)
+    //     ② 走主代理通道的 LLM 请求【没带 signal】→ 30 秒超时完全失效 → 永远不返回
+    //     ③ 整轮生成没有总预算 → 任何一环挂住都无限等
+
+    // ---- ① 候选收集必须并行 ----
+    {
+      const netease = makeNetease({
+        delayMs: 15,
+        likedIds: [],
+        recommend: [{ id: '500', name: '推荐歌', artist: '甲', artists: [{ id: 1, name: '甲' }], album: '', cover: '', duration: 1 }],
+        searchResults: [{ id: '600', name: '搜到的歌', artist: '乙', artists: [{ id: 2, name: '乙' }], album: '', cover: '', duration: 1 }],
+      });
+      const { sandbox } = makeSandbox({ netease });
+      await sandbox.MusicDailyDiscovery.generate('chat-1');
+      const s = netease._conc.search;
+      check('候选搜索是并行的 (不是 8 个一个一个来)', s.max >= 2,
+        'search 最大并发=' + s.max + ' 共调用 ' + s.total + ' 次');
+    }
+
+    // ---- ② 主代理通道必须带 signal ----
+    {
+      const { sandbox, llmRequests } = makeSandbox({
+        netease: makeNetease({
+          recommend: [{ id: '700', name: '歌', artist: '丙', artists: [{ id: 3, name: '丙' }], album: '', cover: '', duration: 1 }],
+        }),
+      });
+      await sandbox.MusicDailyDiscovery.generate('chat-1');
+      check('LLM 走主代理通道时请求里带了 signal (超时才有效)',
+        llmRequests.length > 0 && !!llmRequests[0].signal,
+        '请求数=' + llmRequests.length + ' 有signal=' + (llmRequests.length ? !!llmRequests[0].signal : false));
+    }
+
+    // ---- ③ 整轮生成有总预算, 卡住会报错而不是无限等 ----
+    {
+      // 造一个"永远不返回"的网易云: getLoginStatus 挂住, 整轮生成就卡在这
+      const hanging = makeNetease({});
+      hanging.getLoginStatus = () => new Promise(() => {});
+      const timers = makeFakeTimers();
+      const { sandbox } = makeSandbox({ netease: hanging, timers });
+
+      const p = sandbox.MusicDailyDiscovery.ensureTodayCard('chat-1', { refresh: true });
+      // 让它跑起来, 把超时的定时器注册上
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      timers.flush(90000);
+
+      let err = null;
+      try { await p; } catch (e) { err = e; }
+      check('生成卡住时会超时报错 (不会无限等)',
+        !!err && /超时/.test(String(err.message || err)),
+        err ? String(err.message || err) : '没报错 —— 又能无限等了');
+    }
   }
 
   // ------------------------------------------------------------

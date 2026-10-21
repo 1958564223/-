@@ -142,7 +142,22 @@
 //   init-db-schema.js (?v 0.0.41→0.0.42, 加了 db v70 的 dailyDiscovery / dailyDiscoveryFeedback)。
 //   ⚠️ init-db-schema.js 不在预缓存清单里, 靠 index.html 的 ?v= 生效 —— 忘了 bump
 //      手机上 Dexie 压根不建 v70 那两张表 (v66 / v69 踩过这个坑)。
-const CACHE_VERSION = 'v0.2.53.0';
+// v0.2.54.0 (2026-10-21): 修「今日私选」卡在"正在挑今天的歌"不动。
+//   三个根因, 全是"等网络"等出来的:
+//   ① 候选收集里一堆串行网络调用 (8 个搜索 + 3 个歌单 + 5 个歌手一个一个来)
+//      → 全部改成并发跑 (searchConcurrency=4 / verifyConcurrency=3),
+//        画像里的 5 个歌单也改成并行。
+//   ② 走主代理通道的 LLM 请求【漏传 signal】→ 那条路上 30 秒超时【完全失效】,
+//      网络一挂就永远不返回 (全项目其他 fetchViaOpenAICompatibleProxy 调用点都传了, 只有这里漏)
+//      → 补上 signal: ctrl.signal。
+//   ③ getSongUrlsBatch 的兜底逻辑写错: 上游返回了但 url 为 null (没版权/非VIP)
+//      也被当成"没回来" → 每批触发 15 次串行单发重试, 手机上能卡好几分钟
+//      → 区分"上游提到过"与"有可播 url", 只对上游压根没提到的 id 单发, 且并行, 上限 15→8。
+//   另加整轮生成的总预算 (totalTimeoutMs=90s): 到点必报错, 绝不让界面无限转圈。
+//   UI 侧: 加载时显示已用秒数 (让人知道它还活着), 失败时给「再试一次」按钮。
+//   index.html 的 ?v= 已 bump (netease-music.js 0.0.40→0.0.41, netease-music-app.js 0.0.43→0.0.44,
+//   music-daily-discovery.js 0.0.1→0.0.2, music-daily-discovery.css 0.0.1→0.0.2)。
+const CACHE_VERSION = 'v0.2.54.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

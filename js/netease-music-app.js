@@ -810,8 +810,19 @@
     const playAllBtn = overlay.querySelector('#nmd-playall-btn');
     if (refreshBtn) refreshBtn.disabled = true;
     if (playAllBtn) playAllBtn.disabled = true;
+
+    // 【别让用户干等】秒数在跑, 说明它还活着; 超时会自己变成一行报错 + 重试按钮
+    const startedAt = Date.now();
+    const baseText = refresh ? '正在重新挑歌, 稍等一下...' : '正在挑今天的歌...';
+    let tickTimer = null;
     if (listEl) {
-      listEl.innerHTML = `<div class="nma-loading-text">${refresh ? '正在重新挑歌, 稍等一下...' : '正在挑今天的歌...'}</div>`;
+      listEl.innerHTML = `<div class="nma-loading-text">${baseText} <span id="nmd-elapsed">0</span>s</div>`;
+      const elapsedEl = () => overlay.querySelector('#nmd-elapsed');
+      tickTimer = setInterval(() => {
+        const el = elapsedEl();
+        if (!el || !el.isConnected) { clearInterval(tickTimer); tickTimer = null; return; }
+        el.textContent = String(Math.floor((Date.now() - startedAt) / 1000));
+      }, 1000);
     }
 
     try {
@@ -825,9 +836,19 @@
         state.dailyCard = fallback;
         renderDailyDiscovery('今天没生成出来, 先看最近一批');
       } else {
-        renderDailyDiscovery(null, '生成失败: ' + (e.message || e));
+        const msg = (e && e.message) || String(e);
+        renderDailyDiscovery(null, '生成失败: ' + msg);
+        if (listEl) {
+          const retry = document.createElement('button');
+          retry.className = 'nmd-btn nmd-daily-retry';
+          retry.type = 'button';
+          retry.textContent = '再试一次';
+          retry.addEventListener('click', () => { loadDailyDiscovery(true); });
+          listEl.appendChild(retry);
+        }
       }
     } finally {
+      if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
       state.dailyLoading = false;
       if (refreshBtn) refreshBtn.disabled = false;
       if (playAllBtn) playAllBtn.disabled = false;
