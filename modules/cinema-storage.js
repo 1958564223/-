@@ -191,14 +191,18 @@
     return recapHealing;
   }
 
-  /** 读某部剧的前情提要。表缺失/读失败 → null (绝不让影院因为它打不开)。 */
+  /** 读某部剧的前情提要。表缺失/读失败 → null (绝不让影院因为它打不开)。
+   *
+   * 🔴 2026-10-21: 现在返回【整行】, 不再因为 text 为空就当"没有"。
+   *   长剧那一行里 text = 滚动锚, recapText = 整部戏的提要 —— 两者都要能读出来。
+   */
   async function loadSeriesRecap(key) {
     if (!key) return null;
     try {
       const t = await ensureSeriesRecapTable();
       if (!t) return null;
       const row = await t.get(String(key));
-      return (row && row.text) ? row : null;
+      return row || null;
     } catch (e) {
       console.warn('[CinemaStorage] 读前情提要失败(忽略):', (e && e.message) || e);
       return null;
@@ -209,19 +213,37 @@
    * 写前情提要。超长截断。
    * createdAt 保留旧值 —— 这样"这部剧的前情提要是什么时候开始攒的"还在,
    * 每次退出覆盖时不该把它冲掉。
+   *
+   * 🔴 2026-10-21 改成【合并写】(原来是整行覆盖)。
+   *   原因: 短剧和长剧共用这一行, 但两个字段语义不同 ——
+   *     · text       短剧=前情提要 / 长剧=滚动锚("上次看到哪")
+   *     · recapText  长剧=整部戏的提要 (短剧不用这个字段)
+   *   整行覆盖的话, 长剧每 5 分钟更新一次滚动锚, 就会把精炼出来的提要冲没。
+   *   ⇒ 现在【只更新传了的字段】, 没传的保留旧值。
+   *   这行本来就存整个 JSON 对象, 加字段不需要加 Dexie 索引 → 不用改表版本。
    */
   async function saveSeriesRecap(rec) {
     const key = rec && rec.key ? String(rec.key) : '';
-    const text = String((rec && rec.text) || '').trim();
-    if (!key || !text) return null;
+    if (!key) return null;
     const t = await ensureSeriesRecapTable();
     if (!t) return null;
     const old = await t.get(key).catch(function () { return null; });
+
+    // ⚠️ 传了才算数: 没传的字段一律保留旧值 (合并写的前提)。
+    //   text / recapText 都空 → 这次什么都不改, 直接把旧行还回去。
+    const hasText = rec && rec.text !== undefined && rec.text !== null;
+    const hasRecap = rec && rec.recapText !== undefined && rec.recapText !== null;
+    const text = hasText ? String(rec.text || '').trim() : String((old && old.text) || '');
+    const recapText = hasRecap ? String(rec.recapText || '').trim() : String((old && old.recapText) || '');
+    if (!text && !recapText) return old || null;
+
     const row = {
       key: key,
       title: String((rec && rec.title) || (old && old.title) || ''),
       text: text.length > MAX_RECAP_CHARS ? text.slice(0, MAX_RECAP_CHARS) : text,
+      recapText: recapText.length > MAX_RECAP_CHARS ? recapText.slice(0, MAX_RECAP_CHARS) : recapText,
       lastEp: Number((rec && rec.lastEp) || (old && old.lastEp) || 0),
+      recapLastEp: Number((rec && rec.recapLastEp) || (old && old.recapLastEp) || 0),
       createdAt: (old && old.createdAt) || Date.now(),
       updatedAt: Date.now()
     };
@@ -229,13 +251,32 @@
     return row;
   }
 
-  /** 手动删除某部剧的前情提要。表都没有也算删成功 (本来就没有)。 */
-  async function deleteSeriesRecap(key) {
+  /**
+   * 手动删除某部剧的前情提要。表都没有也算删成功 (本来就没有)。
+   *
+   * @param {string} key
+   * @param {string} [field] 只清这一个字段 ('text' / 'recapText')。
+   *   不传 = 整行删掉 (短剧只有一个字段, 等价于清 text)。
+   *   长剧要能只删提要而不动滚动锚, 所以给这个口子。
+   */
+  async function deleteSeriesRecap(key, field) {
     if (!key) return false;
     try {
       const t = await ensureSeriesRecapTable();
       if (!t) return false;
-      await t.delete(String(key));
+      const k = String(key);
+      if (field === 'text' || field === 'recapText') {
+        const row = await t.get(k).catch(function () { return null; });
+        if (!row) return true;                      // 本来就没有 → 也算删成功
+        const next = Object.assign({}, row);
+        next[field] = '';
+        if (field === 'text') next.lastEp = 0;
+        if (field === 'recapText') next.recapLastEp = 0;
+        next.updatedAt = Date.now();
+        await t.put(next);
+        return true;
+      }
+      await t.delete(k);
       return true;
     } catch (e) {
       console.warn('[CinemaStorage] 删前情提要失败:', (e && e.message) || e);

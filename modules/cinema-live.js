@@ -937,7 +937,7 @@
         buildEntriesHtml(true);
   }
 
-  /** 长剧那一块: 跨场进度 + 攒下的各段 */
+  /** 长剧那一块: 跨场进度 + 整部戏的提要 + 攒下的各段 */
   function buildFilmBlockHtml() {
     var segs = watchSession.segments || [];
     var rec = watchSession.seriesRecap;
@@ -946,14 +946,59 @@
       recapHtml =
         '<div class="cinema-plot-text">' + esc(rec.text) + '</div>' +
         '<div class="cinema-plot-edit-bar">' +
-        '<button class="cinema-plot-btn" data-plot="del-recap">删除</button>' +
+        '<button class="cinema-plot-btn" data-plot="del-film-anchor">删除进度</button>' +
         '<span class="cinema-plot-hint">更新于 ' + fmtTime(rec.updatedAt) + '</span>' +
         '</div>';
     } else {
       recapHtml = '<div class="cinema-plot-text dim">（还没有。下次进来时会把上面的「剧情进度」自动带上）</div>';
     }
+
+    // 🔴 2026-10-21 长剧也有前情提要了 (用户要求)。
+    //   它跟上面那个"上次看到哪"(滚动锚)是两回事:
+    //     · 滚动锚 = 状态, 每 5 分钟被覆盖一次, 说的是"现在停在哪"
+    //     · 提要   = 压缩稿, 手动点按钮才生成, 说的是"整部戏讲了什么"
+    //   两个存在同一行的两个字段里 (text / recapText), 互不覆盖。
+    var filmRecapHtml;
+    if (rec && (rec.recapText || '').trim()) {
+      filmRecapHtml =
+        '<div class="cinema-plot-text">' + esc(rec.recapText) + '</div>' +
+        '<div class="cinema-plot-edit-bar">' +
+        '<button class="cinema-plot-btn" data-plot="del-film-recap">删除提要</button>' +
+        '<span class="cinema-plot-hint">到第 ' + (rec.recapLastEp || 0) + ' 段 · 更新于 ' +
+          fmtTime(rec.updatedAt) + '</span>' +
+        '</div>';
+    } else {
+      filmRecapHtml = '<div class="cinema-plot-text dim">（还没有。看完几段之后点下面的按钮就能压一份出来）</div>';
+    }
+
+    var refining = !!watchSession.refining;
+    var hasKey = !!getGeminiKey();
+    var refineHint;
+    if (refining) {
+      refineHint = '正在精炼（会单独调一次观影模型，通常十几秒，最多一分钟）…';
+    } else if (!hasKey) {
+      refineHint = '⚠️ 还没填 Gemini API Key（右上角 ⚙ 里填），调不了模型。';
+    } else {
+      refineHint = (segs.length
+        ? '把攒下的 ' + segs.length + ' 段压成一份提要，下次进来自动带上。'
+        : '把攒下的各段压成一份提要。') +
+        '会【单独调一次观影模型】来写 —— 看完剧、Gemini 断开了照样能精炼。各段剧情不会删。';
+    }
+    var refineBar =
+      '<div class="cinema-plot-edit-bar">' +
+      '<button class="cinema-plot-btn" data-plot="refine-recap"' + (refining ? ' disabled' : '') + '>' +
+      (refining ? '⏳ 正在精炼…' : '📖 精炼剧情提要') + '</button>' +
+      '<span class="cinema-plot-hint">' + esc(refineHint) + '</span>' +
+      '</div>' +
+      (watchSession.refineMsg
+        ? '<div class="cinema-plot-text dim">' + esc(watchSession.refineMsg) + '</div>'
+        : '');
+
     return '<div class="cinema-plot-label">上次看到哪（跨场保留 · 下次进影院自动带上）</div>' +
         recapHtml +
+        '<div class="cinema-plot-label">整部剧情提要（手动生成 · 下次进影院也自动带上）</div>' +
+        filmRecapHtml +
+        refineBar +
         '<div class="cinema-plot-label">已攒 ' + segs.length + ' 段'
           + (segs.length ? ' · 点「改」可以自己修正' : '') + '</div>' +
         buildEntriesHtml(false);
@@ -1046,6 +1091,25 @@
     if (act === 'refine-recap') {
       log('用户点了「精炼前情提要」');
       refineSeriesRecap();
+      return;
+    }
+    // 🔴 2026-10-21 长剧那两个新按钮: 删滚动锚 / 删整部戏的提要。
+    //   ⚠️ 必须【分开删】—— 长剧这一行里 text=锚、recapText=提要,
+    //   以前那个"删"是整行删, 会把另一个也带走。
+    if (act === 'del-film-anchor' || act === 'del-film-recap') {
+      var isAnchor = act === 'del-film-anchor';
+      var rr = watchSession.seriesRecap;
+      var field = isAnchor ? 'text' : 'recapText';
+      if (!rr || !(rr[field] || '').trim()) return;
+      var msg2 = isAnchor
+        ? '确定要删除《上次看到哪》吗？\n\n' +
+          '删了下次进来 Gemini 就不知道上次看到哪儿了。\n' +
+          '已经攒下的各段剧情不受影响。'
+        : '确定要删除《整部剧情提要》吗？\n\n' +
+          '删了下次进来 Gemini 就不知道整部戏讲过什么了（但「上次看到哪」还在）。\n' +
+          '已经攒下的各段剧情不受影响，随时可以重新精炼一份。';
+      if (typeof window.confirm === 'function' && !window.confirm(msg2)) return;
+      deleteCurrentSeriesRecap(field);
       return;
     }
     // 🔴 手动删除跨场提要 (短剧的前情提要 / 长剧的"上次看到哪")。
@@ -2010,10 +2074,15 @@
   }
 
   function refineSeriesRecap() {
-    if (watchSession.kind !== 'series') {
-      setRefineMsg('只有短剧才有前情提要。');
+    // 🔴 2026-10-21: 长剧也支持精炼了 (用户要求)。
+    //   短剧的素材是【每集一条】, 长剧的素材是【每 5 分钟一段】——
+    //   两者都存在 cinemaEpMemories 那张表里, 只是 key 不同, 所以取素材的活儿完全一样。
+    var isFilm = watchSession.kind === 'film';
+    if (watchSession.kind !== 'series' && !isFilm) {
+      setRefineMsg('只有短剧和长剧才能精炼。');
       return Promise.resolve(false);
     }
+    var unit = isFilm ? '段' : '集';
     if (watchSession.refining) {
       setRefineMsg('已经在精炼了，等一下。');
       return Promise.resolve(false);
@@ -2061,10 +2130,12 @@
       .then(function (rows) {
         // 🔴 2026-10-21: 素材 = 库里那份 ∪ 内存里这份。
         //   原来只读库, 库一空就说"库里没有攒下的单集剧情" —— 而面板上明明摆着 3 集。
-        var mem = watchSession.episodeMemories || [];
+        //   长剧的内存那份在 watchSession.segments (短剧是 episodeMemories)。
+        var mem = isFilm ? (watchSession.segments || []) : (watchSession.episodeMemories || []);
         var list = mergeEpRows(rows, mem);
         if (!list.length) {
-          setRefineMsg('库里和这次看的都还没有攒下的单集剧情，没东西可以精炼。先看一集再来。');
+          setRefineMsg('库里和这次看的都还没有攒下的' + (isFilm ? '段落' : '单集剧情') +
+            '，没东西可以精炼。先' + (isFilm ? '看一会儿' : '看一集') + '再来。');
           return false;
         }
         // 内存里有、库里没有的 → 顺手补写进库, 让库重新变成全量。
@@ -2073,7 +2144,7 @@
         for (var mi = 0; mi < mem.length; mi++) memByEp[mem[mi].ep] = mem[mi];
         var missing = list.filter(function (x) { return !x.id && memByEp[x.ep]; });
         if (missing.length) {
-          log('📚 内存里有 ' + missing.length + ' 集没进库, 正在补写…');
+          log('📚 内存里有 ' + missing.length + ' ' + unit + '没进库, 正在补写…');
           for (var mj = 0; mj < missing.length; mj++) persistEpMemory(memByEp[missing[mj].ep]);
         }
         var old = watchSession.seriesRecap;
@@ -2094,12 +2165,12 @@
               });
           });
         };
-        return runRecapMerge(old, list, '手动精炼', call).then(function (ok) {
+        return runRecapMerge(old, list, '手动精炼', call, { isFilm: isFilm }).then(function (ok) {
           if (ok) {
             var lastEp = list[list.length - 1].ep || 0;
-            setRefineMsg('✅ 前情提要已精炼好（到第 ' + lastEp + ' 集）。各集剧情一条都没删。');
+            setRefineMsg('✅ 前情提要已精炼好（到第 ' + lastEp + ' ' + unit + '）。各' + unit + '剧情一条都没删。');
           } else if (callErr) {
-            setRefineMsg('⚠️ 精炼失败：' + callErr + '（各集剧情都还在，可以再点一次）');
+            setRefineMsg('⚠️ 精炼失败：' + callErr + '（各' + unit + '剧情都还在，可以再点一次）');
           } else {
             setRefineMsg('⚠️ 这次没精炼出来（可能是模型没写完）。旧提要保持不变，可以再点一次。');
           }
@@ -2109,7 +2180,7 @@
       .catch(function (e) {
         logWarn('手动精炼前情提要失败(不影响单集记忆):', e && e.message);
         setRefineMsg('⚠️ 精炼失败：' + describeRefineError((e && e.message) || '未知错误') +
-          '（各集剧情都还在，可以再点一次）');
+          '（各' + unit + '剧情都还在，可以再点一次）');
         return false;
       })
       .then(function (r) {
@@ -2131,20 +2202,27 @@
    *   手动那条传 callViewerModelOnce —— 单独开一次会话, 不看主会话有没有连着。
    * @returns {Promise<boolean>} true = 提要已更新
    */
-  function runRecapMerge(old, rows, reason, callFn) {
+  function runRecapMerge(old, rows, reason, callFn, opts) {
     var list = rows || [];
     if (!list.length) return Promise.resolve(false);
     var call = callFn || function (instruction) { return requestSummary('recapMerge', instruction); };
-    var oldText = (old && old.text || '');
+    // 🔴 2026-10-21: 长剧也支持精炼了 (用户要求)。
+    //   长剧的素材是【每 5 分钟一段】, 所以单位是"段"不是"集";
+    //   旧提要从 recapText 取 (长剧那行的 text 是滚动锚, 不是提要 —— 混用会把锚冲掉)。
+    var isFilm = !!(opts && opts.isFilm);
+    var unit = isFilm ? '段' : '集';
+    var oldText = isFilm
+      ? String((old && old.recapText) || '')
+      : String((old && old.text) || '');
     var lastEp = list[list.length - 1].ep || 0;
-    var title = watchSession.seriesTitle || '这部短剧';
+    var title = watchSession.seriesTitle || (isFilm ? '这部片子' : '这部短剧');
     var lines = [];
     // ⚠️ 指令开头固定是 【【后台任务】】(不是把 reason 塞进括号里):
     //   观影模型的人设里认这个前缀 —— "遇到这类消息时: 严格按要求输出摘要正文,
     //   不要加称呼、不要问问题、不要加评论" (见 buildSystemPrompt 末尾)。
     //   手动精炼和后台自动合并都走这一套, 所以前缀必须一样, 语气才一样。
     lines.push('【【后台任务】】' + reason + '。下面是《' + title + '》的剧情记录。');
-    lines.push('请把它们合并成【一份前情提要】, 供下次继续看这部剧时用。');
+    lines.push('请把它们合并成【一份前情提要】, 供下次继续看这部' + (isFilm ? '电影' : '剧') + '时用。');
     lines.push('');
     if (oldText) {
       lines.push('# 已经有的前情提要（旧版本，必须保留并在其基础上更新）');
@@ -2155,18 +2233,18 @@
       lines.push('人物、关系、关键转折要跟旧提要里写的一致，别换名字、别漏掉。');
       lines.push('');
     }
-    lines.push('# 各集剧情（到第 ' + lastEp + ' 集为止）');
+    lines.push('# 各' + unit + '剧情（到第 ' + lastEp + ' ' + unit + '为止）');
     lines.push('');
     for (var i = 0; i < list.length; i++) {
-      lines.push('第 ' + list[i].ep + ' 集：' + list[i].text);
+      lines.push('第 ' + list[i].ep + ' ' + unit + '：' + list[i].text);
     }
     lines.push('');
     lines.push('# 前情提要怎么写');
-    lines.push('- 客观剧情、第三人称。只讲这部剧本身发生的事。');
+    lines.push('- 客观剧情、第三人称。只讲这部' + (isFilm ? '电影' : '剧') + '本身发生的事。');
     lines.push('- 连贯的一段话，不分点，不加标题，不用 --- 。');
     lines.push('- 主要人物、关键事件、重要转折、现在停在哪。');
     lines.push('- 不要写"如前所述""接着上次"这种依赖上下文的说法 —— 它必须独立完整。');
-    lines.push('- 第一句写【已看到第 ' + lastEp + ' 集】。');
+    lines.push('- 第一句写【已看到第 ' + lastEp + ' ' + unit + '】。');
     lines.push('- 控制在 ' + RECAP_MAX_CHARS + ' 字以内。');
     lines.push('');
     lines.push('直接输出前情提要正文，不要解释，不要写观影记忆。');
@@ -2182,8 +2260,8 @@
         // lastEp 传真实覆盖到的集号, 别用 seriesLastEp ——
         // 它是"播完一集才推进"的, 可能落后于库里实际攒到的集数,
         // 落后的话下一轮会拿同一批素材再压一遍。
-        return persistSeriesRecapSafely(t, lastEp).then(function (ok) {
-          if (ok) log('✅ 前情提要已更新 (到第 ' + lastEp + ' 集)');
+        return persistSeriesRecapSafely(t, lastEp, isFilm).then(function (ok) {
+          if (ok) log('✅ 前情提要已更新 (到第 ' + lastEp + ' ' + unit + ')');
           return ok;
         });
       })
@@ -2259,7 +2337,9 @@
 
   // 短剧攒够多少集, 后台把【已落库的各集】压成一份跨场前情提要。
   // ⚠️ 它跑在【每集播完之后】那条后台链上, 绝不在退出路径上 —— 退出要秒退。
-  var RECAP_MERGE_EVERY = 10;
+  // 🔴 2026-10-21 用户要求: 10 集太久 (用户原话"10集才自动总结久了点, 5集精炼差不多")
+  //   → 改成 5 集。手动那条(按钮)还是随时能点, 门槛 1 集。
+  var RECAP_MERGE_EVERY = 5;
   // 短剧进片时, 除了提要还带上最近几集的原文 (提要是压缩版, 最近几集保精度)。
   var RECAP_INJECT_RECENT = 3;
   // 长剧进片时带最近几段原文 (长剧没有合并提要, 全靠这些段落撑上下文)。
@@ -2374,7 +2454,11 @@
       if (!gotRecap || !gotEps) return;
       var rec = watchSession.seriesRecap;
       var pool = isSeries ? (watchSession.episodeMemories || []) : (watchSession.segments || []);
-      if ((rec && (rec.text || '').trim()) || pool.length > 0) {
+      // ⚠️ 2026-10-21: 长剧有两个字段, 提要(recapText)和锚(text)都算"有东西要注入"。
+      var hasRecap = isSeries
+        ? !!(rec && (rec.text || '').trim())
+        : !!((rec && (rec.text || '').trim()) || (rec && (rec.recapText || '').trim()));
+      if (hasRecap || pool.length > 0) {
         maybeInjectSeriesRecap();
       } else {
         // 第一次看。pending 必须落闸 —— 留着它的话以后每次
@@ -2442,20 +2526,32 @@
 
     var isSeries = watchSession.kind === 'series';
     var rec = watchSession.seriesRecap;
-    var recapText = String((rec && rec.text) || '').trim();
+    // 🔴 2026-10-21: 长剧那一行有两个字段 ——
+    //   text(滚动锚) + recapText(整部戏的提要)。两个都要喂给模型:
+    //   提要管"整体讲了什么", 锚管"现在停在哪"。短剧只有一个字段, 还是老样子。
+    var recapText = isSeries
+      ? String((rec && rec.text) || '').trim()
+      : String((rec && rec.recapText) || '').trim();
+    var anchorText = isSeries ? '' : String((rec && rec.text) || '').trim();
     var pool = isSeries ? (watchSession.episodeMemories || []) : (watchSession.segments || []);
     var recentN = isSeries ? RECAP_INJECT_RECENT : FILM_INJECT_RECENT;
     var recent = pool.slice(-recentN);
-    if (!recapText && !recent.length) return;      // 第一次看, 没东西可喂
+    if (!recapText && !anchorText && !recent.length) return;      // 第一次看, 没东西可喂
 
     var title = (rec && rec.title) || watchSession.seriesTitle || (isSeries ? '这部短剧' : '这部片子');
     var instruction = [];
     instruction.push('【【后台任务】】《' + title + '》我们之前看过一部分。这是那部分的剧情进度，请记住：');
     instruction.push('');
     if (recapText) {
-      instruction.push('# 前情提要（压缩版，讲这部剧整体走到哪）');
+      instruction.push('# 前情提要（压缩版，讲这部' + (isSeries ? '剧' : '电影') + '整体讲了什么）');
       instruction.push('');
       instruction.push(recapText);
+      instruction.push('');
+    }
+    if (anchorText) {
+      instruction.push('# 剧情进度（上次看到哪）');
+      instruction.push('');
+      instruction.push(anchorText);
       instruction.push('');
     }
     if (recent.length) {
@@ -2470,6 +2566,7 @@
     instruction.push('看完只回一个字「好」，不要复述、不要评论、不要提问、不要接着往下说剧情。');
 
     log('📖 注入跨场资料 (' + (recapText ? '提要 ' + recapText.length + ' 字 + ' : '') +
+      (anchorText ? '进度 ' + anchorText.length + ' 字 + ' : '') +
       '最近 ' + recent.length + ' ' + (isSeries ? '集' : '段') + ')');
 
     requestSummary('recap', instruction.join('\n'))
@@ -2481,7 +2578,8 @@
   /** 剥掉模型可能加的标题行 / 分隔线 */
   function stripHeadingNoise(text) {
     var t = String(text || '').trim();
-    t = t.replace(/^[【\[]?\s*(前情提要|已看到第\s*\d+\s*集)\s*[】\]]?\s*[:：]?\s*/i, '');
+    // ⚠️ 2026-10-21: 长剧的提要模型会写"已看到第 N 段"(不是"集") —— 一起认掉。
+    t = t.replace(/^[【\[]?\s*(前情提要|已看到第\s*\d+\s*[集段])\s*[】\]]?\s*[:：]?\s*/i, '');
     t = t.replace(/^[-=—*#]{2,}\s*/, '');
     return t.trim();
   }
@@ -2494,7 +2592,7 @@
    * key 统一走 currentSessionKey(): 短剧 = 系列文件夹名, 长剧 = 'film:'+chatId。
    * 两种都存在 cinemaSeriesRecap 这张表里 —— 它本来就是"每场观看一份跨场底稿"。
    */
-  function persistSeriesRecapSafely(recapText, lastEpOverride) {
+  function persistSeriesRecapSafely(recapText, lastEpOverride, isFilmRecap) {
     try {
       var text = String(recapText || '').trim();
       var key = currentSessionKey();
@@ -2503,21 +2601,36 @@
       var CS = cinemaStorage();
       if (!CS || typeof CS.saveSeriesRecap !== 'function') return Promise.resolve(false);
 
-      return CS.saveSeriesRecap({
+      // 🔴 2026-10-21: 长剧那一行有两个字段, 语义不同 ——
+      //   text = 滚动锚("上次看到哪") / recapText = 整部戏的提要。
+      //   存储层是【合并写】, 所以这里【只传要改的那个字段】:
+      //   · 写提要 (isFilmRecap) → 只传 recapText → 锚在 text 里原样保住
+      //   · 写锚   (长剧 persistFilmAnchor / 短剧提要) → 只传 text → 提要保住
+      var rec = {
         key: key,
-        title: watchSession.seriesTitle || '',
-        text: text,
+        title: watchSession.seriesTitle || ''
+      };
+      if (isFilmRecap) {
+        rec.recapText = text;
+        rec.recapLastEp = lastEpOverride != null
+          ? (Number(lastEpOverride) || 0)
+          : (watchSession.segCount || 0);
+      } else {
+        rec.text = text;
         // ⚠️ 2026-10-20 lastEpOverride: 手动精炼时传【真实覆盖到的集号】。
         //   不传就退回 seriesLastEp —— 那个是"播完一集才推进"的, 可能落后于
         //   库里实际攒到的集数, 落后的话下一轮会拿同一批素材再压一遍。
-        lastEp: isSeries
+        rec.lastEp = isSeries
           ? (lastEpOverride != null ? (Number(lastEpOverride) || 0) : (watchSession.seriesLastEp || 0))
-          : (watchSession.segCount || 0)
-      }).then(function (row) {
+          : (watchSession.segCount || 0);
+      }
+
+      return CS.saveSeriesRecap(rec).then(function (row) {
         if (!row) return false;
         watchSession.seriesRecap = row;          // 面板立刻显示新的
-        log('📖 跨场提要已存 (' + row.text.length + ' 字' +
-          (isSeries ? ', 到第 ' + (row.lastEp || 0) + ' 集' : '') + ')');
+        log('📖 跨场提要已存 (' + text.length + ' 字' +
+          (isFilmRecap ? ', 到第 ' + (row.recapLastEp || 0) + ' 段' :
+            (isSeries ? ', 到第 ' + (row.lastEp || 0) + ' 集' : '')) + ')');
         // ⚠️ 退出流程里这条回调可能跟 hardLeave() 只差几十毫秒, 那时房间已经在拆。
         //   renderPlotPanel() 里的 ensurePlotPanel() 发现元素被摘了就【重新造一个
         //   挂回 DOM】, 房间已经不在就 fallback 挂 document.body —— 主页面上会留个
@@ -2536,16 +2649,30 @@
     }
   }
 
-  /** 用户手动删除这次的跨场提要 (短剧前情提要 / 长剧"上次看到哪")。 */
-  function deleteCurrentSeriesRecap() {
+  /**
+   * 用户手动删除这次的跨场提要 (短剧前情提要 / 长剧"上次看到哪" / 长剧"整部剧情提要")。
+   *
+   * @param {string} [field] 只删这一个字段 ('text' = 锚, 'recapText' = 提要)。
+   *   不传 = 整行删 (短剧只有一个字段, 等价于删 text)。
+   */
+  function deleteCurrentSeriesRecap(field) {
     var key = currentSessionKey();
     if (!key) return Promise.resolve(false);
     var CS = cinemaStorage();
     if (!CS || typeof CS.deleteSeriesRecap !== 'function') return Promise.resolve(false);
-    return CS.deleteSeriesRecap(key).then(function (ok) {
+    return CS.deleteSeriesRecap(key, field).then(function (ok) {
       if (ok) {
-        watchSession.seriesRecap = null;
-        log('🗑 已删除跨场提要');
+        if (field && watchSession.seriesRecap) {
+          // ⚠️ 2026-10-21: 只清了一个字段 —— 另一个必须留着。
+          //   长剧这一行里 text=滚动锚、recapText=提要, 删一个不许连坐。
+          watchSession.seriesRecap[field] = '';
+          if (field === 'text') watchSession.seriesRecap.lastEp = 0;
+          if (field === 'recapText') watchSession.seriesRecap.recapLastEp = 0;
+          log('🗑 已删除' + (field === 'text' ? '「上次看到哪」' : '「整部剧情提要」'));
+        } else {
+          watchSession.seriesRecap = null;
+          log('🗑 已删除跨场提要');
+        }
         renderPlotPanel();
       }
       return ok;

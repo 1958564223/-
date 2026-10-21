@@ -164,7 +164,27 @@
 //   修法 (在 modules/cinema-live.js): 精炼前先断开主会话腾出连接位, 精炼完再连回来;
 //   期间不许它自动重连 / 自动连接; 第一次失败自动重试一次; 报错翻译成人话。
 //   index.html 的 ?v= 已 bump (cinema-live.js 1.9.4→1.9.5, 沙盒 cinema-sandbox/index.html 同步)。
-const CACHE_VERSION = 'v0.2.55.0';
+// v0.2.56.0 (2026-10-21): 长剧也能「精炼前情提要」了 + 短剧自动精炼门槛 10 集→5 集。
+//   用户要求: "长剧的每节总结也可以这样总结前情提要吗" (选: 也自动注入 + 也给人看),
+//   另加 "短剧我现在觉得10集才自动总结久了点, 5集精炼差不多"。
+//
+//   【为什么以前长剧不能精炼】不是没素材 —— 长剧的每 5 分钟一段早就在
+//   cinemaEpMemories 表里了 (跟短剧的每集剧情同一张表, 用 sessionKey 分开)。
+//   真冲突在存储: 短剧和长剧共用 cinemaSeriesRecap 同一行的同一个 text 字段,
+//   可它俩语义不同 —— 短剧 text=前情提要(攒够才更新), 长剧 text=滚动锚(每5分钟覆盖)。
+//   长剧精炼要是直接写回 text, 锚就被冲了 → 下次进影院注入的上下文从"进度"变"提要"。
+//
+//   【修法】
+//   · cinema-storage.js: saveSeriesRecap 改成【合并写】+ 支持第二个字段 recapText
+//     (短剧 text=提要 / 长剧 text=锚 + recapText=提要, 互不覆盖);
+//     deleteSeriesRecap 支持只删一个字段 (长剧删提要不连坐删锚)。
+//     ⇒ 这一行本来就存整个 JSON 对象, 加字段不用加 Dexie 索引 → 不用改表版本。
+//   · cinema-live.js: runRecapMerge / persistSeriesRecapSafely / refineSeriesRecap
+//     都支持长剧 (单位是"段"不是"集"); 长剧面板多一个「整部剧情提要」区块 +
+//     「精炼剧情提要」按钮; 注入时长剧把【锚 + 提要】都喂给模型。
+//   index.html 的 ?v= 已 bump (cinema-live.js 1.9.5→1.9.6, cinema-storage.js 0.5.2→0.5.3,
+//   沙盒 cinema-sandbox/index.html 同步)。
+const CACHE_VERSION = 'v0.2.56.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
