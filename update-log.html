@@ -166,11 +166,27 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.31 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.31</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>「精炼前情提要」一直报"WebSocket 连接错误"，点了无数次都连不上</strong> —— 你在记忆页点精炼，顶部飘一句看不懂的英文错误。</li>
+          <li>根因是<strong>同一把 API Key 同时只允许一条 Gemini Live 连接</strong>：看剧那条一直挂着占着位置，精炼要另外单开一条去问模型，刚握手就被服务端拒了（浏览器只给一句"WebSocket 连接错误"，看不到真实原因）。</li>
+          <li>修法：<strong>精炼的时候先把看剧那条断开腾位置</strong>，精炼完自动连回来（对话能接着聊，不用退房间重进）；这段时间也不许它偷偷自己重连。失败还会<strong>自动再试一次</strong>，报错也翻译成人话了。</li>
+          <li>另外补上一种以前漏掉的情况：<strong>看剧那条正在连接中</strong>的时候点精炼，也会先把它停掉 —— 这种情况以前同样连不上。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.30 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.30</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-21</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

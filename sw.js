@@ -157,7 +157,14 @@
 //   UI 侧: 加载时显示已用秒数 (让人知道它还活着), 失败时给「再试一次」按钮。
 //   index.html 的 ?v= 已 bump (netease-music.js 0.0.40→0.0.41, netease-music-app.js 0.0.43→0.0.44,
 //   music-daily-discovery.js 0.0.1→0.0.2, music-daily-discovery.css 0.0.1→0.0.2)。
-const CACHE_VERSION = 'v0.2.54.0';
+// v0.2.55.0 (2026-10-21): 修「精炼前情提要」永远连不上模型 (WebSocket 连接错误)。
+//   根因: 同一把 Gemini Live API Key 同时只允许一条连接 —— 看剧那条一直挂着占着位置,
+//   精炼要单开一条去问模型, 握手就被服务端拒了。浏览器 onerror 不给任何细节,
+//   界面上只能显示一句 "WebSocket 连接错误" (用户实测: 点了无数次都连不上)。
+//   修法 (在 modules/cinema-live.js): 精炼前先断开主会话腾出连接位, 精炼完再连回来;
+//   期间不许它自动重连 / 自动连接; 第一次失败自动重试一次; 报错翻译成人话。
+//   index.html 的 ?v= 已 bump (cinema-live.js 1.9.4→1.9.5, 沙盒 cinema-sandbox/index.html 同步)。
+const CACHE_VERSION = 'v0.2.55.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

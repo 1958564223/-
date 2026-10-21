@@ -387,7 +387,10 @@
     chatId: null,          // Cinema Room 自己的会话 chatId (不借旧观影的全局)
     autoMode: true,
     _userDisabled: false,
-    _leaving: false
+    _leaving: false,
+    // 🔴 2026-10-21: 精炼期间主会话的连接位借给一次性会话了,
+    //   这段时间主会话【不许】自动重连 (不然撞并发, 精炼照样失败)。
+    _refineBorrowed: false
   };
 
   // ============================================================
@@ -485,10 +488,16 @@
       if (watchSession.summaryBusy) base = '⏳ 正在整理剧情…';
       else base = S.paused ? '🟢 已连接 · 视频暂停' : '🟢 已连接 · 正在看';
     }
+    // 🔴 2026-10-21: 精炼期间主会话被断开, 关连接时 live-client 会回调
+    //   onState('closed'), 把状态栏覆盖成"已断开（...）"。这里挡一下,
+    //   让用户看到的是"精炼中, 暂时断开"而不是以为掉线了。
+    if (S._refineBorrowed) base = '⏳ 精炼中, 暂时断开';
     // ⚠️ closed 也要显示 detail —— live-client.js:206 会把 WebSocket 关闭 code
     //   塞进 detail ('已断开 (code 1006)')。原来只在 error 时显示, 等于把
     //   断线原因直接丢了, 线上只能看到一句"已断开"没法排查 (2026-10-04 踩坑)。
     var showDetail = detail && (state === 'error' || state === 'closed');
+    // 精炼期间不挂 detail —— 那句"精炼前情提要: 腾出连接位"是给日志看的, 给用户看是噪音。
+    if (S._refineBorrowed) showDetail = false;
     el.textContent = base + (showDetail ? '（' + detail + '）' : '');
     el.style.display = 'block';
   }
@@ -1946,6 +1955,60 @@
     });
   }
 
+  /**
+   * 精炼期间【借用】主会话的连接位。
+   *
+   * 🔴 2026-10-21 用户实测: 精炼永远报 "WebSocket 连接错误", 点了无数次都连不上。
+   *   根因: Gemini Live 同一把 key 的并发连接数有限。主会话一直挂着占着名额,
+   *   精炼另开的那条在【握手层】就被服务端拒了 —— 浏览器 onerror 不给任何细节,
+   *   只能显示一句 "WebSocket 连接错误", 用户完全看不懂。
+   *   (用户原话: "不是那一次连不上, 我点了无数次都连不上" —— 因为主会话一直没断。)
+   *
+   * 断开时必须【清掉退避计时】并且不许自动重连 ——
+   * 不然它在精炼途中连回来, 又跟一次性会话撞并发, 精炼照样失败。
+   */
+  function borrowMainSlot() {
+    S._refineBorrowed = true;
+    clearRetry();
+    try { if (S.client) S.client.close('精炼前情提要: 腾出连接位'); } catch (e) { /* noop */ }
+    S.client = null;
+    S.enabled = false;
+    try { renderStatus('closed', '精炼中, 暂时断开'); } catch (e) { /* noop */ }
+  }
+
+  /** 精炼结束 → 把主会话连回来 (走 session resumption, 对话能续上)。 */
+  function restoreMainSlot(wasReady) {
+    if (!S._refineBorrowed) return;
+    S._refineBorrowed = false;
+    if (!wasReady) return;
+    if (S._leaving || S._userDisabled) return;
+    log('[精炼] 把主会话连回来');
+    // ⚠️ 等一下再连: 一次性会话刚 close, 服务端释放名额要一点时间。
+    //   立刻连回来会再撞一次并发, 主会话自己连不上 (而且会一直重连失败)。
+    setTimeout(function () {
+      if (S._leaving || S._userDisabled) return;
+      try {
+        enable();
+      } catch (e) {
+        logWarn('[精炼] 主会话恢复失败:', e && e.message);
+      }
+    }, 800);
+  }
+
+  /**
+   * 把技术错误翻译成人话。
+   * "WebSocket 连接错误" 用户完全看不懂 —— 得说清楚可能是什么、可以怎么办。
+   */
+  function describeRefineError(msg) {
+    var m = String(msg || '');
+    if (/WebSocket/i.test(m)) {
+      return '连不上 Gemini Live（' + m + '）。已经自动断开主会话腾过位置、也重试过一次了；' +
+        '还不行就检查一下手机网络和 ⚙ 里的 API Key。';
+    }
+    if (/超时/.test(m)) return m + '（模型回话太慢，可以再点一次）';
+    return m;
+  }
+
   function refineSeriesRecap() {
     if (watchSession.kind !== 'series') {
       setRefineMsg('只有短剧才有前情提要。');
@@ -1970,6 +2033,29 @@
     }
     watchSession.refining = true;
     setRefineMsg('正在精炼（会单独调一次观影模型，通常十几秒，最多一分钟）…');
+
+    // 🔴 2026-10-21 用户实测: 精炼永远报 "WebSocket 连接错误", 点了无数次都连不上。
+    //
+    //   【根因】Gemini Live 同一把 key 的并发连接数有限。
+    //     主会话一直挂着(用户截图右上角是"已连接"), 占着唯一的名额;
+    //     精炼另开的那条在【握手层】就被服务端拒了 —— 浏览器 onerror 不给任何细节,
+    //     只能显示一句 "WebSocket 连接错误", 用户完全看不懂。
+    //     用户原话: "不是那一次连不上, 我点了无数次都连不上" —— 因为主会话一直没断。
+    //
+    //   【修法】精炼时【借用】主会话的连接位:
+    //     ① 精炼前把主会话断开 (腾位), 并且【不许它自动重连】——
+    //        不然它在精炼途中连回来, 又跟一次性会话撞并发, 照样失败;
+    //     ② 一次性会话失败时自动重试一次 (等 1.5s, 给服务端放名额的时间);
+    //     ③ 精炼结束把主会话连回来 (走 session resumption, 对话能续上)。
+    // ⚠️ 这里必须看【两种】状态, 不能只看 isReady():
+    //   主会话正在【连接中】时也一样占着一条 WS —— 精炼另开一条照样撞并发。
+    //   (用户实测: 刚进房就点精炼, 主会话还在连, 精炼必挂。)
+    var mainWasLive = !!(S.client && (S.client.isReady() || S.client.state === 'connecting'));
+    if (mainWasLive) {
+      log('[精炼] 主会话还占着连接位(已连上或正在连), 先断开腾出来');
+      borrowMainSlot();
+      setRefineMsg('正在精炼（先断开 Gemini 腾位置，再单独调一次观影模型，通常十几秒，最多一分钟）…');
+    }
 
     return CS.listEpMemories(key)
       .then(function (rows) {
@@ -1997,8 +2083,15 @@
         var callErr = '';
         var call = function (instruction) {
           return callViewerModelOnce(instruction).catch(function (err) {
-            callErr = (err && err.message) || '未知错误';
-            throw err;
+            // 🔴 2026-10-21: 第一次失败自动再试一次。
+            //   刚断开主会话时, 服务端可能还没把名额放出来, 等一下就好。
+            log('[精炼] 第一次调用失败(' + ((err && err.message) || '未知') + '), 1.5s 后自动重试一次');
+            return new Promise(function (r) { setTimeout(r, 1500); })
+              .then(function () { return callViewerModelOnce(instruction); })
+              .catch(function (err2) {
+                callErr = describeRefineError((err2 && err2.message) || ((err && err.message) || '未知错误'));
+                throw new Error(callErr);
+              });
           });
         };
         return runRecapMerge(old, list, '手动精炼', call).then(function (ok) {
@@ -2015,11 +2108,14 @@
       })
       .catch(function (e) {
         logWarn('手动精炼前情提要失败(不影响单集记忆):', e && e.message);
-        setRefineMsg('⚠️ 精炼失败：' + ((e && e.message) || '未知错误') + '（各集剧情都还在，可以再点一次）');
+        setRefineMsg('⚠️ 精炼失败：' + describeRefineError((e && e.message) || '未知错误') +
+          '（各集剧情都还在，可以再点一次）');
         return false;
       })
       .then(function (r) {
         watchSession.refining = false;
+        // 🔴 2026-10-21: 把主会话连回来 (之前是占着连接位才借的)。
+        restoreMainSlot(mainWasLive);
         if (plotPanelCanRender()) renderPlotPanel();
         return r;
       });
@@ -2714,6 +2810,12 @@
 
   function scheduleReconnect(reason) {
     if (S._userDisabled || S._leaving) return;
+    // 🔴 2026-10-21: 精炼期间主会话的连接位借给一次性会话了,
+    //   这时候连回来就是自己撞自己 —— 精炼完 restoreMainSlot() 会重新连。
+    if (S._refineBorrowed) {
+      log('[精炼] 精炼期间不排重连 (连接位借给一次性会话了)');
+      return;
+    }
 
     // 抖动检测: 上次连接没活够 FLAP_STABLE_MS 就断了 → 不清零, 继续往上加退避
     var lived = S.connectedAt ? (Date.now() - S.connectedAt) : 0;
@@ -2958,6 +3060,13 @@
    */
   function autoConnect(reason) {
     if (!S.autoMode) return false;
+    // 🔴 2026-10-21: 精炼期间连接位借给一次性会话了。
+    //   cinema-room.js 的 video 'play' 事件会调这里 —— 用户在精炼时拖一下进度条/
+    //   续播, 主会话就自己连回来了, 又跟精炼那条撞并发, 精炼照样失败。
+    if (S._refineBorrowed) {
+      log('[精炼] 精炼期间不自动连接 (连接位借给一次性会话了)');
+      return false;
+    }
     if (S.enabled || (S.client && (S.client.state === 'connecting' || S.client.state === 'ready'))) {
       if (S.enabled && S.client && S.client.isReady()) {
         S.paused = false;
