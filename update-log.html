@@ -166,11 +166,28 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.27 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.27</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>「精炼前情提要」说库里没有攒下的单集剧情</strong>（你实测：明明看了三集，记忆摆那了，点精炼却报"库里还没有攒下的单集剧情"）—— 根因是<strong>面板和精炼读的不是同一个地方</strong>：面板上那几集读的是<strong>内存</strong>，精炼读的是<strong>数据库</strong>。两边只要有一边没写成，就会出现"面板上有、库里没有"。</li>
+          <li>那"没写成"是怎么发生的？<strong>落库失败是悄无声息的</strong>——以前只往控制台写一行日志，手机上根本看不见；而且那个建表的自愈逻辑<strong>失败一次就把失败结果永久记住了</strong>，那一页里之后所有写入和读取全部作废。现在失败原因<strong>直接写在记忆页上</strong>（"第几集没存进库 + 什么原因"），失败也不再被永久记住，下次还能重试。</li>
+          <li>还有一处：<strong>草稿恢复出来的几集只进了内存、没进库</strong>。页面刷新后从草稿里捡回来，记忆页上看得见，库里却是空的。现在捡回来就当场补写进库。</li>
+          <li>顺带把<strong>精炼的取材改成"库 ∪ 内存"</strong>：库里没有而这次看到的，一律算进素材，并把缺的顺手补写进库。也就是说<strong>只要面板上看得见，精炼就一定跑得起来</strong>，不会再出现"明明有却说没有"。</li>
+          <li>最底下那层也补了：<strong>小页面自己建的数据库</strong>以前只声明到第 65 版，后面两张新表全靠运行时临时补建（补建失败就全废）。现在<strong>直接声明到第 69 版</strong>，手机上已有的库下次打开自动升上来，不用再赌那一次临时补建。</li>
+          <li>另外，小页面加载那几个模块时<strong>漏了版本号</strong>，可能一直吃浏览器缓存里的旧副本。现在跟主页面一样都带上版本号了。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.26 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.26</span>
-        <span class="version-date">最新版本</span>
       </div>
       <div class="section">
         <div class="section-title change">变化</div>

@@ -246,7 +246,20 @@
         return null;
       })();
     }
-    return epHealing;
+    // ⚠️ 2026-10-21 补: 补建失败【不能永久缓存失败结果】。
+    //
+    // 【真事故】用户实测: 面板上明明白白摆着 3 集, 点「精炼前情提要」却说
+    //   "库里还没有攒下的单集剧情"。查下来是: 补建 v69 那一步失败过一次
+    //   (比如库正被别处占着 / open 被拒), 于是 epHealing 被永久缓存成 null ——
+    //   【这一页里所有的写入和读取从此全废】, 而且悄无声息,
+    //   用户只在几集之后点精炼时才看到一句莫名其妙的"库里没有"。
+    //
+    // 【修法】失败就把缓存清掉 —— 下次调用还能重试(表可能已经被别的路径建好了)。
+    //   成功路径不变, 还是只补建一次。
+    const healing = epHealing;
+    const t = await healing;
+    if (!t && epHealing === healing) epHealing = null;
+    return t;
   }
 
   function epRowId(sessionKey, ep) {
@@ -255,18 +268,30 @@
 
   /**
    * 写一条。同一个 (sessionKey, ep) 覆盖 —— 重播同一集不会堆两条。
-   * 返回写进去的行; 被长度下限拒收时返回 null。
+   * 返回写进去的行; 失败时返回 null, 原因写进 getEpLastError()。
+   *
+   * ⚠️ 2026-10-21 加 getEpLastError() 的原因: 原来失败只返回 null,
+   *   调用方分不清是"内容太短"还是"表根本建不出来" —— 两种完全不同的病,
+   *   修法也完全不同。现在把原因留在模块里, UI 能直接显示给用户看。
    */
+  let epLastError = '';
   async function saveEpMemory(rec) {
     const key = rec && rec.sessionKey ? String(rec.sessionKey) : '';
     const text = String((rec && rec.text) || '').trim();
-    if (!key || !text) return null;
+    if (!key || !text) {
+      epLastError = !key ? '没有会话号(key 为空)' : '内容是空的';
+      return null;
+    }
     if (text.length < MIN_EP_CHARS) {
-      console.warn('[CinemaStorage] 内容只有 ' + text.length + ' 字, 低于下限, 已拒收:', text.slice(0, 30));
+      epLastError = '内容只有 ' + text.length + ' 字, 低于下限 ' + MIN_EP_CHARS;
+      console.warn('[CinemaStorage] ' + epLastError + ', 已拒收:', text.slice(0, 30));
       return null;
     }
     const t = await ensureEpMemoryTable();
-    if (!t) return null;
+    if (!t) {
+      epLastError = '逐条记忆表(cinemaEpMemories)建不出来 —— 库可能正被别处占着';
+      return null;
+    }
     const ep = Number(rec.ep) || 0;
     const row = {
       id: epRowId(key, ep),
@@ -279,19 +304,27 @@
       updatedAt: Date.now()
     };
     await t.put(row);
+    epLastError = '';
     return row;
   }
+
+  /** 上一次 saveEpMemory 失败的原因 (成功时是空串)。 */
+  function getEpLastError() { return epLastError; }
 
   /** 列出某次观看攒下的全部条目, 按 ep 升序。读不到一律当空。 */
   async function listEpMemories(sessionKey) {
     if (!sessionKey) return [];
     try {
       const t = await ensureEpMemoryTable();
-      if (!t) return [];
+      if (!t) {
+        epLastError = '逐条记忆表(cinemaEpMemories)建不出来 —— 库可能正被别处占着';
+        return [];
+      }
       const rows = await t.where('sessionKey').equals(String(sessionKey)).toArray();
       rows.sort(function (a, b) { return (a.ep || 0) - (b.ep || 0); });
       return rows || [];
     } catch (e) {
+      epLastError = '读逐条记忆失败: ' + ((e && e.message) || e);
       console.warn('[CinemaStorage] 读逐条记忆失败(忽略):', (e && e.message) || e);
       return [];
     }
@@ -718,6 +751,7 @@
     MIN_EP_CHARS: MIN_EP_CHARS,
     saveEpMemory: saveEpMemory,
     listEpMemories: listEpMemories,
+    getEpLastError: getEpLastError,
     deleteEpMemories: deleteEpMemories,
     clearEpMemories: clearEpMemories
   };

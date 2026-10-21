@@ -136,6 +136,10 @@
     seriesTitle: '',           // 短剧: 剧名(显示用)
     seriesLastEp: 0,           // 短剧: 已看到第几集
     episodeMemories: [],       // 短剧: 攒下的单集记忆 [{ ep, text, id }]
+    // 🔴 2026-10-21: 落库失败的条目 [{ ep, msg }] —— 给记忆页面板显示用。
+    //   原来落库失败只 logWarn 一句, 用户毫无察觉, 几集之后点「精炼」才发现
+    //   "库里没有攒下的单集剧情"。失败必须【看得见】。
+    persistErrors: [],
     // 🔴 2026-10-10 用户实测: 退出再进来播第3集, 总结写成"第一集"。
     //   nowPlayingEp = 宿主传来的【这次实际播的集号】(用户点的按钮),
     //   onVideoEnded 播完时直接用它, 不再用 seriesLastEp+1 去猜 ——
@@ -254,6 +258,7 @@
     watchSession.seriesTitle = '';
     watchSession.seriesLastEp = 0;
     watchSession.episodeMemories = [];
+    watchSession.persistErrors = [];
     watchSession.nowPlayingEp = 0;
     watchSession.segments = [];
     watchSession.segCount = 0;
@@ -901,8 +906,21 @@
         ? '<div class="cinema-plot-text dim">' + esc(watchSession.refineMsg) + '</div>'
         : '');
 
+    // 🔴 2026-10-21: 落库失败的集要【在面板上看得见】。
+    //   原来落库失败只 logWarn 一句, 用户毫无察觉, 几集之后点「精炼」才撞上
+    //   "库里还没有攒下的单集剧情" —— 那时候已经没法回头查是哪一集出的问题。
+    var persistWarnHtml = '';
+    if (watchSession.persistErrors && watchSession.persistErrors.length) {
+      var pe = watchSession.persistErrors;
+      var peEps = pe.map(function (x) { return x.ep; }).join('、');
+      persistWarnHtml = '<div class="cinema-plot-text dim">⚠️ 第 ' + peEps + ' 集没存进库（' +
+        esc(pe[0].msg || '未知原因') +
+        '）。精炼和导出仍会用这次看到的，但刷新页面会丢。</div>';
+    }
+
     return '<div class="cinema-plot-label">前情提要（跨场保留 · 下次进影院自动带上）</div>' +
         recapHtml +
+        persistWarnHtml +
         refineBar +
         '<div class="cinema-plot-label">已攒 ' + eps.length + ' 集'
           + (watchSession.seriesLastEp ? ' · 看到第 ' + watchSession.seriesLastEp + ' 集' : '')
@@ -1557,11 +1575,18 @@
    *
    * 【为什么写失败不抛】这一层是"锦上添花", 内存那份还在。真失败要让用户看得见,
    *   但绝不能让它把整条记记忆的链子带崩 (面板要刷新、要能编辑)。
+   *
+   * 🔴 2026-10-21: 失败【必须记下来给面板显示】。原来只 logWarn 一句,
+   *   用户完全看不出"这一集其实没存进库", 几集之后点「精炼」才撞上
+   *   "库里还没有攒下的单集剧情" —— 那时候已经没法回头查是哪一集出的问题。
    */
   function persistEpMemory(item) {
     var CS = cinemaStorage();
     var key = currentSessionKey();
-    if (!CS || typeof CS.saveEpMemory !== 'function' || !key) return;
+    if (!CS || typeof CS.saveEpMemory !== 'function' || !key) {
+      notePersistFail(item.ep, !key ? '没有会话号' : '存储层不可用');
+      return;
+    }
     CS.saveEpMemory({
       sessionKey: key,
       kind: watchSession.kind || 'series',
@@ -1570,14 +1595,81 @@
       text: item.text
     }).then(function (row) {
       if (!row) {
-        logWarn('第 ' + item.ep + ' 条记忆没写进库(长度不够或表缺失), 内存里那份还在');
+        var why = (CS && typeof CS.getEpLastError === 'function') ? CS.getEpLastError() : '';
+        logWarn('第 ' + item.ep + ' 条记忆没写进库(' + (why || '长度不够或表缺失') + '), 内存里那份还在');
+        notePersistFail(item.ep, why || '长度不够或表缺失');
+        renderPlotPanel();
         return;
       }
       item.id = row.id;
+      clearPersistFail(item.ep);
       log('💾 第 ' + item.ep + ' 条已落库 (' + row.text.length + ' 字)');
     }).catch(function (e) {
       logWarn('记忆落库失败(不影响本次观看, 内存里那份还在):', e && e.message);
+      notePersistFail(item.ep, (e && e.message) || '未知错误');
+      renderPlotPanel();
     });
+  }
+
+  /** 记一条落库失败 (面板上显示, 别让用户毫无察觉)。 */
+  function notePersistFail(ep, msg) {
+    if (!watchSession.persistErrors) watchSession.persistErrors = [];
+    for (var i = 0; i < watchSession.persistErrors.length; i++) {
+      if (watchSession.persistErrors[i].ep === ep) {
+        watchSession.persistErrors[i].msg = String(msg || '');
+        return;
+      }
+    }
+    watchSession.persistErrors.push({ ep: ep, msg: String(msg || '') });
+  }
+
+  /** 某一集后来写成功了 → 把它的失败记录撤掉。 */
+  function clearPersistFail(ep) {
+    if (!watchSession.persistErrors || !watchSession.persistErrors.length) return;
+    watchSession.persistErrors = watchSession.persistErrors.filter(function (x) { return x.ep !== ep; });
+  }
+
+  /**
+   * 「库里那份」+「内存里这份」取并集, 按 ep 升序。
+   *
+   * 🔴 2026-10-21 用户实测的真事故:
+   *   记忆页面板上明明白白摆着 3 集, 点「精炼前情提要」却说
+   *   "库里还没有攒下的单集剧情, 没东西可以精炼"。
+   *
+   * 【根因】面板读的是【内存数组】watchSession.episodeMemories,
+   *   精炼读的是【数据库】cinemaEpMemories —— 两个数据源。
+   *   落库那一步一旦没成 (表自愈失败 / 草稿恢复没补写), 两边就对不上,
+   *   而用户看到的正好是"面板有、库里没有"。
+   *
+   * 【修法】精炼不再【只信库】。库是主, 内存是兜底 ——
+   *   内存里有而库里没有的, 一并算进素材, 并顺手把缺的补写进库,
+   *   让库重新变成全量 (下次跨场进来也带得上)。
+   *
+   * @param {array} rows 库里读出来的行 [{ ep, text, id }]
+   * @param {array} mem  内存里的条目 [{ ep, text, id }]
+   */
+  function mergeEpRows(rows, mem) {
+    var list = [];
+    var byEp = {};
+    var i;
+    var r = rows || [];
+    for (i = 0; i < r.length; i++) {
+      var ep = Number(r[i].ep) || 0;
+      if (!ep || byEp[ep]) continue;
+      if (!String(r[i].text || '').trim()) continue;
+      byEp[ep] = { ep: ep, text: String(r[i].text), id: r[i].id || null };
+      list.push(byEp[ep]);
+    }
+    var m = mem || [];
+    for (i = 0; i < m.length; i++) {
+      var ep2 = Number(m[i].ep) || 0;
+      if (!ep2 || byEp[ep2]) continue;
+      if (!String(m[i].text || '').trim()) continue;
+      byEp[ep2] = { ep: ep2, text: String(m[i].text), id: m[i].id || null };
+      list.push(byEp[ep2]);
+    }
+    list.sort(function (a, b) { return a.ep - b.ep; });
+    return list;
   }
 
   /**
@@ -1673,11 +1765,14 @@
     if (S._leaving) return Promise.resolve(false);
 
     return CS.listEpMemories(key).then(function (rows) {
-      if (!rows || rows.length < RECAP_MERGE_EVERY) return false;
+      // 🔴 2026-10-21: 跟手动精炼一样, 素材取【库 ∪ 内存】。
+      //   只读库的话, 落库失败那几集就永远进不了提要, 而模型那边看着像"从没看过"。
+      var list = mergeEpRows(rows, watchSession.episodeMemories || []);
+      if (!list || list.length < RECAP_MERGE_EVERY) return false;
       // 已经覆盖到第几集了? 别反复拿同一批去压。
       var old = watchSession.seriesRecap;
       var mergedUpTo = old && Number(old.lastEp) || 0;
-      var fresh = rows.filter(function (r) { return (r.ep || 0) > mergedUpTo; });
+      var fresh = list.filter(function (r) { return (r.ep || 0) > mergedUpTo; });
       if (fresh.length < RECAP_MERGE_EVERY) return false;   // 这批没攒够, 下一集再试
 
       log('📖 攒够 ' + fresh.length + ' 集, 更新前情提要…');
@@ -1878,9 +1973,22 @@
 
     return CS.listEpMemories(key)
       .then(function (rows) {
-        if (!rows || !rows.length) {
-          setRefineMsg('库里还没有攒下的单集剧情，没东西可以精炼。先看一集再来。');
+        // 🔴 2026-10-21: 素材 = 库里那份 ∪ 内存里这份。
+        //   原来只读库, 库一空就说"库里没有攒下的单集剧情" —— 而面板上明明摆着 3 集。
+        var mem = watchSession.episodeMemories || [];
+        var list = mergeEpRows(rows, mem);
+        if (!list.length) {
+          setRefineMsg('库里和这次看的都还没有攒下的单集剧情，没东西可以精炼。先看一集再来。');
           return false;
+        }
+        // 内存里有、库里没有的 → 顺手补写进库, 让库重新变成全量。
+        // (库读不到的时候补写会失败, 不影响这次精炼 —— 素材已经在手里了。)
+        var memByEp = {};
+        for (var mi = 0; mi < mem.length; mi++) memByEp[mem[mi].ep] = mem[mi];
+        var missing = list.filter(function (x) { return !x.id && memByEp[x.ep]; });
+        if (missing.length) {
+          log('📚 内存里有 ' + missing.length + ' 集没进库, 正在补写…');
+          for (var mj = 0; mj < missing.length; mj++) persistEpMemory(memByEp[missing[mj].ep]);
         }
         var old = watchSession.seriesRecap;
         // ⚠️ runRecapMerge 内部会把调用失败吞掉只返回 false, 那样用户只看到
@@ -1893,9 +2001,9 @@
             throw err;
           });
         };
-        return runRecapMerge(old, rows, '手动精炼', call).then(function (ok) {
+        return runRecapMerge(old, list, '手动精炼', call).then(function (ok) {
           if (ok) {
-            var lastEp = rows[rows.length - 1].ep || 0;
+            var lastEp = list[list.length - 1].ep || 0;
             setRefineMsg('✅ 前情提要已精炼好（到第 ' + lastEp + ' 集）。各集剧情一条都没删。');
           } else if (callErr) {
             setRefineMsg('⚠️ 精炼失败：' + callErr + '（各集剧情都还在，可以再点一次）');
@@ -2464,6 +2572,14 @@
     if (d.chatId && watchSession.chatId && d.chatId !== watchSession.chatId) return false;
 
     var isSeries = (d.kind || 'film') === 'series';
+
+    // ⚠️ 2026-10-21: kind / seriesKey / seriesTitle 必须【先于】下面的补写落库设好。
+    //   persistEpMemory 用 currentSessionKey() 取 key, 短剧是 seriesKey ——
+    //   顺序反了就写成 'film:xxx' 去了, 库里按短剧 key 永远查不到这集。
+    watchSession.kind = d.kind || 'film';
+    watchSession.seriesKey = d.seriesKey || null;
+    watchSession.seriesTitle = d.seriesTitle || '';
+
     var pool = isSeries
       ? (watchSession.episodeMemories || (watchSession.episodeMemories = []))
       : (watchSession.segments || (watchSession.segments = []));
@@ -2472,6 +2588,7 @@
     for (i = 0; i < pool.length; i++) byEp[pool[i].ep] = pool[i];
 
     var added = 0;
+    var addedItems = [];
     var addFrom = isSeries ? (d.episodeMemories || []) : (d.segments || []);
     for (i = 0; i < addFrom.length; i++) {
       var it = addFrom[i];
@@ -2480,13 +2597,19 @@
       if (byEp[ep]) continue;          // 库里已有 → 跳过, 不重复
       byEp[ep] = { ep: ep, text: it.text, id: it.id || null };
       pool.push(byEp[ep]);
+      addedItems.push(byEp[ep]);
       added++;
     }
     pool.sort(function (a, b) { return a.ep - b.ep; });
 
-    watchSession.kind = d.kind || 'film';
-    watchSession.seriesKey = d.seriesKey || null;
-    watchSession.seriesTitle = d.seriesTitle || '';
+    // 🔴 2026-10-21 补写: 草稿恢复出来的条目【当场补进库】。
+    //   原来只塞进内存 —— 面板上看得见, 库里却没有, 于是点「精炼前情提要」
+    //   就报"库里还没有攒下的单集剧情"(用户 2026-10-21 实测)。
+    //   补写失败也不拦着恢复: 内存那份还在, 精炼那条路现在会拿内存兜底。
+    for (i = 0; i < addedItems.length; i++) {
+      try { persistEpMemory(addedItems[i]); } catch (e) { /* noop */ }
+    }
+
     if (isSeries && (d.seriesLastEp || 0) > watchSession.seriesLastEp) {
       watchSession.seriesLastEp = d.seriesLastEp || 0;
     }

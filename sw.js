@@ -98,7 +98,27 @@
 //   死代码让人以为还能回退。
 //   ⚠️ open() 本身留着: 沙盒页加载同一份 cinema-room.js, 自己调 CinemaRoom.open()。
 //   index.html 少了那个 button、cinema-room.css 少了一条规则 → 要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.50.0';
+// v0.2.51.0 (2026-10-21): 修「面板有 3 集, 点精炼却说库里没有攒下的单集剧情」。
+//   症状: 用户实测 —— 记忆页明明摆着第 72/73/74 集, 点「📖 精炼前情提要」却弹
+//   "库里还没有攒下的单集剧情, 没东西可以精炼。先看一集再来。"
+//   根因: 【面板读内存数组 watchSession.episodeMemories, 精炼读数据库
+//   cinemaEpMemories】—— 两个数据源。落库那一步没成时两边就对不上, 而落库失败
+//   是【静默】的(只 logWarn 一句), 用户毫无察觉。
+//   更深一层: 沙盒 iframe 建的是【自己的】CinemaSandboxDB(只声明到 v65),
+//   cinemaSeriesRecap(v68) / cinemaEpMemories(v69) 两张表根本不存在,
+//   全靠 cinema-storage.js 的 ensure*Table() 现场补建 ——
+//   而补建失败的结果被【永久缓存】, 于是那一页里所有读写全废。
+//   改法: ① cinema-sandbox/index.html 的 Dexie 直接声明到 v69(不再靠补建)
+//         ② cinema-storage.js 补建失败不再永久缓存, 下次能重试
+//         ③ cinema-live.js 精炼/自动合并都改成取【库 ∪ 内存】并集,
+//            内存里有而库里没有的顺手补写进库
+//         ④ 草稿恢复出来的条目当场补写进库(原来只塞内存)
+//         ⑤ 落库失败在记忆页上显示出来, 不再静默
+//   index.html 的 ?v= 已 bump (cinema-live.js 1.9.3 → 1.9.4,
+//   cinema-storage.js 0.5.0 → 0.5.1), 沙盒页的 script 标签也补上了 ?v=
+//   (原来漏了, 沙盒 iframe 可能一直吃浏览器 HTTP 缓存里的老副本),
+//   所以要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.51.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
