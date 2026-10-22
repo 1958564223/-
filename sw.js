@@ -210,7 +210,22 @@
 //        —— 这处的【主站分支】拼了 /v1, 跟主聊天不一致, 主站不带 /v1 时它就是坏的。
 //   现在 7 处全部统一成主聊天那一写法, 一个字不差。
 //   index.html 的 ?v= 已 bump (memory-summary.js 0.0.43→0.0.44)。
-const CACHE_VERSION = 'v0.2.59.0';
+// v0.2.60.0 (2026-10-22): 修「视频通话结束后, 通话记录里看不到用户说的话」。
+//   症状: 视频通话挂断 → 通话记录里用户那几条是 "[object Object],[object Object]",
+//   AI 那几条正常(看着特别怪); 语音通话一切正常。
+//   真凶: 视频通话开了「我的画面/实时摄像头」(或上传了本地视频)时, 用户那条会存成
+//   多模态数组 [{type:'text'},{type:'image_url'}] —— 那是给模型看的。
+//   而通话记录弹窗 / 记忆总结都是 String(content) 当文字用 → 变成 [object Object]。
+//   修法 (video-voice-call.js + misc-features.js):
+//   · callHistory 里的 content 永远存【纯文字】, 多模态数组另存 visionContent,
+//     只在发模型时用 (messagesForApi 用 visionContent || content) → 画面功能没坏;
+//   · 通话记录弹窗和记忆总结统一走 callHistoryContentToText() 取文字,
+//     【以前存坏的老记录也能正常显示】;
+//   · 存进 IndexedDB 的记录只留文字 (base64 帧不进库, 免得把库撑大);
+//   · 顺手补上 callHistory 的 senderName —— 以前缺这一项, 记忆总结里 AI 那几行
+//     全顶着 "undefined: ", 现在是 "对方名字: 说话内容" (用角色实际名字, 不写死)。
+//   index.html 的 ?v= 已 bump (video-voice-call.js 0.0.81→0.0.82, misc-features.js 0.0.43→0.0.44)。
+const CACHE_VERSION = 'v0.2.60.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

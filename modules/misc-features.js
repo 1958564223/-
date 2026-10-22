@@ -1067,7 +1067,13 @@
         bubble.className = `transcript-entry ${entry.role}`;
         // 只在显示层摘掉语气声 / 停顿标记, record.transcript 原文不动
         // (AI 回看的上下文和"总结"功能都还靠它)
-        bubble.textContent = window.stripTtsTagsForDisplay?.(entry.content) ?? entry.content;
+        // ⚠️ 先取纯文字: 视频通话【以前】把用户那句话存成多模态数组,
+        //   不取文字直接显示就会变成 "[object Object],[object Object]"
+        //   —— 用户自己说的话在通话记录里就看不见了。
+        const entryText = typeof window.callHistoryContentToText === 'function'
+          ? window.callHistoryContentToText(entry.content)
+          : (typeof entry.content === 'string' ? entry.content : String(entry.content ?? ''));
+        bubble.textContent = window.stripTtsTagsForDisplay?.(entryText) ?? entryText;
         bodyEl.appendChild(bubble);
       });
     }
@@ -1117,7 +1123,11 @@
       try {
         const transcriptText = record.transcript.map(h => {
           const sender = h.role === 'user' ? (chat.settings.myNickname || '我') : (h.senderName || chat.name);
-          return `${sender}: ${h.content}`;
+          // 同上: 先取纯文字 (老记录里用户那条是多模态数组)
+          const text = typeof window.callHistoryContentToText === 'function'
+            ? window.callHistoryContentToText(h.content)
+            : (typeof h.content === 'string' ? h.content : String(h.content ?? ''));
+          return `${sender}: ${text}`;
         }).join('\n');
 
         await summarizeCallTranscript(record.chatId, transcriptText);

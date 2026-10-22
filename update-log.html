@@ -182,6 +182,15 @@
           <li><strong>整个记忆模块的接口地址现在跟主聊天完全统一了</strong> —— 全项目的老规矩是「<strong>站点地址你自己填全（含 /v1），程序只补 /chat/completions，绝不自动补 /v1</strong>」，主聊天一直就是这么做的。但记忆模块里有 4 处还留着"看情况补 /v1"的老写法，其中「记忆」页那个「总结」按钮的主站分支拼的是 /v1，跟主聊天对不上。现在<strong>记忆模块 7 处调用全部统一成主聊天那一写法</strong>，一个字不差，以后再也不会出现"主聊天好好的、总结却 404"的怪事。</li>
         </ul>
       </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>视频通话结束后，通话记录里看不见你自己说的话</strong> —— 用户那几条显示成 <code>[object Object],[object Object]</code>，AI 那几条却好好的，语音通话也完全正常。</li>
+          <li>真凶：视频通话开了「我的画面 / 实时摄像头」（或上传了本地视频）时，你那句话存进记录时<strong>存成了"图片+文字"的多模态格式</strong>（那是给模型看的），而通话记录和记忆总结都是把它当文字读的，于是全变成了 [object Object]。</li>
+          <li>修法：<strong>记录里永远存纯文字</strong>，多模态那一坨只留在发模型的那一刻；同时<strong>以前存坏的老记录现在也能正常显示了</strong>（不用删重打）。画面功能一点没受影响 —— AI 该看到的画面还是看得到。</li>
+          <li>另外顺手修了两处：<strong>存进数据库的通话记录不再塞一堆 base64 图片</strong>（以前一张几十 KB，攒几轮就把库撑大了）；<strong>记忆总结里 AI 那几行以前全顶着 "undefined:"</strong>，现在正常显示成「对方名字：说话内容」这样（用的是这个角色自己的名字，不是写死的）。</li>
+        </ul>
+      </div>
     </div>
     <!-- 4.32 版本 -->
     <div class="version-card">
