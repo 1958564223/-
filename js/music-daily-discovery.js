@@ -924,9 +924,27 @@
     '格式: {"note":"...","songs":[{"id":123,"reason":"...","tag":"小冒险"}]}',
   ].join('\n');
 
+  /**
+   * 把"AI 没能用上"的原因翻译成人话。
+   * ⚠️ 这条一定要做: 兜底出来的卡片, 理由全是模板 —— 用户看到会以为是 AI 写的。
+   *   必须让"这次 AI 没接上"这件事【看得见】, 否则用户永远不知道真实原因。
+   */
+  function describeLlmError(e) {
+    const msg = String((e && e.message) || e || '');
+    if (/未配置/.test(msg)) return 'AI 接口没配置(读不到 API 地址)';
+    if (/abort|timeout|超时/i.test(msg)) return 'AI 请求超时(30 秒没回)';
+    if (/HTTP\s*(\d+)/i.exec(msg)) return 'AI 接口返回错误 HTTP ' + /HTTP\s*(\d+)/i.exec(msg)[1];
+    if (/空内容/.test(msg)) return 'AI 返回了空内容';
+    if (/Failed to fetch|NetworkError|网络/i.test(msg)) return '网络没连通';
+    return msg.slice(0, 40) || '未知原因';
+  }
+
   async function curate(pool, profile, targetCount) {
     if (!pool.length) return null;
     const prompt = buildCurationPrompt(pool, profile, targetCount);
+
+    // 为什么没能用上 AI —— 兜底的时候要写进卡片里, 让用户看见
+    let failReason = '';
 
     // 最多试两次:
     //   第 1 次正常问; 解析不出来 → 第 2 次追加"只吐 JSON"的硬要求再问一次
@@ -937,6 +955,7 @@
         text = await callLLM(attempt === 0 ? prompt : prompt + STRICT_FORMAT_SUFFIX);
       } catch (e) {
         console.warn('[daily-discovery] LLM 调用失败, 走确定性兜底:', (e && e.message) || e);
+        failReason = describeLlmError(e);
         break;
       }
 
@@ -956,11 +975,17 @@
         if (attempt > 0) console.log('[daily-discovery] LLM 重试后成功');
         return valid;
       }
+      if (!failReason) failReason = '模型给的结果没通过校验(歌曲 id 对不上 / 格式不对)';
       console.warn(attempt === 0
         ? '[daily-discovery] LLM 输出格式不对, 重试一次'
         : '[daily-discovery] LLM 重试后还是不对, 走确定性兜底');
     }
-    return deterministicPick(pool, profile, targetCount);
+
+    const fallback = deterministicPick(pool, profile, targetCount);
+    // 标记清楚: 这是兜底, 不是 AI 挑的 (卡片上会写明)
+    fallback.fallback = true;
+    fallback.fallbackReason = failReason || '未知原因';
+    return fallback;
   }
 
   // ============================================================
@@ -989,7 +1014,11 @@
       date,
       title: '今日私选',
       subtitle: `今天往外找了 ${curated.songs.length} 首不在你红心里的歌`,
-      note: curated.note || '',
+      // ⚠️ 兜底的时候必须说清楚 —— 兜底的理由是模板, 不是 AI 写的。
+      //   不说清楚的话, 用户会以为"AI 挑的但理由都一样", 反而更困惑。
+      note: curated.fallback
+        ? `这次 AI 没接上（${curated.fallbackReason}），下面是按你的口味兜底挑的，理由不是 AI 写的 —— 点「换一批」可以再试一次`
+        : (curated.note || ''),
       generatedAt: Date.now(),
       strategy: {
         targetCount: CFG.targetCount,
@@ -998,7 +1027,9 @@
         poolCount: cleaned.length,
         excludedKnownCount: profile.knownIds.size + profile.likedIds.size,
         feedbackCount: profile.stats.feedback,
-        llmRanked: true,
+        // 别再撒谎说 llmRanked: true —— 兜底的时候它没被 AI 排过
+        llmRanked: !curated.fallback,
+        fallbackReason: curated.fallbackReason || '',
       },
       songs: curated.songs,
       seen: false,

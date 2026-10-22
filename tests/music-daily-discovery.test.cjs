@@ -732,6 +732,37 @@ async function main() {
       check('LLM 挂掉时兜底理由也不再千篇一律 (抠掉歌手名后仍要不同)', new Set(patterns).size > 1,
         reasons.join(' | '));
     }
+
+    // ---- ④ 兜底时卡片上必须写明"这次 AI 没接上" (别让用户误以为是 AI 写的) ----
+    {
+      const { sandbox } = makeSandbox({ netease: netease2, llmError: 'network down' });
+      const card = await sandbox.MusicDailyDiscovery.generate('chat-1');
+      check('兜底时卡片上写明了 AI 没接上', /AI 没接上/.test(card.note || ''), card.note || '(空)');
+      check('兜底时不再谎称 AI 排过序',
+        card.strategy && card.strategy.llmRanked === false,
+        'llmRanked=' + (card.strategy && card.strategy.llmRanked));
+    }
+
+    // ---- ⑤ AI 正常时, 卡片上就是模型自己的开场白, 不带兜底提示 ----
+    {
+      const { sandbox } = makeSandbox({
+        netease: netease2,
+        llmResponse: JSON.stringify({
+          note: '今天想给你点安静的',
+          songs: [
+            { id: '800', reason: '雨声开头，像下雨天的地铁站', tag: '小冒险' },
+            { id: '900', reason: '副歌很亮，适合刚睡醒', tag: '稳准' },
+          ],
+        }),
+      });
+      const card = await sandbox.MusicDailyDiscovery.generate('chat-1');
+      check('AI 正常时卡片上不出现兜底提示',
+        !/AI 没接上/.test(card.note || '') && /今天想给你点安静的/.test(card.note || ''),
+        card.note || '(空)');
+      check('AI 正常时 llmRanked 为真',
+        card.strategy && card.strategy.llmRanked === true,
+        'llmRanked=' + (card.strategy && card.strategy.llmRanked));
+    }
   }
 
   // ------------------------------------------------------------

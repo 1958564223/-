@@ -238,7 +238,18 @@
 //   · 模型要是偷懒把十几首写成同一句理由, 会被检测出来并换掉;
 //   · 提示词加一条: 每首的理由必须针对这一首本身, 不许套同一句模板。
 //   index.html 的 ?v= 已 bump (music-daily-discovery.js 0.0.2→0.0.3)。
-const CACHE_VERSION = 'v0.2.61.0';
+// v0.2.62.0 (2026-10-22): 「今日私选」兜底时必须说清楚 —— 别让用户误以为那些理由是 AI 写的。
+//   起因: 我上一版把根因说成"AI 接口没配置"就下了结论, 但用户反问
+//   "悬浮球/情侣空间也读 state.apiConfig, 怎么它们好好的?"
+//   → 那说明"读 state.apiConfig"不是普遍坏, 只有【引用了预设的槽位】才会被清空;
+//     而「今日私选」失败的真实原因还有别的路 (30 秒超时 / HTTP 出错 / 输出没通过校验)。
+//   修法 (js/music-daily-discovery.js):
+//   · 兜底时把真实原因翻译成人话写进卡片 note:
+//     "这次 AI 没接上（原因）, 下面是按你的口味兜底挑的, 理由不是 AI 写的 —— 点「换一批」可以再试一次";
+//   · strategy.llmRanked 不再一律写 true —— 兜底时如实写 false + fallbackReason。
+//   以后再看到千篇一律的理由, 卡片上就写明原因, 不用再猜。
+//   index.html 的 ?v= 已 bump (music-daily-discovery.js 0.0.3→0.0.4)。
+const CACHE_VERSION = 'v0.2.62.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
