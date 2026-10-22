@@ -199,7 +199,18 @@
 //      跨域请求 statusText 基本是空的 → 弹出来是「总结失败: API 错误:」, 后面什么都没有。
 //   改法跟通话总结一致: 只补 /chat/completions, 不再自动补 /v1。
 //   index.html 的 ?v= 已 bump (memory-summary.js 0.0.42→0.0.43)。
-const CACHE_VERSION = 'v0.2.58.0';
+// v0.2.59.0 (2026-10-22): 把 memory-summary.js 剩下的几处也统一成【不拼 /v1】。
+//   项目设计一直是"用户自己把站点地址填全(含 /v1), 程序只补 /chat/completions" ——
+//   主聊天 ai-response.js:4913 就是 `${proxyUrl.replace(/\/+$/, '')}/chat/completions`,
+//   代理通路 buildOpenAICompatibleTargetUrl、cphone / proactive / 音乐日推 也都这样。
+//   但 memory-summary.js 里有 4 处老写法还在"看情况补 /v1":
+//     ① 1549 变量记忆提取、② 2299 结构化记忆自动总结、③ 3440 精炼长期记忆
+//        (都是 `endsWith('/v1') ? /chat/completions : /v1/chat/completions`)
+//     ④ 3729 记忆页「总结」按钮 (`__useSecondary ? /chat/completions : /v1/chat/completions`)
+//        —— 这处的【主站分支】拼了 /v1, 跟主聊天不一致, 主站不带 /v1 时它就是坏的。
+//   现在 7 处全部统一成主聊天那一写法, 一个字不差。
+//   index.html 的 ?v= 已 bump (memory-summary.js 0.0.43→0.0.44)。
+const CACHE_VERSION = 'v0.2.59.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
