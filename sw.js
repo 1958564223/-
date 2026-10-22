@@ -184,7 +184,15 @@
 //     「精炼剧情提要」按钮; 注入时长剧把【锚 + 提要】都喂给模型。
 //   index.html 的 ?v= 已 bump (cinema-live.js 1.9.5→1.9.6, cinema-storage.js 0.5.2→0.5.3,
 //   沙盒 cinema-sandbox/index.html 同步)。
-const CACHE_VERSION = 'v0.2.56.0';
+// v0.2.57.0 (2026-10-22): 修「语音/视频通话挂断后的记忆总结」报 404 Invalid URL。
+//   症状: 通话结束 → 记忆总结失败, 弹「API 请求失败: 404 - Invalid URL
+//   (POST /v1/v1/chat/completions)」; 换成谷歌直连能通, 但 OpenAI 兼容站点死活不行。
+//   真凶: 站点地址(API 预设)自己就带 /v1, 而 summarizeCallTranscript 无条件
+//   又拼了一次 /v1 → /v1/v1/chat/completions, 中转网关当然认不出这条路由。
+//   修法: 只补 /chat/completions, 不再自动补 /v1 (语音 + 视频 + 通话记录手动总结
+//   三条路走的是同一个函数, 一处改完三处都活)。
+//   index.html 的 ?v= 已 bump (memory-summary.js 0.0.41→0.0.42)。
+const CACHE_VERSION = 'v0.2.57.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

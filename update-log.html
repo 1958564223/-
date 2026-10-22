@@ -166,11 +166,26 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.33 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.33</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>语音通话结束后总结记忆，一直报「404 - Invalid URL」</strong> —— 弹窗写的是 <code>API 请求失败: 404 - Invalid URL (POST /v1/v1/chat/completions)</code>，通话记录一个字都没总结出来。换谷歌直连就正常，OpenAI 那个站点死活不行。</li>
+          <li>真凶是<strong>地址里多拼了一个 /v1</strong>：你在 API 预设里填的站点地址本来就自带 /v1，程序又在后面拼了一次，于是变成 /v1/v1/chat/completions，中转网关当然认不出这条路由。现在改成<strong>只补 /chat/completions，绝不再自动补 /v1</strong>。</li>
+          <li><strong>视频通话那条路一起修好了</strong> —— 语音通话、视频通话、通话记录里手动点「总结」这三处走的是同一个函数，改一处三处都活。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.32 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.32</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-22</span>
       </div>
       <div class="section">
         <div class="section-title new">新增</div>

@@ -2983,7 +2983,11 @@ ${transcriptText}
 
     const response = isGemini ?
       await fetch(geminiConfig.url, geminiConfig.data) :
-      await fetch(`${proxyUrl}/v1/chat/completions`, {
+      // 站点地址(API 预设)自己就带 /v1, 这里只补 /chat/completions。
+      // 再补一次 /v1 会变成 /v1/v1/chat/completions, 中转网关直接回 404 "Invalid URL"。
+      // (2026-10-22 用户实测: 语音/视频通话挂断后的记忆总结就是这么坏的;
+      //  换谷歌直连能通, 因为那条分支走的是 geminiConfig.url, 根本不拼 /v1。)
+      await fetch(`${proxyUrl.trim().replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
