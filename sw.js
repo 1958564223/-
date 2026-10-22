@@ -192,7 +192,14 @@
 //   修法: 只补 /chat/completions, 不再自动补 /v1 (语音 + 视频 + 通话记录手动总结
 //   三条路走的是同一个函数, 一处改完三处都活)。
 //   index.html 的 ?v= 已 bump (memory-summary.js 0.0.41→0.0.42)。
-const CACHE_VERSION = 'v0.2.57.0';
+// v0.2.58.0 (2026-10-22): 补修同款双 /v1 —— 结构化记忆的两处调用。
+//   ① 长期记忆 → 结构化记忆(批量转换): 404 被 console.warn 吞掉, 界面只弹
+//      "转换失败: 所有批次都未能提取有效数据 / 可能原因: Token过多…", 看着像记忆太长。
+//   ② 结构化记忆「新消息总结 / 范围总结」: 抛的是 `API 错误: ${response.statusText}`,
+//      跨域请求 statusText 基本是空的 → 弹出来是「总结失败: API 错误:」, 后面什么都没有。
+//   改法跟通话总结一致: 只补 /chat/completions, 不再自动补 /v1。
+//   index.html 的 ?v= 已 bump (memory-summary.js 0.0.42→0.0.43)。
+const CACHE_VERSION = 'v0.2.58.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

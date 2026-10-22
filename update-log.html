@@ -178,6 +178,7 @@
           <li><strong>语音通话结束后总结记忆，一直报「404 - Invalid URL」</strong> —— 弹窗写的是 <code>API 请求失败: 404 - Invalid URL (POST /v1/v1/chat/completions)</code>，通话记录一个字都没总结出来。换谷歌直连就正常，OpenAI 那个站点死活不行。</li>
           <li>真凶是<strong>地址里多拼了一个 /v1</strong>：你在 API 预设里填的站点地址本来就自带 /v1，程序又在后面拼了一次，于是变成 /v1/v1/chat/completions，中转网关当然认不出这条路由。现在改成<strong>只补 /chat/completions，绝不再自动补 /v1</strong>。</li>
           <li><strong>视频通话那条路一起修好了</strong> —— 语音通话、视频通话、通话记录里手动点「总结」这三处走的是同一个函数，改一处三处都活。</li>
+          <li><strong>结构化记忆的两个按钮也一起修了</strong> —— 「把长期记忆转成结构化记忆」和结构化记忆里的「新消息总结 / 范围总结」也是同一个毛病（地址自带 /v1 又被拼了一次）。它俩以前<strong>把报错吞了</strong>：一个只弹"可能原因：Token 数量过多 / AI 返回格式不符合"，一个弹"总结失败：API 错误:"后面还是空的 —— 所以一直没人发现它们其实是坏的，看着都像"记忆太多转不动"。</li>
         </ul>
       </div>
     </div>

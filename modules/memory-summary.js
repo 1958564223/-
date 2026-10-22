@@ -2155,7 +2155,8 @@ async function convertLongTermMemoryToStructured(chatId) {
 
         const response = isGemini
           ? await fetch(geminiConfig.url, geminiConfig.data)
-          : await fetch(`${proxyUrl}/v1/chat/completions`, {
+          // 站点地址自带 /v1, 只补 /chat/completions (再补一次 /v1 → /v1/v1 → 404)
+          : await fetch(`${proxyUrl.trim().replace(/\/+$/, '')}/chat/completions`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
               body: JSON.stringify({
@@ -2633,7 +2634,8 @@ async function executeStructuredSummary(chat, messages, updateTimestamp = false)
 
   const response = isGemini
     ? await fetch(geminiConfig.url, geminiConfig.data)
-    : await fetch(`${proxyUrl}/v1/chat/completions`, {
+    // 站点地址自带 /v1, 只补 /chat/completions (再补一次 /v1 → /v1/v1 → 404)
+    : await fetch(`${proxyUrl.trim().replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify({
