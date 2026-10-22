@@ -225,7 +225,20 @@
 //   · 顺手补上 callHistory 的 senderName —— 以前缺这一项, 记忆总结里 AI 那几行
 //     全顶着 "undefined: ", 现在是 "对方名字: 说话内容" (用角色实际名字, 不写死)。
 //   index.html 的 ?v= 已 bump (video-voice-call.js 0.0.81→0.0.82, misc-features.js 0.0.43→0.0.44)。
-const CACHE_VERSION = 'v0.2.60.0';
+// v0.2.61.0 (2026-10-22): 修「今日私选」每首歌的推荐理由一模一样。
+//   症状: 整张卡的理由全是 "来自 X，跟你最近在听的是同一个方向。", 一点推荐味都没有。
+//   真凶: 引擎读的是 state.apiConfig.proxyUrl/apiKey, 而站点预设启用后这两个字段
+//   会被【清空】(只留预设引用) → callLLM 直接抛 "AI 接口没配置" → LLM 压根没被调用
+//   → 整轮走确定性兜底 → 兜底的理由是写死的一句模板 → 每首都一样。
+//   (实测: 拿 git HEAD 的旧引擎跑新用例, 日志原样打这句, 理由和用户截图一模一样)
+//   修法 (js/music-daily-discovery.js):
+//   · callLLM 改走 resolveApiSlotConfig('main') 拿 API 配置 (跟项目其它地方一致),
+//     拿不到才回落到 state.apiConfig —— 站点预设模式下 LLM 终于能跑起来了;
+//   · 兜底理由改成 4 句轮换, 不再整张卡一句话;
+//   · 模型要是偷懒把十几首写成同一句理由, 会被检测出来并换掉;
+//   · 提示词加一条: 每首的理由必须针对这一首本身, 不许套同一句模板。
+//   index.html 的 ?v= 已 bump (music-daily-discovery.js 0.0.2→0.0.3)。
+const CACHE_VERSION = 'v0.2.61.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

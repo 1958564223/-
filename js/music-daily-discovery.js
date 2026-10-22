@@ -651,8 +651,9 @@
       '3. 但也要留 3-5 首贴近上面的口味参考, 整体不要跑偏到跟他完全无关的东西',
       '4. 同一个歌手最多 2 首 (除非用户说过"多推这种")',
       '5. 每首写一句推荐理由: 中文, 25 字以内, 要具体说清为什么推给他, 不要写"很好听""必听"这种空话',
-      '6. 每首给一个标签, 只能从这四个里选: 稳准、旁白、私心、小冒险',
-      '7. 最后写一句开场 note: 中文, 25 字以内, 像是这个角色自己说的话',
+      '6. 每首的理由必须针对【这一首】本身(它的歌手 / 情绪 / 适合什么时候听), 不许把同一句话套到多首歌上',
+      '7. 每首给一个标签, 只能从这四个里选: 稳准、旁白、私心、小冒险',
+      '8. 最后写一句开场 note: 中文, 25 字以内, 像是这个角色自己说的话',
       '',
       '# 输出格式（只输出 JSON，不要任何解释文字）',
       '{"note":"...","songs":[{"id":123,"reason":"...","tag":"小冒险"}]}',
@@ -677,7 +678,21 @@
 
   async function callLLM(prompt) {
     const st = global.state || {};
-    const cfg = st.apiConfig || {};
+    let cfg = st.apiConfig || {};
+    // ⚠️ 必须走 resolveApiSlotConfig('main') (2026-10-22 用户实测: 每首歌的推荐理由一模一样)。
+    //   站点预设启用后, state.apiConfig 里的 proxyUrl / apiKey 会被【清空】(只留预设引用),
+    //   直接读 state.apiConfig 拿到的是空串 → 下面直接抛"AI 接口没配置"
+    //   → 整个策展走确定性兜底 → 每首歌的理由都是同一句写死的模板, 整张卡像复制粘贴。
+    if (typeof global.resolveApiSlotConfig === 'function') {
+      try {
+        const resolved = await global.resolveApiSlotConfig('main');
+        if (resolved && resolved.proxyUrl && resolved.apiKey && resolved.model) {
+          cfg = resolved;
+        }
+      } catch (e) {
+        console.warn('[daily-discovery] resolveApiSlotConfig 失败, 回落到 state.apiConfig:', (e && e.message) || e);
+      }
+    }
     const proxyUrl = cfg.proxyUrl;
     const apiKey = cfg.apiKey;
     const model = cfg.model;
@@ -790,6 +805,22 @@
     return null;
   }
 
+  /**
+   * 兜底推荐理由 —— 按顺序轮换, 免得十几首歌全是同一句。
+   * (以前只有一句 "来自 X，跟你最近在听的是同一个方向。", 整张卡看着像复制粘贴)
+   */
+  const FALLBACK_REASON_TEMPLATES = [
+    (s) => `来自 ${s.artist}，跟你最近在听的是同一个方向。`,
+    (s) => `${s.artist} 这首你可能还没听过，但和你最近在听的是一个路子。`,
+    (s) => `换个歌手换个心情 —— ${s.artist}，风格跳了一点，底色还是对的。`,
+    (s) => `${s.artist} 往你的口味边上多走了一步，留着今天慢慢听。`,
+  ];
+
+  function buildFallbackReason(song, index) {
+    const tpl = FALLBACK_REASON_TEMPLATES[(index || 0) % FALLBACK_REASON_TEMPLATES.length];
+    return tpl(song);
+  }
+
   /** LLM 结果校验 —— 只接受白名单里的 id */
   function validateLLMResult(raw, pool, targetCount) {
     if (!raw || !Array.isArray(raw.songs)) return null;
@@ -812,7 +843,7 @@
       used.add(key);
       let reason = String(s.reason || '').replace(/\s+/g, ' ').trim();
       if (reason.length > 40) reason = reason.slice(0, 40);
-      if (!reason) reason = `来自 ${meta.artist}，跟你最近在听的很搭。`;
+      if (!reason) reason = buildFallbackReason(meta, songs.length);
       let tag = String(s.tag || '').trim();
       if (!CFG.tagWhitelist.includes(tag)) tag = '旁白';
       songs.push({
@@ -831,6 +862,12 @@
     });
 
     if (!songs.length) return null;
+    // 兜底: 模型偷懒, 十几首全写同一句理由 → 卡片看着像复制粘贴。
+    // 只在【理由全都一模一样】时才重写(歌和标签仍用模型挑的), 换成按歌轮换的说法。
+    if (songs.length > 1 && new Set(songs.map((s) => s.reason)).size === 1) {
+      songs.forEach((s, i) => { s.reason = buildFallbackReason(s, i); });
+      console.warn('[daily-discovery] 模型给的推荐理由全都一样, 已换成轮换说法');
+    }
     const note = String(raw.note || '').replace(/\s+/g, ' ').trim().slice(0, 50);
     const limit = targetCount || songs.length;
     return { note, songs: songs.slice(0, limit) };
@@ -867,7 +904,7 @@
           cover: c.cover || '',
           duration: c.duration || 0,
           fee: c.fee,
-          reason: `来自 ${c.artist}，跟你最近在听的是同一个方向。`,
+          reason: buildFallbackReason(c, songs.length),
           tag: isBoost ? '私心' : (round === 0 ? '稳准' : '小冒险'),
         });
         added = true;

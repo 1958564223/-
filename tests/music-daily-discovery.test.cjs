@@ -278,6 +278,9 @@ function makeSandbox(opts) {
     }, options.state || {}),
     showToast: (msg, type) => { toasts.push({ msg, type }); },
     isMainApiProxyEnabled: () => true,
+    // 站点预设解析器 —— 引擎现在必须走它拿 API 配置 (见 ⑬ 号用例)。
+    // 默认给 null, 引擎就回落到 state.apiConfig (老行为, 现有用例不受影响)。
+    resolveApiSlotConfig: options.resolveApiSlotConfig || null,
     fetchViaOpenAICompatibleProxy: async (req) => {
       llmRequests.push(req);
       if (options.llmError) throw new Error(options.llmError);
@@ -666,6 +669,68 @@ async function main() {
       check('生成卡住时会超时报错 (不会无限等)',
         !!err && /超时/.test(String(err.message || err)),
         err ? String(err.message || err) : '没报错 —— 又能无限等了');
+    }
+  }
+
+  // ------------------------------------------------------------
+  section('⑬ 推荐理由不许千篇一律 (2026-10-22 用户实测)');
+  {
+    // 【背景】用户实测: 「今日私选」里每首歌的推荐理由一模一样
+    //   ("来自 X，跟你最近在听的是同一个方向。"), 一点推荐味都没有。
+    //   真凶: 引擎读的是 state.apiConfig.proxyUrl/apiKey, 而站点预设启用后
+    //   这两个字段会被【清空】(只留预设引用) → LLM 压根没被调用
+    //   → 整轮走确定性兜底 → 兜底理由是写死的一句模板 → 每首都一样。
+    const netease2 = makeNetease({
+      recommend: [{ id: '800', name: '歌甲', artist: '甲', artists: [{ id: 1, name: '甲' }], album: '', cover: '', duration: 1 }],
+      searchResults: [{ id: '900', name: '歌乙', artist: '乙', artists: [{ id: 2, name: '乙' }], album: '', cover: '', duration: 1 }],
+    });
+
+    // ---- ① 站点预设模式下, 仍然要能调到 LLM ----
+    {
+      const { sandbox, llmRequests } = makeSandbox({
+        netease: netease2,
+        // 站点预设模式的真实现象: state.apiConfig 里的地址/密钥被清空了
+        state: { apiConfig: { proxyUrl: '', apiKey: '', model: 'test-model' } },
+        resolveApiSlotConfig: async (slot) => ({
+          slot, proxyUrl: 'https://api.example/v1', apiKey: 'sk-test', model: 'test-model',
+        }),
+      });
+      const card = await sandbox.MusicDailyDiscovery.generate('chat-1');
+      check('站点预设模式下仍然调到了 LLM (不是直接兜底)', llmRequests.length > 0,
+        'LLM 请求数=' + llmRequests.length);
+      check('理由来自模型而不是兜底模板',
+        (card.songs || []).some((s) => /模型给的理由/.test(s.reason || '')),
+        (card.songs || []).map((s) => s.reason).join(' | '));
+    }
+
+    // ---- ② 模型偷懒, 所有理由写成同一句 → 要被换掉 ----
+    {
+      const { sandbox } = makeSandbox({
+        netease: netease2,
+        llmResponse: JSON.stringify({
+          note: '今天想给你点安静的',
+          songs: [
+            { id: '800', reason: '都很好听', tag: '稳准' },
+            { id: '900', reason: '都很好听', tag: '小冒险' },
+          ],
+        }),
+      });
+      const card = await sandbox.MusicDailyDiscovery.generate('chat-1');
+      const reasons = (card.songs || []).map((s) => s.reason);
+      check('模型给的推荐理由全都一样时会被换掉', new Set(reasons).size > 1,
+        reasons.join(' | '));
+    }
+
+    // ---- ③ LLM 挂掉 → 确定性兜底的理由也不能千篇一律 ----
+    {
+      const { sandbox } = makeSandbox({ netease: netease2, llmError: 'network down' });
+      const card = await sandbox.MusicDailyDiscovery.generate('chat-1');
+      const reasons = (card.songs || []).map((s) => s.reason);
+      // ⚠️ 比"句式"不比整句 —— 兜底模板里带着歌手名, 整句永远不同,
+      //   但用户看到的是"除了歌手名其它一模一样"。所以把歌手名抠掉再比。
+      const patterns = (card.songs || []).map((s) => String(s.reason || '').split(s.artist).join('*'));
+      check('LLM 挂掉时兜底理由也不再千篇一律 (抠掉歌手名后仍要不同)', new Set(patterns).size > 1,
+        reasons.join(' | '));
     }
   }
 
