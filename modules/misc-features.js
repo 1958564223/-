@@ -1552,7 +1552,7 @@
       let isGemini = proxyUrl === GEMINI_API_URL;
       let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, messagesForApi);
 
-      const response = isGemini ? await fetch(geminiConfig.url, geminiConfig.data) : await fetch(`${proxyUrl}/v1/chat/completions`, {
+      const response = isGemini ? await fetch(geminiConfig.url, geminiConfig.data) : await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -3833,7 +3833,7 @@ ${allowRandom ? "- 允许生成随机路人/广告/通知" : ""}
 
       const response = isGemini ?
         await fetch(apiConfig.url, apiConfig.data) :
-        await fetch(`${proxyUrl}/v1/chat/completions`, {
+        await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
           body: JSON.stringify({ model: model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Generate ${genCount} emails` }], temperature: 1.0 })

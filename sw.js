@@ -290,14 +290,25 @@
 //     · sticker-vision.js        表情包识图 (识图专用槽位配了预设时静态字段被清空 → 误回退主 API)
 //     · couple-space.js          情侣空间 (41 处调用全部改成实时解析 couplespace 槽位)
 //   · modules/floating-ball.js 的"保存当前配置为预设"不再存下一个空预设。
-//   ⚠️ 全项目还有十几处无条件拼 `${proxyUrl}/v1/chat/completions` 的地方
-//     (werewolf / ai-group / misc-features / auction / avatar-library /
-//      data-management / init-event-bindingsB / ai-response 直连分支) ——
-//     那是【用户自己正在改的活】, 本次没动。
 //   index.html 的 ?v= 已 bump 10 个文件 (couple-space / character-generator /
 //   focus-timer / sticker-vision / green-river / floating-ball / api-endpoint-presets /
 //   settings-presets / init-and-state / init-event-bindingsA)。
-const CACHE_VERSION = 'v0.2.64.0';
+// v0.2.65.0 (2026-10-23): 全项目不再自动补 /v1 —— 22 处拼地址的地方统一成主聊天写法。
+//   起因: 站点预设里用户填的地址【本来就带 /v1】(用户原话: "全项目所有用户填的都带 v1")。
+//     所以程序只该补 /chat/completions; 再补一次 /v1 就变成 /v1/v1/chat/completions,
+//     中转网关直接回 404 "Invalid URL" —— 几天前"通话记忆总结"报的就是这个。
+//   改法: 22 处统一成 `` `${proxyUrl.replace(/\/+$/, '')}/chat/completions` ``:
+//     · 无条件补 /v1 的 16 处 —— ai-group ×2、ai-response ×3(直连分支)、
+//       auction、avatar-library、data-management、init-event-bindingsB、
+//       misc-features ×2、werewolf ×5;
+//     · "带不带 /v1 都判断一下" 的 6 处 —— init-features ×3、green-river ×2、
+//       character-generator ×1 (它的"智能补全"三行也一并收成一行)。
+//   ⚠️ 别误伤: js/mcp-tool-bridge.js 里那几处 /v1/chat/completions 是【匹配地址】用的
+//     (最终 URL 本来就该含 /v1), 不是拼地址, 保持原样。
+//   index.html 的 ?v= 已 bump 11 个文件 (ai-group / ai-response / auction /
+//   avatar-library / data-management / init-event-bindingsB / init-features /
+//   misc-features / werewolf / character-generator / green-river)。
+const CACHE_VERSION = 'v0.2.65.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

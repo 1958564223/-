@@ -2108,7 +2108,7 @@ ${linkedContents}
         let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, messagesPayload);
         response = await fetch(geminiConfig.url, withCurrentAiSignal(geminiConfig.data));
       } else {
-        response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+        response = await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -2796,7 +2796,7 @@ ${linkedContents}
 
           const response = isGemini ?
             await fetch(geminiConfig.url, withCurrentAiSignal(geminiConfig.data)) :
-            await fetch(`${proxyUrl}/v1/chat/completions`, {
+            await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -8471,7 +8471,7 @@ ${linkedContents}
 
       const response = isGemini ?
         await fetch(geminiConfig.url, withCurrentAiSignal(geminiConfig.data)) :
-        await fetch(`${proxyUrl}/v1/chat/completions`, {
+        await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

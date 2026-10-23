@@ -3339,7 +3339,7 @@ async function cleanupRedundantData() {
 
           const response = isGemini
             ? await fetch(geminiConfig.url, geminiConfig.data)
-            : await fetch(`${proxyUrl}/v1/chat/completions`, {
+            : await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
                 body: JSON.stringify({

@@ -1058,10 +1058,11 @@
             };
             console.log('使用OpenAI格式，请求体:', JSON.stringify(payload, null, 2));
 
-            // 智能补全：用户填到版本号（/v1 /v2 ...）就只补 /chat/completions，没填就保底补 /v1/chat/completions
-            const trimmed = proxyUrl.replace(/\/$/, '');
-            const hasVersion = /\/v\d+$/.test(trimmed);
-            const apiBase = hasVersion ? trimmed : `${trimmed}/v1`;
+            // 站点地址是用户自己在 API 预设里填全的, 【本来就带 /v1】,
+            //   这里【只补 /chat/completions】—— 再补一次 /v1 会变成
+            //   /v1/v1/chat/completions, 中转网关直接回 404 "Invalid URL"。
+            //   跟主聊天 (modules/ai-response.js 的 mainChatCompletionsUrl) 一个写法。
+            const apiBase = proxyUrl.replace(/\/+$/, '');
 
             response = await fetch(`${apiBase}/chat/completions`, {
                 method: 'POST',

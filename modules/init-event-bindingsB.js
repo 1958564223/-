@@ -4701,7 +4701,7 @@ ${allowRandom ? "- 允许生成随机路人/系统通知/垃圾邮件 (如: 银�
 
         const response = isGemini ?
           await fetch(config.url, config.data) :
-          await fetch(`${proxyUrl}/v1/chat/completions`, {
+          await fetch(`${proxyUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
             body: JSON.stringify({ model: model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Generate ${genCount} emails` }], temperature: 1.0 })

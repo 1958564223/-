@@ -1005,7 +1005,7 @@ ${prevSummary}
         let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, messages);
         response = await fetch(geminiConfig.url, geminiConfig.data);
       } else {
-        const apiUrl = proxyUrl.endsWith('/v1') ? `${proxyUrl}/chat/completions` : `${proxyUrl}/v1/chat/completions`;
+        const apiUrl = `${proxyUrl.replace(/\/+$/, '')}/chat/completions`;
         response = await fetch(apiUrl, {
           method: 'POST',
           headers: {
@@ -1760,7 +1760,7 @@ ${updatePrompt}
           max_tokens: Math.min(4096, targetWordCount * 3) // 增加max_tokens，至少3倍目标字数
         };
 
-        const apiUrl = apiConfig.proxyUrl.endsWith('/v1') ? `${apiConfig.proxyUrl}/chat/completions` : `${apiConfig.proxyUrl}/v1/chat/completions`;
+        const apiUrl = `${apiConfig.proxyUrl.replace(/\/+$/, '')}/chat/completions`;
         response = await fetch(apiUrl, {
           method: 'POST',
           headers: {

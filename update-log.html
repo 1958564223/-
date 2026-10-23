@@ -166,11 +166,27 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.36 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.36</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>全项目不再自动补 /v1 了</strong> —— 你在 API 预设里填的站点地址<strong>本来就带 /v1</strong>，程序只要在后面补一个 <code>/chat/completions</code> 就够了。以前还有些地方会多补一次 <code>/v1</code>，地址就变成了 <code>/v1/v1/chat/completions</code>，中转网关直接回 404「Invalid URL」—— 就是前几天「通话记忆总结」报的那个毛病，一个模子。</li>
+          <li>这次把<strong>剩下 22 处</strong>全统一了：<strong>狼人杀</strong>（讨论发言）、<strong>群聊</strong>（后台活动 / 主动消息）、<strong>拍卖</strong>（出新品）、<strong>头像库</strong>、<strong>真心话大冒险</strong>（AI 出题 / 作答 / 观战评论）、<strong>AI 绘图</strong>、<strong>世界书</strong>、<strong>记忆提取</strong>、<strong>AI 好友申请</strong>、<strong>角色生成</strong>、<strong>绿水续写 / 作者追更</strong>，还有 3 处「看情况补不补 /v1」的写法也一并收成了一种。</li>
+          <li>顺带把<strong>主聊天那三个分支</strong>（群聊旁白的直连、主动决策、推进模式）也统一了 —— 它们跟主聊天主体本来就不一样，现在完全一致。</li>
+          <li><strong>以后所有 AI 功能的地址是同一种写法了</strong>（连地址结尾多个斜杠的情况也一起处理），以后再加新功能照着抄就行，不会再出现「主聊天好好的、别的功能却 404」的怪事。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.35 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.35</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-23</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>
