@@ -286,7 +286,23 @@ async function main() {
 
     const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
     check('sw.js 预缓存了 modules/cinema-chat.js', /'\.\/modules\/cinema-chat\.js'/.test(sw));
-    check('CACHE_VERSION 已 bump', /const CACHE_VERSION = 'v0\.2\.67\.0'/.test(sw));
+    // 【2026-10-23 改】原来这里写死 'v0.2.67.0', 后面任何一次 CACHE_VERSION bump
+    // (比如宠物屋上线 bump 到 v0.2.68.0) 都会把这个测试弄红 —— 但那不是回归。
+    // 本意是「加 cinema-chat 时 bump 过 CACHE_VERSION, 不能是加它之前的旧版本」,
+    // 所以改成比版本号, 以后再 bump 也不会误报。
+    const m = sw.match(/const CACHE_VERSION\s*=\s*'v(\d+)\.(\d+)\.(\d+)\.(\d+)'/);
+    const ver = m ? [+m[1], +m[2], +m[3], +m[4]] : null;
+    // 版本号逐段比：先比到第一段不一样的为止，那段大就够新
+    const atLeast = (v, min) => {
+      if (!v) return false;
+      for (let i = 0; i < min.length; i++) {
+        if (v[i] > min[i]) return true;
+        if (v[i] < min[i]) return false;
+      }
+      return true;
+    };
+    check('CACHE_VERSION 已 bump（>= v0.2.67.0）', atLeast(ver, [0, 2, 67, 0]),
+      ver ? 'v' + ver.join('.') : 'not found');
   }
 
   // ------------------------------------------------------------

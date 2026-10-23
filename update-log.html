@@ -166,11 +166,43 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.39 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.39</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title new">新增</div>
+        <ul class="item-list">
+          <li><strong>「宠物屋」上线了</strong> —— 聊天界面右下角会有一只可以拖着走的小宠物，点它有菜单，能进它的小窝。里面可以领养、喂食、陪玩、摸摸，看它一点点长大。</li>
+          <li>小窝里的宠物<strong>不是贴图，是活的</strong>：饿了会冒气泡催你，饱了会顶到上限不让你再喂，成长值和相处天数一起决定它什么时候长大。</li>
+          <li>多了一种新成员：<strong>鹦鹉</strong>。它从蛋里出来，<strong>破壳的时候才定下品种</strong>（金太阳、太阳锥尾、牡丹、虎皮、金刚、青金刚、吸蜜、白化玄凤 —— 全是艳色的）；花纹看你们怎么相处，越亲越好看；养大了能<strong>羽化成神兽</strong>（朱雀 / 青鸾 / 雪羽鹓鶵 / 金辉鸾凤），<strong>羽化之后血脉不变</strong>，还是原来那只。</li>
+          <li>它<strong>会提醒你去给它画一张专属模样</strong>：破壳、长大、羽化都会当场喊你一声，小窝顶部有提示条，宠物头顶冒一个金色的点，点一下就能给它画。<strong>但生图不会自动触发</strong> —— 那是要花钱的，只有你自己点了才会画。</li>
+          <li>聊天里的角色也知道它存在：它会主动提你的宠物、主动想喂它，而且<strong>性格跟你在别处聊的是同一个</strong>。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title change">移除</div>
+        <ul class="item-list">
+          <li><strong>「邮箱」整个下线了</strong> —— 界面、写信那段逻辑、备份导出、图标槽位全删干净了，你的数据库里那个邮箱表也<strong>真的删掉了</strong>（不是只藏起来）。顺手把邮箱留下的样式也清了 481 行。</li>
+          <li>老备份里如果还有邮箱字段，导入时会被自动跳过，<strong>不会报错</strong>。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>桌宠之前点不动</strong> —— 你的原话是「点蛋弹出的隐藏和进小屋都没用」「难道电脑点击不行要触摸」。真因不是要触摸：<strong>浏览器按下时会自动把指针锁在按下元素上</strong>，而代码没认出「按的是菜单里的按钮」，于是 click 被抢走，按钮的回调压根没跑。<strong>鼠标和触摸都不行</strong>，现在都修好了。</li>
+          <li><strong>还有「进去没有桌宠」</strong> —— 桌宠的显示逻辑装得太晚，你点进聊天页的时候它还没准备好。现在进聊天页<strong>一秒内就出来</strong>，还会盯着当前在哪个界面自动收起。</li>
+          <li>桌宠被弹窗挡住的时候<strong>会自己让位藏起来</strong>，关掉弹窗自己回来 —— 不会再出现「看着在那儿、点却没反应」的情况。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.38 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.38</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-23</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

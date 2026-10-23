@@ -5535,16 +5535,6 @@ ${finalInstruction}
         }
       });
     }
-    // 绑定邮箱底部按钮事件
-    const deleteSelectedBtn = document.getElementById('mail-delete-selected-btn');
-    if (deleteSelectedBtn) {
-      deleteSelectedBtn.addEventListener('click', window.executeBatchDeleteEmails);
-    }
-
-    const selectAllBtn = document.getElementById('mail-select-all-btn');
-    if (selectAllBtn) {
-      selectAllBtn.addEventListener('click', window.handleSelectAllEmails);
-    }
     document.getElementById('manage-rules-btn').addEventListener('click', toggleRuleManagementMode);
     document.getElementById('import-rules-btn').addEventListener('click', () => {
       document.getElementById('import-rules-input').click();

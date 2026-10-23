@@ -335,7 +335,23 @@
 //     因为主 API 看不见画面, 只能靠这句知道自己"刚刚"看到的是什么。
 //   index.html 的 ?v= 已 bump 1 个文件 (cinema-live.js 1.9.6 → 1.9.7),
 //   新挂 modules/cinema-chat.js?v=0.0.1, sw.js 预缓存清单也加了它 —— 所以要 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.67.0';
+// v0.2.68.0 (2026-10-23): 宠物屋 (Cove 灵宠屋前端移植版) 上线 + 邮箱整体下线。
+//   宠物屋: 新增 modules/pet-nest.js + css/pet-nest.css + assets/pet-nest/4 张 starter 图集
+//     (共 ~590KB)。必须预缓存 —— 断网时小窝要能打开, 聊天界面角上的桌宠也要有图。
+//     index.html 新挂了 script/link 标签, SW 缓存了旧 index.html 就会漏掉 → 手机上整个宠物屋不出现。
+//   邮箱: 整体下线 (index.html 界面 + misc-features.js 的邮件段 + init-event-bindingsB.js 的
+//     两处写信生成器 + 备份导出 + 图标槽位)。主库 db.version(71) 把 emails 表真正删掉
+//     (Dexie 只从 .stores() 删名字是没用的, 必须在更高版本里设成 null)。
+//     index.html 的 init-db-schema.js ?v= 已 bump (0.0.42 → 0.0.43), 忘了手机就不升版。
+//   所以要 bump CACHE_VERSION。
+// v0.2.69.0 (2026-10-23): 宠物屋补「回到来处」返回键。
+//   index.html 的 .pn-header 里多了 <button id="pn-back-btn">,
+//   modules/pet-nest.js 的 ?v= 已 bump (0.0.1 → 0.0.2), css/pet-nest.css 的 ?v= 已 bump
+//     (0.0.2 → 0.0.3)。
+//   ⚠️ 但 index.html 自己【不带 ?v=】, sw.js 对它是 cache-first —— 只 bump 模块的 ?v=
+//     管不到 index.html, SW 会一直吐 v0.2.68.0 里缓存的旧 index.html, 返回键根本不出现。
+//     所以这里必须 bump CACHE_VERSION 让 SW 重装重缓存。
+const CACHE_VERSION = 'v0.2.69.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
@@ -399,7 +415,16 @@ const URLS_TO_CACHE = [
   './modules/cinema-chat.js',
   // 房间背景图 93KB, 预缓存是为了离线也能开房间 + 首屏不闪白。
   // jpg 兜底不预缓存 —— 只给不认 webp 的老 WebView 用, 按需拉就行。
-  './assets/cinema-room-bg.webp'
+  './assets/cinema-room-bg.webp',
+  // 2026-10-23 宠物屋 (Cove 灵宠屋前端移植版)。
+  // 4 张 starter 图集共 ~590KB, 必须预缓存 —— 断网时小窝要能打开, 桌宠也要有图。
+  './modules/pet-nest.js',
+  './modules/pet-image.js',
+  './css/pet-nest.css',
+  './assets/pet-nest/room-light.webp',
+  './assets/pet-nest/cat-sprites-light.webp',
+  './assets/pet-nest/dog-sprites-light.webp',
+  './assets/pet-nest/egg-sprites-light.webp'
 ];
 
 self.addEventListener('install', event => {
@@ -487,7 +512,13 @@ self.addEventListener('fetch', event => {
      url.includes('/lib/pixi.min.js') ||
      url.includes('/lib/pixi-live2d-display.cubism4.min.js') ||
      url.includes('/modules/live2d-loader.js') ||
-     url.includes('/modules/video-voice-call.js'));
+     url.includes('/modules/video-voice-call.js') ||
+     // v0.2.68.0 (2026-10-23): 宠物屋。4 张图集走 cache-first (不带 ?v=, 命中预缓存直接用),
+     //   js/css 带 ?v= 走 network-first + 缓存兜底 —— 改了能立刻生效, 断网也能起。
+     url.includes('/modules/pet-nest.js') ||
+     url.includes('/modules/pet-image.js') ||
+     url.includes('/css/pet-nest.css') ||
+     url.includes('/assets/pet-nest/'));
 
   const isKnownCDN =
     url.includes('unpkg.com/dexie') ||

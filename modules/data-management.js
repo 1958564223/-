@@ -263,7 +263,6 @@ async function cleanupRedundantData() {
         funds: '基金',
         auctions: '拍卖',
         inventory: '背包',
-        emails: '邮件'
       };
 
       // 统计各表数据
