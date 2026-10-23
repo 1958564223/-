@@ -723,34 +723,48 @@
         }
     };
 
-    // 获取API配置（从IndexedDB读取）
+    // 获取API配置（优先实时读 API 预设库, 拿不到才回落 IndexedDB）
     async function getApiConfig() {
         try {
-            // 检查window.db是否存在
-            if (!window.db) {
+            // ⚠️ 必须优先走 resolveApiSlotConfig —— 站点预设启用后,
+            //    IndexedDB 里那行的 proxyUrl/apiKey 会被【清空】(只留预设引用),
+            //    直接读它拿到的是空串 → 角色生成在预设模式下直接弹"请先配置 API"。
+            //    副 API 用 inheritMain:false —— 保持原语义: "副 API 自己配了才用副的"。
+            let mainResolved = null;
+            let secondaryResolved = null;
+            if (typeof window.resolveApiSlotConfig === 'function') {
+                try {
+                    mainResolved = await window.resolveApiSlotConfig('main');
+                    secondaryResolved = await window.resolveApiSlotConfig('secondary', { inheritMain: false });
+                } catch (e) {
+                    console.warn('[角色生成] 解析 API 预设失败, 回落到 IndexedDB:', (e && e.message) || e);
+                }
+            }
+
+            // 从IndexedDB读取apiConfig (老逻辑, 现在只当回落)
+            let apiConfig = null;
+            if (window.db) {
+                apiConfig = await window.db.apiConfig.get('main');
+            } else if (!mainResolved) {
                 console.error('IndexedDB (window.db) 未初始化');
                 return null;
             }
 
-            console.log('从IndexedDB读取API配置...');
-            
-            // 从IndexedDB读取apiConfig
-            const apiConfig = await window.db.apiConfig.get('main');
-            
             console.log('IndexedDB返回的配置:', apiConfig);
 
-            if (!apiConfig) {
+            if (!apiConfig && !mainResolved) {
                 console.error('IndexedDB中未找到API配置');
                 return null;
             }
 
+            const pick = (resolved, field) => (resolved && resolved[field]) || (apiConfig && apiConfig[field]) || '';
             const config = {
-                proxyUrl: apiConfig.proxyUrl || '',
-                apiKey: apiConfig.apiKey || '',
-                model: apiConfig.model || '',
-                secondaryProxyUrl: apiConfig.secondaryProxyUrl || '',
-                secondaryApiKey: apiConfig.secondaryApiKey || '',
-                secondaryModel: apiConfig.secondaryModel || ''
+                proxyUrl: pick(mainResolved, 'proxyUrl'),
+                apiKey: pick(mainResolved, 'apiKey'),
+                model: pick(mainResolved, 'model'),
+                secondaryProxyUrl: pick(secondaryResolved, 'proxyUrl'),
+                secondaryApiKey: pick(secondaryResolved, 'apiKey'),
+                secondaryModel: pick(secondaryResolved, 'model')
             };
 
             console.log('解析后的API配置:', {

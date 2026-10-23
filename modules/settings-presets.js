@@ -933,6 +933,11 @@
     if (typeof refreshAllEndpointPresetUi === 'function') {
       await refreshAllEndpointPresetUi();
     }
+    // 预设内容改了 → 刷新 state.apiConfig 里的地址/密钥快照,
+    // 否则正在用的那个预设改了地址, 其它读 state.apiConfig 的地方(几十处)还在用旧的。
+    if (typeof syncApiSlotConfigIntoState === 'function') {
+      await syncApiSlotConfigIntoState();
+    }
     alert('API 预设已保存！');
   }
 
@@ -957,6 +962,10 @@
       await loadApiPresetsDropdown();
       if (typeof refreshAllEndpointPresetUi === 'function') {
         await refreshAllEndpointPresetUi();
+      }
+      // 删掉的预设可能正被某个槽位引用 → 刷新快照, 让 state.apiConfig 反映真实情况
+      if (typeof syncApiSlotConfigIntoState === 'function') {
+        await syncApiSlotConfigIntoState();
       }
       alert('预设已删除。');
     }

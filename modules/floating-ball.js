@@ -821,6 +821,15 @@
         await db.globalSettings.put(state.globalSettings);
       }
 
+      // 换预设了 → 立刻把 state.apiConfig 里的地址/密钥刷新成【当前实际在用的】那套。
+      // 不刷新的话, 所有还读 state.apiConfig 的地方(几十处)会继续用旧地址,
+      // 最坑的是"旧地址 + 新模型"的错配 —— 悬浮球切预设后必现。
+      // ⚠️ 必须放在 db.apiConfig.put 之后 —— 免得把解析出来的地址/密钥写进库,
+      //    破坏"只存预设引用"的设计。
+      if (typeof syncApiSlotConfigIntoState === 'function') {
+        await syncApiSlotConfigIntoState();
+      }
+
       updateMainApiDisplayFromFloatingSwitch(preset.id, newMainModel);
 
       if (typeof refreshAllEndpointPresetUi === 'function') {
@@ -865,7 +874,13 @@
   async function saveCurrentApiPreset() {
     const name = await showCustomPrompt('保存 API 预设', '请输入预设名称');
     if (!name || !name.trim()) return;
-    
+
+    // ⚠️ 先把 state.apiConfig 刷新成【当前实际在用的】地址/密钥 ——
+    //    站点预设模式下, 静态字段会被清空, 直接存会存下一个空预设。
+    if (typeof syncApiSlotConfigIntoState === 'function') {
+      await syncApiSlotConfigIntoState();
+    }
+
     const presetData = {
       name: name.trim(),
       proxyUrl: state.apiConfig.proxyUrl || '',

@@ -266,7 +266,38 @@
 //     id 归一化认得 "186016.0" / 带空格 / "songId"/"song_id" 等各种写法;
 //     全程记账(strategy.llmDiag): 给了几条、认上几条、靠歌名救回几条、丢了几条。
 //   index.html 的 ?v= 已 bump (music-daily-discovery.js 0.0.4→0.0.5)。
-const CACHE_VERSION = 'v0.2.63.0';
+// v0.2.64.0 (2026-10-23): 「API 站点预设」的快照不同步 —— 换预设后几十处还在用旧地址。
+//   起因: 上一版「今日私选」修好后复查同类问题, 发现全项目读 state.apiConfig 的地方
+//     有几十处 (cphone / werewolf / 通话 / 狼人杀 / 专注计时 / 角色生成 / 表情包识图 …)。
+//   关键事实 (之前一直没搞清):
+//     · 站点预设启用后, 数据库里只留"预设引用", 静态 proxyUrl/apiKey 会被清空。
+//     · 应用启动时 (init-and-state.js) 会解析一次预设并【回填】进 state.apiConfig,
+//       所以这些地方平时是能用的 —— 这就是当年用户反问"悬浮球/情侣空间读
+//       state.apiConfig 怎么它们好好的"的答案。
+//     · 但那是【启动时的一份快照】。换一个预设之后, 只有"预设引用"变了, 快照还是旧的
+//       → 几十处继续用旧地址, 最坑的是"旧地址 + 新模型"的错配 (悬浮球切预设后必现)。
+//   修法:
+//   · 新增 syncApiSlotConfigIntoState() (modules/api-endpoint-presets.js):
+//     把各槽位【当前实际在用的】地址/密钥/模型同步回 state.apiConfig (只改内存)。
+//     换预设 / 改预设之后一律调它 —— 启动、保存设置、设置页换槽位预设、
+//     悬浮球换主 API 预设、预设库里改了或删了预设, 五个入口都接上了。
+//   · 真正坏掉的几处改成【实时读预设】(读 db 那行是救不回来的, 库里本来就只存引用):
+//     · character-generator.js  角色生成 (原来读 db.apiConfig 那行 → 预设模式下必然空)
+//     · focus-timer.js           专注计时 (同上; 顺带修掉无条件多拼 /v1 的老毛病 ——
+//       地址本来就带 /v1, 再补一次就变成 /v1/v1/… 404, 就是记忆总结那个毛病;
+//       现在跟主聊天一样【只补 /chat/completions】)
+//     · modules/green-river.js   绿水续写/作者追更 (同上)
+//     · sticker-vision.js        表情包识图 (识图专用槽位配了预设时静态字段被清空 → 误回退主 API)
+//     · couple-space.js          情侣空间 (41 处调用全部改成实时解析 couplespace 槽位)
+//   · modules/floating-ball.js 的"保存当前配置为预设"不再存下一个空预设。
+//   ⚠️ 全项目还有十几处无条件拼 `${proxyUrl}/v1/chat/completions` 的地方
+//     (werewolf / ai-group / misc-features / auction / avatar-library /
+//      data-management / init-event-bindingsB / ai-response 直连分支) ——
+//     那是【用户自己正在改的活】, 本次没动。
+//   index.html 的 ?v= 已 bump 10 个文件 (couple-space / character-generator /
+//   focus-timer / sticker-vision / green-river / floating-ball / api-endpoint-presets /
+//   settings-presets / init-and-state / init-event-bindingsA)。
+const CACHE_VERSION = 'v0.2.64.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

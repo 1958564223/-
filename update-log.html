@@ -166,11 +166,29 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.35 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.35</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>换 API 预设之后，其它功能还在用旧地址</strong> —— 悬浮球里换一个站点预设，主聊天立刻就换过去了，但<strong>专注计时、角色生成、表情包识图、情侣空间日记这些还在用换之前的地址</strong>，最坑的是会变成「旧地址 + 新模型」的错配。</li>
+          <li>真凶：站点预设模式下，数据库里<strong>只存「用了哪个预设」，不再存地址和密钥</strong>。程序启动时会读一次预设、把地址填回内存里，所以平时看着都好好的 —— 但那是<strong>启动时拍的那张快照</strong>。换了预设以后只有「引用」变了，快照还是旧的，几十处读它的功能就全在用旧地址。</li>
+          <li>修法：<strong>换预设 / 改预设之后，立刻把地址刷新一遍</strong>。设置页换槽位预设、悬浮球换主 API 预设、保存 API 设置、预设库里改了或删了预设 —— 五个入口全接上了。以后换完预设，所有功能立刻一起换过去。</li>
+          <li>另外<strong>有几处本来就一直是坏的</strong>，这次一并修了（它们读的是数据库里那一行，而那一行在预设模式下本来就是空的）：<strong>角色生成</strong>（预设模式下必然弹「请先配置 API」）、<strong>专注计时</strong>、<strong>绿水续写 / 作者追更</strong>（弹「API配置不完整」）、<strong>表情包识图</strong>（识图专用 API 配了预设的话，它会误以为你没配、偷偷回退到主 API）。</li>
+          <li><strong>情侣空间那一整套</strong>（日记、相册、树、清单、时光轴、信件…… 一共 41 处调用）也改成实时读「情侣空间专用 API」，配了专用站点的现在会真的用上。</li>
+          <li>顺手还修了两处小毛病：<strong>专注计时那个地址无条件多拼了一次 /v1</strong>（你的站点地址本来就带 /v1，再补一次就变成 /v1/v1/…，网关直接回 404，就是前几天记忆总结那个毛病）—— 现在跟主聊天一个写法，<strong>只补 /chat/completions</strong>；<strong>悬浮球「保存当前配置为预设」以前会存下一个空预设</strong>（预设模式下地址是空的），现在存的是真正在用的那套。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.34 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.34</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-23</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>
