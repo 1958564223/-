@@ -249,7 +249,24 @@
 //   · strategy.llmRanked 不再一律写 true —— 兜底时如实写 false + fallbackReason。
 //   以后再看到千篇一律的理由, 卡片上就写明原因, 不用再猜。
 //   index.html 的 ?v= 已 bump (music-daily-discovery.js 0.0.3→0.0.4)。
-const CACHE_VERSION = 'v0.2.62.0';
+// v0.2.63.0 (2026-10-23): 「今日私选」三条失败路径一起修 —— 不只是"写明原因", 还要让它们少发生。
+//   起因: 同一个症状(走进兜底)其实有三条路, 上一轮只做到了"让原因可见":
+//     ① 配置读不到 —— 预设解析成功、但 model 是空的时候, 代码把【整份配置丢掉】
+//        回落那个空的 state.apiConfig → 还是"没配置"。地址密钥有效就该用, 模型名单独兜。
+//     ② 30 秒超时 —— 提示词 ~3500 token(100 候选) + 输出 20 首带理由, 手机/免费额度上必然超。
+//     ③ 模型输出 id 对不上 → 一条不中就整轮作废 → 等于没策展成。
+//   修法 (js/music-daily-discovery.js):
+//   · 配置: 抽出 resolveLlmConfig(), 先 resolveApiSlotConfig('main') 再 state.apiConfig;
+//     只要地址+密钥有效就用, model 空了从 state.apiConfig / 预设里兜, 不再自己把配置扔了;
+//   · 超时: 提示词候选 100→60 砍掉一大截预填充; LLM 超时 30s→45s; 整轮总预算 90s→150s
+//     (原来 90s 顶不住"收集 + LLM + 格式重试"的最坏组合 → 硬超时让整轮直接报错, 一张卡都没有,
+//      比兜底出卡糟得多); 剩余预算不够再问一次时就不问, 直接兜底;
+//     浏览器 abort 出来的五花八门的错统一翻译成"AI 请求超时 (45 秒没回)"。
+//   · id 对不上: 校验改成三层匹配 —— id 精确命中 → id 没中就按歌名命中 → 都没有才丢;
+//     id 归一化认得 "186016.0" / 带空格 / "songId"/"song_id" 等各种写法;
+//     全程记账(strategy.llmDiag): 给了几条、认上几条、靠歌名救回几条、丢了几条。
+//   index.html 的 ?v= 已 bump (music-daily-discovery.js 0.0.4→0.0.5)。
+const CACHE_VERSION = 'v0.2.63.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

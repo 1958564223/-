@@ -166,11 +166,30 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.34 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.34</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>「今日私选」会让 AI 掉链子的三个地方，这次一起修了</strong> —— 上一版只是让「AI 没接上」这件事<strong>看得见</strong>，但那三个地方本身还在。这版是<strong>让它们少发生</strong>。</li>
+          <li><strong>① 地址明明读到了，程序却自己把它扔了</strong> —— 以前是「预设读成功、但模型名那一栏是空的」就把整份配置丢掉，回落到那个本来就空的输入框，等于白读一次。现在改成：<strong>地址和密钥有效就用，模型名单独去别处兜</strong>，不会再自己把已经拿到手的东西丢掉。</li>
+          <li><strong>② 30 秒超时，对手机和免费额度来说太紧了</strong> —— 以前一次要问 AI <strong>100 首候选</strong>、再让它写出 20 首带理由的话，光「读」就要十几秒，「写」又要二三十秒，必定超。现在<strong>候选砍到 60 首</strong>（挑 20 首绰绰有余）、<strong>超时放宽到 45 秒</strong>，整轮的总预算也<strong>从 90 秒放宽到 150 秒</strong>。</li>
+          <li>整轮预算这条特别关键：以前<strong>最坏情况会顶到总预算 → 整轮直接报错、一张卡都没有</strong>，那比「退而求其次出一张卡」糟得多。现在<strong>剩下的时间不够再问一次 AI 时就不问了</strong>，直接出兜底卡，保证你总能拿到卡。</li>
+          <li><strong>③ AI 给的歌曲对不上，整轮就白跑了</strong> —— 以前歌曲 id 有一个对不上就被丢掉，对不上就等于没策展成。现在改成<strong>三层匹配</strong>：id 对得上就用；id 没对得上就<strong>按歌名去认</strong>（AI 抄错 id 是常事，歌名对得上照样算它选对了）；两样都对不上才丢 —— <strong>放宽归放宽，白名单外编出来的歌还是进不来</strong>。</li>
+          <li>顺带认得下 AI 各种奇怪写法：<strong>字段叫 songId / song_id 也认，id 写成「186016.0」或者前后带空格也认</strong>。</li>
+          <li><strong>以后再出问题，猜都不用猜了</strong> —— 这张卡里会记一份对账表（AI 给了几条、认上几条、靠歌名救回几条、丢了几条），卡片上写「这次 AI 没接上」的时候，原因和细节都在里面。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.33 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.33</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-22</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

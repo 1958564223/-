@@ -30,15 +30,23 @@
   const CFG = {
     targetCount: 20,          // 最终出多少首
     maxQueries: 8,            // 最多几个搜索查询 (再多是浪费 —— 每次都要跑一趟网络)
-    maxCandidates: 100,       // 喂给 LLM 的候选上限
+    maxCandidates: 60,        // 喂给 LLM 的候选上限
+                               // ⚠️ 原来 100 太长: 光"预填充"就要 3000+ token,
+                               //    手机上 / 免费额度模型光预填充就能吃掉十几秒 —— 直接顶到超时。
+                               //    60 首候选挑 20 首绰绰有余。
     verifyBatch: 50,          // 批量验可播的批大小
     verifyConcurrency: 3,     // 验可播的批并发数
     searchConcurrency: 4,     // 搜索并发数
     maxPerArtist: 2,          // 每位歌手最多几首
     maxPerArtistBoost: 4,     // 被"多推这种"的歌手放宽到几首
     maxPerArtistHard: 4,      // 硬上限 —— 凑不够歌时最多放宽到这么多, 再多宁可给张小卡
-    llmTimeoutMs: 30000,      // LLM 策展超时
-    totalTimeoutMs: 90000,    // 整轮生成的总预算 —— 到了就停, 绝不无限等
+    llmTimeoutMs: 45000,      // LLM 策展超时
+                               // ⚠️ 原来 30 秒太紧: 提示词 ~2000 token + 输出 20 首带理由 (~600 token),
+                               //    免费额度模型光"生成"就得 30-50 秒 → 必然超时 → 整轮走兜底。
+    totalTimeoutMs: 150000,   // 整轮生成的总预算 —— 到了就停, 绝不无限等
+                               // ⚠️ 原来 90 秒不够: 候选收集 + LLM(45s) + 格式重试(再 45s)
+                               //    最坏能到 130 秒 —— 顶到总预算就变成【整轮硬报错, 一张卡都没有】,
+                               //    比"兜底出卡"糟得多。
     feedbackLimit: 500,       // 反馈最多留多少条
     startupDelayMs: 6000,     // App 启动后等多久开始生成
     tagWhitelist: ['稳准', '旁白', '私心', '小冒险'],
@@ -647,6 +655,7 @@
       '',
       '# 规则',
       `1. 挑 ${targetCount} 首, id 必须原样来自上面的候选列表`,
+      '1b. 每首还要把 name (歌名) 原样照抄一份 —— id 抄错了还能靠歌名救回来, 两样都写最保险',
       '2. 这批歌要有惊喜 —— 用户要的是没听过的新东西, 优先选候选里相对陌生、但气质对得上的',
       '3. 但也要留 3-5 首贴近上面的口味参考, 整体不要跑偏到跟他完全无关的东西',
       '4. 同一个歌手最多 2 首 (除非用户说过"多推这种")',
@@ -656,7 +665,7 @@
       '8. 最后写一句开场 note: 中文, 25 字以内, 像是这个角色自己说的话',
       '',
       '# 输出格式（只输出 JSON，不要任何解释文字）',
-      '{"note":"...","songs":[{"id":123,"reason":"...","tag":"小冒险"}]}',
+      '{"note":"...","songs":[{"id":123,"name":"歌名","reason":"...","tag":"小冒险"}]}',
     ].filter((l) => l !== undefined).join('\n');
   }
 
@@ -676,27 +685,65 @@
     }
   }
 
-  async function callLLM(prompt) {
+  /**
+   * 拿 LLM 要用的 API 配置。
+   *
+   * ⚠️ 必须优先走 resolveApiSlotConfig('main') (2026-10-22 用户实测: 每首歌的推荐理由一模一样)。
+   *   站点预设启用后, state.apiConfig 里的 proxyUrl / apiKey 会被【清空】(只留预设引用),
+   *   直接读 state.apiConfig 拿到的是空串 → 抛"AI 接口没配置"
+   *   → 整个策展走确定性兜底 → 每首歌的理由都是同一句写死的模板, 整张卡像复制粘贴。
+   *
+   * ⚠️ 但也别矫枉过正: 之前这里写的是
+   *      if (resolved.proxyUrl && resolved.apiKey && resolved.model) cfg = resolved;
+   *   —— 预设解析成功、【只有 model 是空的】的时候, 整份配置被丢掉,
+   *      回落到那个空的 state.apiConfig → 还是"没配置"。
+   *      地址和密钥有效就该用, 模型名单独兜。
+   *
+   * 写法跟主聊天 (modules/ai-response.js) 一致: 先 resolveApiSlotConfig, 再 state.apiConfig。
+   */
+  async function resolveLlmConfig() {
     const st = global.state || {};
-    let cfg = st.apiConfig || {};
-    // ⚠️ 必须走 resolveApiSlotConfig('main') (2026-10-22 用户实测: 每首歌的推荐理由一模一样)。
-    //   站点预设启用后, state.apiConfig 里的 proxyUrl / apiKey 会被【清空】(只留预设引用),
-    //   直接读 state.apiConfig 拿到的是空串 → 下面直接抛"AI 接口没配置"
-    //   → 整个策展走确定性兜底 → 每首歌的理由都是同一句写死的模板, 整张卡像复制粘贴。
+    const fromState = st.apiConfig || {};
+
+    let resolved = null;
     if (typeof global.resolveApiSlotConfig === 'function') {
       try {
-        const resolved = await global.resolveApiSlotConfig('main');
-        if (resolved && resolved.proxyUrl && resolved.apiKey && resolved.model) {
-          cfg = resolved;
-        }
+        resolved = await global.resolveApiSlotConfig('main');
       } catch (e) {
         console.warn('[daily-discovery] resolveApiSlotConfig 失败, 回落到 state.apiConfig:', (e && e.message) || e);
       }
     }
+
+    const pick = (src) => {
+      if (!src) return null;
+      const proxyUrl = String(src.proxyUrl || '').trim();
+      const apiKey = String(src.apiKey || '').trim();
+      if (!proxyUrl || !apiKey) return null;
+      return { proxyUrl, apiKey, model: String(src.model || '').trim() };
+    };
+
+    const fromResolved = pick(resolved);
+    if (fromResolved) {
+      if (!fromResolved.model) {
+        const preset = resolved && resolved.preset;
+        fromResolved.model = String((fromState && fromState.model) || '').trim()
+          || String((preset && (preset.model || preset.defaultModel)) || '').trim();
+      }
+      return fromResolved;
+    }
+
+    const fallback = pick(fromState);
+    if (fallback) return fallback;
+
+    throw new Error('AI 接口没配置 (apiConfig.proxyUrl / apiKey)');
+  }
+
+  async function callLLM(prompt) {
+    const cfg = await resolveLlmConfig();
     const proxyUrl = cfg.proxyUrl;
     const apiKey = cfg.apiKey;
     const model = cfg.model;
-    if (!proxyUrl || !apiKey) throw new Error('AI 接口没配置 (apiConfig.proxyUrl / apiKey)');
+    if (!model) throw new Error('AI 接口没配置 (缺模型名 model)');
 
     const isGemini = String(proxyUrl).includes('generativelanguage.googleapis.com');
     const useMainApiProxy = !isGemini
@@ -758,6 +805,14 @@
         '';
       if (!text) throw new Error('LLM 返回空内容');
       return text;
+    } catch (e) {
+      // ⚠️ 超时必须翻译成人话 —— 浏览器 abort 出来的错五花八门
+      //    (AbortError / "signal is aborted without reason" / Failed to fetch),
+      //    原样透出去的话卡片上写的是"AI 没接上(signal is aborted without reason)", 用户看不懂。
+      if (ctrl.signal && ctrl.signal.aborted) {
+        throw new Error(`AI 请求超时 (${Math.round(CFG.llmTimeoutMs / 1000)} 秒没回)`);
+      }
+      throw e;
     } finally {
       clearTimeout(timer);
     }
@@ -821,26 +876,151 @@
     return tpl(song);
   }
 
-  /** LLM 结果校验 —— 只接受白名单里的 id */
+  // ============================================================
+  // 模型结果的 id / 歌名 匹配 (2026-10-23)
+  // ============================================================
+
+  /**
+   * 归一化歌曲 id —— 模型给 id 的花样比想象的多:
+   *   186016 (数字) / "186016" / "186016.0" (浮点字符串) / " id: 186016 " / "song#186016"
+   * 直接 String(s.id) 去比, 分分钟对不上 → 整轮白跑。
+   */
+  function normSongId(v) {
+    if (v == null) return '';
+    let s = String(v).trim();
+    if (!s) return '';
+    s = s.replace(/\.0+$/, '');       // "186016.0" → "186016"
+    const m = s.match(/\d+/);         // 抠出纯数字
+    return m ? m[0] : '';
+  }
+
+  /** 从模型的一条结果里抠出 id —— 字段名不统一是常事 (id / songId / song_id / mid ...) */
+  function extractSongId(s) {
+    if (s == null) return '';
+    if (typeof s !== 'object') {
+      const raw = String(s).trim();
+      return normSongId(raw) || raw;
+    }
+    const keys = ['id', 'songId', 'song_id', 'songID', 'ID', 'Id', 'mid', 'musicId', 'trackId'];
+    for (const k of keys) {
+      if (s[k] == null || s[k] === '') continue;
+      const raw = String(s[k]).trim();
+      if (!raw) continue;
+      return normSongId(raw) || raw;
+    }
+    return '';
+  }
+
+  /** 归一化歌名 —— id 对不上时靠它救场 */
+  function normSongNameKey(s) {
+    return String(s == null ? '' : s)
+      .toLowerCase()
+      .replace(/[\s\u3000]+/g, '')                        // 空格 / 全角空格
+      .replace(/[《》()（）\[\]{}【】"'“”‘’,，.。!！?？~～·\-_—:：|\/\\]/g, '');
+  }
+
+  function extractSongName(s) {
+    if (s == null) return '';
+    if (typeof s === 'string') return s.trim();
+    const keys = ['name', 'title', 'songName', 'song_name', 'song'];
+    for (const k of keys) {
+      if (typeof s[k] === 'string' && s[k].trim()) return s[k].trim();
+    }
+    return '';
+  }
+
+  function extractSongArtist(s) {
+    if (s == null || typeof s !== 'object') return '';
+    const keys = ['artist', 'artistName', 'artists', 'ar'];
+    for (const k of keys) {
+      const v = s[k];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      if (Array.isArray(v) && v.length && v[0] && typeof v[0] === 'object' && v[0].name) {
+        return String(v[0].name).trim();
+      }
+    }
+    return '';
+  }
+
+  /**
+   * LLM 结果校验 —— 只接受白名单里的歌。
+   *
+   * ⚠️ 以前这里是"id 对不上就丢", 一条都不中就整轮作废 → 走兜底 → 理由全是模板。
+   *    现在的匹配从严到宽三层:
+   *      ① id 精确命中            (最理想)
+   *      ② id 没命中 → 按歌名命中 (模型抄错 id 是常事, 歌名对得上就认)
+   *      ③ 都没有 → 丢掉
+   *    并且全程记账 —— 丢了多少、靠歌名救回多少, 都要打出来,
+   *    不然下次还是只能靠猜。
+   */
   function validateLLMResult(raw, pool, targetCount) {
     if (!raw || !Array.isArray(raw.songs)) return null;
-    const byId = new Map(pool.map((c) => [String(c.id), c]));
+    const diag = {
+      total: 0,               // 模型给了几条
+      kept: 0,                // 收了几条
+      matchedById: 0,         // id 直接命中
+      matchedByName: 0,       // 靠歌名救回来的
+      dropped: 0,             // 丢了多少
+      droppedUnmatched: 0,    // 既没 id 也没歌名能对上
+      droppedDuplicate: 0,    // 重复
+      droppedArtistCap: 0,    // 同一个歌手超上限
+    };
+
+    const byId = new Map();
+    const byName = new Map();
+    const byNameArtist = new Map();
+    const keyOf = (c) => normSongId(c.id) || String(c.id).trim();
+    pool.forEach((c) => {
+      const kid = keyOf(c);
+      if (kid && !byId.has(kid)) byId.set(kid, c);
+      const kn = normSongNameKey(c.name);
+      if (!kn) return;
+      if (!byName.has(kn)) byName.set(kn, c);
+      const ka = kn + '|' + normArtist(c.artist);
+      if (!byNameArtist.has(ka)) byNameArtist.set(ka, c);
+    });
+
     const used = new Set();
     const artistUsed = new Map();
     const songs = [];
 
     raw.songs.forEach((s) => {
-      if (!s || s.id == null) return;
-      const key = String(s.id);
-      if (!byId.has(key)) return;      // 发明出来的 id → 丢掉
-      if (used.has(key)) return;       // 重复 → 丢掉
-      const meta = byId.get(key);
+      diag.total++;
+      if (s == null) { diag.dropped++; diag.droppedUnmatched++; return; }
+
+      const idKey = extractSongId(s);
+      let meta = null;
+
+      if (idKey && byId.has(idKey)) {
+        meta = byId.get(idKey);
+        diag.matchedById++;
+      } else {
+        // id 没命中 → 看歌名 (模型抄错 id 是常事)
+        const nameKey = normSongNameKey(extractSongName(s));
+        if (nameKey) {
+          const artistKey = normArtist(extractSongArtist(s));
+          if (artistKey && byNameArtist.has(nameKey + '|' + artistKey)) {
+            meta = byNameArtist.get(nameKey + '|' + artistKey);
+          } else if (byName.has(nameKey)) {
+            meta = byName.get(nameKey);
+          }
+          if (meta) diag.matchedByName++;
+        }
+      }
+
+      if (!meta) { diag.dropped++; diag.droppedUnmatched++; return; }
+
+      const key = String(meta.id);
+      if (used.has(key)) { diag.dropped++; diag.droppedDuplicate++; return; }
+
       // 教程 Ch17: LLM 的结果要再过一次多样性校验 —— 同一个歌手不能超上限
       const akey = normArtist(meta.artist);
       const aUsed = artistUsed.get(akey) || 0;
-      if (aUsed >= CFG.maxPerArtistHard) return;
+      if (aUsed >= CFG.maxPerArtistHard) { diag.dropped++; diag.droppedArtistCap++; return; }
       artistUsed.set(akey, aUsed + 1);
       used.add(key);
+      diag.kept++;
+
       let reason = String(s.reason || '').replace(/\s+/g, ' ').trim();
       if (reason.length > 40) reason = reason.slice(0, 40);
       if (!reason) reason = buildFallbackReason(meta, songs.length);
@@ -861,7 +1041,9 @@
       });
     });
 
-    if (!songs.length) return null;
+    // 一首都没要上 —— 诊断照给, 上层要拿它写清楚"为什么失败"
+    if (!songs.length) return { note: '', songs: [], diag };
+
     // 兜底: 模型偷懒, 十几首全写同一句理由 → 卡片看着像复制粘贴。
     // 只在【理由全都一模一样】时才重写(歌和标签仍用模型挑的), 换成按歌轮换的说法。
     if (songs.length > 1 && new Set(songs.map((s) => s.reason)).size === 1) {
@@ -870,7 +1052,7 @@
     }
     const note = String(raw.note || '').replace(/\s+/g, ' ').trim().slice(0, 50);
     const limit = targetCount || songs.length;
-    return { note, songs: songs.slice(0, limit) };
+    return { note, songs: songs.slice(0, limit), diag };
   }
 
   /** 确定性兜底 —— LLM 挂了也要能出卡 (教程 Ch17.1) */
@@ -920,8 +1102,8 @@
   const STRICT_FORMAT_SUFFIX = [
     '',
     '【重要】上一条输出没能被解析出来。这次只输出一个 JSON 对象, 第一个字符必须是 {, 最后一个字符必须是 },',
-    '中间不要加任何说明文字, 不要用 markdown 代码块, id 用数字。',
-    '格式: {"note":"...","songs":[{"id":123,"reason":"...","tag":"小冒险"}]}',
+    '中间不要加任何说明文字, 不要用 markdown 代码块, id 用数字, name 用歌名原文。',
+    '格式: {"note":"...","songs":[{"id":123,"name":"歌名","reason":"...","tag":"小冒险"}]}',
   ].join('\n');
 
   /**
@@ -931,25 +1113,50 @@
    */
   function describeLlmError(e) {
     const msg = String((e && e.message) || e || '');
+    if (/缺模型名/.test(msg)) return 'AI 接口没配置(缺模型名)';
     if (/未配置/.test(msg)) return 'AI 接口没配置(读不到 API 地址)';
-    if (/abort|timeout|超时/i.test(msg)) return 'AI 请求超时(30 秒没回)';
+    if (/超时/.test(msg)) return msg.slice(0, 40);
+    if (/abort|timeout/i.test(msg)) return `AI 请求超时 (${Math.round(CFG.llmTimeoutMs / 1000)} 秒没回)`;
     if (/HTTP\s*(\d+)/i.exec(msg)) return 'AI 接口返回错误 HTTP ' + /HTTP\s*(\d+)/i.exec(msg)[1];
     if (/空内容/.test(msg)) return 'AI 返回了空内容';
     if (/Failed to fetch|NetworkError|网络/i.test(msg)) return '网络没连通';
     return msg.slice(0, 40) || '未知原因';
   }
 
-  async function curate(pool, profile, targetCount) {
+  /**
+   * 把"校验没过"的细节翻译成人话。
+   * 以前只有一句"歌曲 id 对不上 / 格式不对" —— 到底是模型没给 id、
+   * 还是 id 抄错了、还是歌名能救但没救, 全看不出来。
+   */
+  function describeDiagFailure(diag) {
+    if (!diag) return '模型给的结果没通过校验(歌曲 id 对不上 / 格式不对)';
+    if (diag.matchedByName > 0) {
+      return `模型给的结果只有 ${diag.matchedByName} 首能对上(靠歌名救回来的), 其余 ${diag.dropped} 首对不上`;
+    }
+    return `模型给的 ${diag.total} 首一首都没对上(歌曲 id 对不上)`;
+  }
+
+  async function curate(pool, profile, targetCount, options) {
     if (!pool.length) return null;
+    const opts = options || {};
     const prompt = buildCurationPrompt(pool, profile, targetCount);
 
     // 为什么没能用上 AI —— 兜底的时候要写进卡片里, 让用户看见
     let failReason = '';
+    let lastDiag = null;
 
     // 最多试两次:
     //   第 1 次正常问; 解析不出来 → 第 2 次追加"只吐 JSON"的硬要求再问一次
     //   网络失败/超时 → 不重试 (再问一次也还是不通, 直接兜底)
     for (let attempt = 0; attempt < 2; attempt++) {
+      // ⚠️ 预算不够就别再问了 —— 硬超时会让【整轮】直接报错, 一张卡都没有,
+      //    那比"兜底出一张卡"糟得多。
+      if (attempt > 0 && opts.deadlineAt && Date.now() + CFG.llmTimeoutMs > opts.deadlineAt) {
+        console.warn('[daily-discovery] 剩余预算不够再问一次 AI, 直接走兜底');
+        if (!failReason) failReason = '时间不够再问一次 AI';
+        break;
+      }
+
       let text = '';
       try {
         text = await callLLM(attempt === 0 ? prompt : prompt + STRICT_FORMAT_SUFFIX);
@@ -961,7 +1168,7 @@
 
       const raw = parseLLMJson(text);
       const valid = validateLLMResult(raw, pool, targetCount);
-      if (valid) {
+      if (valid && valid.songs.length) {
         // 数量不够就用剩下的候选确定性补齐
         if (valid.songs.length < targetCount) {
           const used = new Set(valid.songs.map((s) => s.id));
@@ -972,19 +1179,23 @@
             valid.songs.push(s);
           });
         }
+        if (valid.diag) console.log('[daily-discovery] 模型结果校验:', JSON.stringify(valid.diag));
         if (attempt > 0) console.log('[daily-discovery] LLM 重试后成功');
         return valid;
       }
-      if (!failReason) failReason = '模型给的结果没通过校验(歌曲 id 对不上 / 格式不对)';
+      lastDiag = (valid && valid.diag) || lastDiag;
+      if (!failReason) failReason = describeDiagFailure(lastDiag);
       console.warn(attempt === 0
         ? '[daily-discovery] LLM 输出格式不对, 重试一次'
         : '[daily-discovery] LLM 重试后还是不对, 走确定性兜底');
     }
 
+    if (lastDiag) console.warn('[daily-discovery] 模型结果校验:', JSON.stringify(lastDiag));
     const fallback = deterministicPick(pool, profile, targetCount);
     // 标记清楚: 这是兜底, 不是 AI 挑的 (卡片上会写明)
     fallback.fallback = true;
     fallback.fallbackReason = failReason || '未知原因';
+    if (lastDiag) fallback.diag = lastDiag;
     return fallback;
   }
 
@@ -995,6 +1206,8 @@
     const opts = options || {};
     const api = NM();
     if (!api) throw new Error('网易云模块没加载');
+    // 整轮的总预算 —— 传给 curate, 让它知道"还够不够再问一次 AI"
+    const startedAt = Date.now();
 
     const profile = await buildProfile(chatId);
     const rawCandidates = await collectCandidates(profile);
@@ -1004,7 +1217,9 @@
     const cleaned = cleanCandidates(playable, profile);
     if (!cleaned.length) throw new Error('候选里没有能播的歌 (可能是 VIP 限制或登录态失效)');
 
-    const curated = await curate(cleaned, profile, CFG.targetCount);
+    const curated = await curate(cleaned, profile, CFG.targetCount, {
+      deadlineAt: startedAt + CFG.totalTimeoutMs,
+    });
     if (!curated || !curated.songs.length) throw new Error('策展没产出任何歌曲');
 
     const date = todayKey();
@@ -1030,6 +1245,8 @@
         // 别再撒谎说 llmRanked: true —— 兜底的时候它没被 AI 排过
         llmRanked: !curated.fallback,
         fallbackReason: curated.fallbackReason || '',
+        // 模型结果的对账表 —— 下次再出问题, 看这个就知道是"没给 id"还是"id 抄错"还是"抄对了几首"
+        llmDiag: curated.diag || null,
       },
       songs: curated.songs,
       seen: false,
