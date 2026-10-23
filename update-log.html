@@ -166,11 +166,31 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.38 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.38</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>影院聊天换成「外面主聊天的那套」了</strong> —— 以前陪你看剧是 <strong>Gemini Live</strong> 一个模型同时干两件事：既要看视频画面，又要回话。用户原话：<strong>「又要看视频又要回话实在太蠢了，性格也和外面聊天的不适配」</strong>。</li>
+          <li>真凶有两层：<strong>Live 3.8 只会用声音回答</strong>（官方不支持直接输出文字，它先生成一段音频，再转写成字给你看，音频直接丢掉）；而且它用的是<strong>影院自己手写的一套提示词</strong>，<strong>压根没接主聊天那套提示词预设</strong> —— 所以「性格跟外面不适配」不是错觉，是代码就这么写的。</li>
+          <li>改法：<strong>Live 只保留「看画面 + 写剧情记忆」这一件事，陪聊改走主聊天的主 API</strong>。现在影院里的它，跟外面聊天框里的它<strong>是同一个人</strong>：人设、长期记忆、你们之前的聊天记录，全都带着。</li>
+          <li>按你点的清单，影院上下文里装的是：<strong>人设 ✅ 长期记忆 ✅ 外面聊天框的正常上文 ✅ 影院攒下的全部剧情记忆（摘要 + 单集剧情）✅ 世界书 ❌（你说不要，就没带）</strong>。</li>
+          <li>另外主聊天那套提示词里有一大段「输出 JSON 数组」的指令（发表情、发图片、转账那些），<strong>影院里一条也执行不了，所以整段剥掉了</strong> —— 现在影院里它回的是<strong>普通聊天文字</strong>，跟你在外面聊天看到的一模一样。</li>
+          <li><strong>「看长剧想实时聊一下」这个也解决了</strong>：新增一条<strong>「此刻画面」</strong>通道 —— 观影模型每隔几十秒写一句「此刻屏幕上是谁在干什么」，覆盖式地存一条（不是攒一串，攒多了只会互相矛盾）。主聊天那边虽然看不见画面，但知道「刚刚发生了什么」。</li>
+          <li><strong>影院里说的话会记进主聊天历史</strong> —— 你的原话是「影院的会话就是要主聊天知道啊，不存在污染」。所以在影院聊的，出门接着聊能接上茬；看完导出的剧情记忆也会进长期记忆。</li>
+          <li>顺手补了一点：<strong>Live 没连上也不挡聊天了</strong> —— 以前「Gemini 还没就绪」会直接不让你在影院说话，现在陪聊不依赖 Live，只有「看不到此刻画面」这一项受影响。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.37 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.37</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-23</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

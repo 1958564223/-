@@ -187,6 +187,18 @@
   window.fetchViaOpenAICompatibleProxy = fetchViaOpenAICompatibleProxy;
   window.isMainApiProxyEnabled = isMainApiProxyEnabled;
 
+  // 🔴 2026-10-23 影院陪聊 (modules/cinema-chat.js) 要用这几样。
+  //   影院现在也调主 API 了, 但它【不能】直接调主聊天那个大函数 ——
+  //   那个函数会写主聊天历史、跑工具调用、抽记忆, 影院要用的话副作用太大。
+  //   所以这里把三个【纯函数】挂到 window 让影院复用:
+  //     · replaceTemplateVars   —— 主聊天的提示词变量替换 (人设/记忆/昵称…)
+  //     · toGeminiRequestData   —— 主 API 走 Gemini 原生格式时的请求体转换
+  //     · fetchStreamingResponse —— 主聊天的 SSE 流式解析 (影院要用同一套)
+  //   一行行为都不改, 只是把模块内的实现暴露出去。
+  window.replaceTemplateVars = replaceTemplateVars;
+  window.toGeminiRequestData = toGeminiRequestData;
+  window.fetchStreamingResponse = fetchStreamingResponse;
+
   /**
    * 第二阶段: 聊天链路「语音控制」prompt 段落。
    *

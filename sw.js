@@ -323,7 +323,19 @@
 //     底边从 1163(屏幕外 319px) 回到 844(屏幕底); 滚到底最后一颗按钮 783–820 完整可见。
 //   回归: 新增 tests/cinema-episode-sheet.test.cjs(23 条, 结构/CSS/JS 三层都守)。
 //   index.html 的 ?v= 已 bump 1 个文件 (cinema-room.js 0.29.1 → 0.29.2)。
-const CACHE_VERSION = 'v0.2.66.0';
+// v0.2.67.0 (2026-10-23): 影院陪聊改走【主聊天的主 API】。
+//   起因 (用户原话): "调用的观影模型Gemini 3.8 live又要看视频又要回话实在太蠢了,
+//   性格也和外面聊天的不适配"。
+//   改造: Gemini Live 只保留"看画面 + 写剧情记忆"这一件事;
+//        陪聊改调主 API —— 人设 / 长期记忆 / 主聊天历史 / 影院剧情记忆 全跟外面一致。
+//   新增 modules/cinema-chat.js (陪聊层, 组上文 + 调主 API + 落进主聊天历史)。
+//   ⚠️ 它还必须做一件事: 把主聊天提示词里的【JSON 指令系统】剥掉 ——
+//     主聊天是"输出 JSON 数组"的指令式角色扮演, 影院气泡显示的是纯文字。
+//   另外 Live 新增一条【此刻画面】实况通道 (每 30 秒一句, 覆盖式),
+//     因为主 API 看不见画面, 只能靠这句知道自己"刚刚"看到的是什么。
+//   index.html 的 ?v= 已 bump 1 个文件 (cinema-live.js 1.9.6 → 1.9.7),
+//   新挂 modules/cinema-chat.js?v=0.0.1, sw.js 预缓存清单也加了它 —— 所以要 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.67.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
@@ -382,6 +394,9 @@ const URLS_TO_CACHE = [
   './modules/cinema-room.js',
   './modules/cinema-room.css',
   './modules/cinema-live.js',
+  // 2026-10-23 影院陪聊层 (陪聊改走主 API)。跟上面三个一样必须预缓存 ——
+  // SW 缓存了旧 index.html 就会漏掉这个新 script 标签, 手机上影院聊天直接报错。
+  './modules/cinema-chat.js',
   // 房间背景图 93KB, 预缓存是为了离线也能开房间 + 首屏不闪白。
   // jpg 兜底不预缓存 —— 只给不认 webp 的老 WebView 用, 按需拉就行。
   './assets/cinema-room-bg.webp'
