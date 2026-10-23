@@ -166,11 +166,27 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.37 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.37</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>短剧「选集面板」最后几排点不到、也拉不动</strong> —— 一部 148 集的剧，面板只显示到 73–96 集，第 97 集起就被手机底部那条横条盖住了，往上滑也滑不动。</li>
+          <li>真凶<strong>不是样式，是面板的位置摆错了</strong>：「选集面板」被写进了「添加影片面板」<strong>里面</strong>。添加影片面板关掉的时候是整块滑出屏幕去的，选集面板作为它的孩子，就<strong>跟着一起被拖出了屏幕</strong>（实测整个面板底边掉到屏幕外 319px），最后几排的按钮永远不在你能看到的地方。</li>
+          <li>改法：把「选集面板」挪回<strong>影院房间的直属子元素</strong>。这样它的底边就是贴着房间底（＝屏幕底），集数在面板<strong>自己内部</strong>往上滚，148 集能一屏一屏翻到底，最后一集也点得到。</li>
+          <li>顺手补了个<strong>回归测试</strong>（<code>tests/cinema-episode-sheet.test.cjs</code>），以后谁再把这个面板塞回别的面板里，测试会直接报错，不会等到手机上才发现。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.36 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.36</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-23</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

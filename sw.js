@@ -308,7 +308,22 @@
 //   index.html 的 ?v= 已 bump 11 个文件 (ai-group / ai-response / auction /
 //   avatar-library / data-management / init-event-bindingsB / init-features /
 //   misc-features / werewolf / character-generator / green-river)。
-const CACHE_VERSION = 'v0.2.65.0';
+// v0.2.66.0 (2026-10-23): 短剧「选集面板」最后几排点不到 / 拉不动。
+//   症状: 148 集的剧, 面板只显示到 73–96 集, 第 97 集起被手机底部边框盖住,
+//          往上拉也拉不动(用户原话: "切掉都不是问题, 只要集数能向上滚动也好")。
+//   真因: 不是 CSS, 是【HTML 嵌套错位】——
+//     .cinema-episode-sheet(选集面板)被写在了 .cinema-source-sheet(添加影片面板)【里面】。
+//     添加影片面板关掉时是 transform: translateY(100%)(滑出屏幕),
+//     选集面板作为它的子元素被【整体一起下移了自身高度】——
+//     实测整个面板底边落到屏幕外 319px, 最后几排按钮永远在可视区之外。
+//   改法: 把 .cinema-source-sheet 的收尾 </div> 上移, 让选集面板变成 .cinema-room 的
+//     【直接子元素】。bottom:0 这时以房间为基准, 面板底边贴住房间底部,
+//     集数在 grid 内部滚动, 最后几排能点到。
+//   验证: 实测(390×844)选集面板 offsetParent 从 cinema-source-sheet 变成 cinema-room,
+//     底边从 1163(屏幕外 319px) 回到 844(屏幕底); 滚到底最后一颗按钮 783–820 完整可见。
+//   回归: 新增 tests/cinema-episode-sheet.test.cjs(23 条, 结构/CSS/JS 三层都守)。
+//   index.html 的 ?v= 已 bump 1 个文件 (cinema-room.js 0.29.1 → 0.29.2)。
+const CACHE_VERSION = 'v0.2.66.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
