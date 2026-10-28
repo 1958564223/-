@@ -510,7 +510,18 @@
 //   modules/pet-speech.js 0.0.2 → 0.0.3、modules/proactive-wake.js 0.2.15 → 0.2.16、
 //   modules/in-app-proactive-patrol.js 0.2.17 → 0.2.18、css/pet-nest.css 0.0.13 → 0.0.14。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.86.0';
+// v0.2.87.0 (2026-10-28 下午): 宠物屋服装库重做（用户「像奇迹暖暖那样的娃衣一堆堆」）
+//   ① 衣服 BEAST_OUTFITS 20 → **72 件**，6 个系列（甜品/童话/星际/国风/海洋/魔法萌）各 12 件，
+//      全部重写成"娃衣"风格；原来 200 只宠物平均每 10 只就撞同一件（最热 16/200），
+//      现在最热 8/200，且连续三天基本不重样。
+//   ② 道具新增 **40 件"每日造型款"**（带 series 标签）；旧的 43 件日常道具保留 ——
+//      它们只从「当天记忆里挑出来」那条路出现（用户明确要"道具服饰在记忆里匹配"）。
+//   ③ 兜底挑道具时按【衣服的系列】挑 → 没聊东西的日子 = 衣服+配套道具一整套（暖暖式套装感）。
+//   ④ 新增 sameItem() → 衣服和道具不会撞成同一件东西。
+//      → 「一块小磨刀石」「一块小砖头」这类日常杂物不再出现在服饰描述里（用户反馈）。
+//   index.html 的 ?v=：modules/pet-nest.js 0.0.24 → 0.0.25。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.87.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

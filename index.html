@@ -287,7 +287,19 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
        modules/pet-speech.js 0.0.2 → 0.0.3、modules/proactive-wake.js 0.2.15 → 0.2.16、
        modules/in-app-proactive-patrol.js 0.2.17 → 0.2.18、css/pet-nest.css 0.0.13 → 0.0.14。
        ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。 -->
-  <script src="modules/pet-nest.js?v=0.0.24" defer></script>
+  <!-- 2026-10-28 下午: 服装库重做
+       用户原话:「我刚看宠物的服饰描述，什么磨刀石，白手套都来了，这个服装系统到底都有些什么衣服，
+       能不能搞点炫丽可爱的服装库，像奇迹暖暖那样的娃衣一堆堆，一天一个造型？」
+       ① 衣服库 20 → 72 件（甜品/童话/星际/国风/海洋/魔法萌 6 系列 × 12 件），
+          全部重写成"娃衣"风格，中文名一律以「的」结尾，英文描述写具体（生图靠它）。
+       ② 道具新增 40 件"每日造型款"（带系列标签），旧的 43 件日常道具保留 ——
+          它们是"从当天记忆里挑出来"的（用户明确要这个）。
+       ③ 兜底挑道具时优先挑【跟今天这套衣服同系列】的 → 没聊东西的日子是一整套（暖暖式套装），
+          记忆匹配仍然优先（用户明确要求"道具服饰应该在记忆里匹配"）。
+       ④ 新增 sameItem() → 衣服和道具不会撞成同一件（"一双水晶鞋、提着水晶鞋的"）。
+       index.html 的 ?v=：modules/pet-nest.js 0.0.24 → 0.0.25。
+       ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。 -->
+  <script src="modules/pet-nest.js?v=0.0.25" defer></script>
   <!-- 宠物屋的生图模块 (可选, 没有生图通道时宠物照样长大, 只是不换模样)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.getDb() 往同一个库存资产。 -->
   <script src="modules/pet-image.js?v=0.0.5" defer></script>
