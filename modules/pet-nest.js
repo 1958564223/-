@@ -92,7 +92,7 @@
    * @param {string} seed       这只宠物的种子
    * @param {Array}  texts      当天聊过的内容（代表词）→ 从里面现挑一个小装饰
    */
-  function dailyLookFor(behaviors, dayKeyStr, seed, texts) {
+  function dailyLookFor(behaviors, dayKeyStr, seed, texts, kind) {
     const list = Array.isArray(behaviors) ? behaviors : [];
     const features = [];
     for (const b of list) {
@@ -106,8 +106,13 @@
     }
     // 当天穿搭：按「天 + 种子」定，同一天同一只永远同一套
     // ⚠️【2026-10-28】先定衣服 —— 因为兜底挑道具时要按【衣服的系列】来挑（配套）。
-    const h = hash32(String(dayKeyStr || 'day') + ':outfit:' + String(seed || ''));
-    const outfit = BEAST_OUTFITS[h % BEAST_OUTFITS.length];
+    // ⚠️【2026-10-29】鹦鹉用【自己的衣橱】PARROT_OUTFITS ——
+    //   那 72 件里有一批鸟根本穿不了(裙/连体衣/鞋/袜)，
+    //   还有两件是「胸口别个小东西」→ 画出来就是一枚徽章 → 用户实测「只有徽章，没有新衣服」。
+    const isParrot = kind === 'parrot';
+    const outfitPool = isParrot ? PARROT_OUTFITS : BEAST_OUTFITS;
+    const h = hash32(String(dayKeyStr || 'day') + (isParrot ? ':outfit-parrot:' : ':outfit:') + String(seed || ''));
+    const outfit = outfitPool[h % outfitPool.length];
     // 当天聊的内容 → 现挑一个能物化的小装饰（用户要的「惊喜感」在这）
     // ⚠️【2026-10-28】记忆匹配【优先】—— 用户明确要"道具服饰在记忆里匹配"，
     //   所以先按当天的内容挑；挑不到才走下面的兜底。
@@ -174,7 +179,8 @@
       cachedBehaviors(),
       dayKey(Date.now()),
       (pet && (pet.seed || pet.id)) || '',
-      cachedDayTexts()
+      cachedDayTexts(),
+      pet && pet.kind
     );
   }
 
@@ -320,7 +326,7 @@
     const day = dayKey(Date.now());
     const behaviors = await todayBehaviors(day);
     const texts = await todayRepresentativeTexts();
-    const look = dailyLookFor(behaviors, day, (pet && (pet.seed || pet.id)) || '', texts);
+    const look = dailyLookFor(behaviors, day, (pet && (pet.seed || pet.id)) || '', texts, pet && pet.kind);
     // 记下来 → 界面（名册/说明/AI 上下文）用同一份，别再出现"界面写的和画出来的不是一个"
     rememberLookFor(pet, look);
     return look;
@@ -696,6 +702,42 @@
   //     · en 是给【生图模型】看的画面描述 → 要具体到颜色/材质/细节，
   //       写太笼统模型画不出来（这跟 ICON_LIBRARY 的 en 是同一个道理）。
   //     · series 用来做【衣服和道具配套】：兜底挑道具时优先挑同一个系列的（见 dailyLookFor）。
+  // ⚠️【2026-10-29 用户实测】「鹦鹉只有徽章，没有新衣服」。
+  //   上面那 72 件里, 鸟穿不了一批(草莓裙/小熊睡衣/绣花鞋/芭蕾舞鞋/长袜/围裙…)，
+  //   还有两件是「胸口别个小东西」(薄荷糖/珍珠胸针) → 画出来就是一枚徽章。
+  //   → 鹦鹉单独一套【鸟穿得上的衣服】: 领结/帽/围巾/斗篷/皇冠/花环/背带/头饰…
+  //   series 沿用那 6 个系列 → 兜底挑道具时还是「衣服和道具配套」。
+  const PARROT_OUTFITS = [
+    { cn: '围着奶油领结的', en: 'wearing a big fluffy cream whipped-cream bow tie around its neck', series: 'sweet' },
+    { cn: '戴着小饼干帽的', en: 'wearing a puffy pink marshmallow hat with a tiny cookie on top', series: 'sweet' },
+    { cn: '套着草莓围兜的', en: 'wearing a red strawberry-patterned bib around its neck', series: 'sweet' },
+    { cn: '系着棒棒糖丝带的', en: 'wearing a ribbon around its neck with a swirled pink lollipop hanging from it', series: 'sweet' },
+
+    { cn: '戴着珍珠小皇冠的', en: 'wearing a pearl-studded tiny crown on its head', series: 'fairy' },
+    { cn: '围着蕾丝领巾的', en: 'wearing a white lace ruffled collar around its neck', series: 'fairy' },
+    { cn: '戴着小花环的', en: 'wearing a wreath of tiny pastel flowers on its head', series: 'fairy' },
+    { cn: '肩披小斗篷的', en: 'wearing a tiny plush deep-pink velvet cape over its shoulders', series: 'fairy' },
+
+    { cn: '围着流星围巾的', en: 'wearing a scarf patterned with shooting stars around its neck', series: 'galaxy' },
+    { cn: '戴着小宇航头盔的', en: 'wearing a round glass astronaut helmet with a golden ring', series: 'galaxy' },
+    { cn: '背着喷气小背包的', en: 'wearing a tiny silver jetpack backpack with blue thrusters', series: 'galaxy' },
+    { cn: '披着极光小纱的', en: 'draped in a tiny shimmering aurora shawl in green and violet', series: 'galaxy' },
+
+    { cn: '戴着竹斗笠的', en: 'wearing a woven bamboo conical hat', series: 'oriental' },
+    { cn: '系着祥云腰封的', en: 'wearing a golden auspicious-cloud sash wrapped around its body', series: 'oriental' },
+    { cn: '簪着点翠发簪的', en: 'wearing a blue kingfisher-feather hairpin', series: 'oriental' },
+    { cn: '围着红绸小披帛的', en: 'wearing a flowing red silk shawl draped around its shoulders', series: 'oriental' },
+
+    { cn: '戴着贝壳发夹的', en: 'wearing a pearlescent seashell hair clip', series: 'ocean' },
+    { cn: '围着浪花围巾的', en: 'wearing a scarf of foamy turquoise waves around its neck', series: 'ocean' },
+    { cn: '戴着小圆潜水镜的', en: 'wearing a round teal diving mask over its eyes', series: 'ocean' },
+    { cn: '套着救生圈的', en: 'wearing a pink-and-white striped swim ring around its body', series: 'ocean' },
+
+    { cn: '戴着巫师尖帽的', en: 'wearing a pointed purple wizard hat with gold stars', series: 'magic' },
+    { cn: '戴着兔耳兜帽的', en: 'wearing a hood with long floppy bunny ears', series: 'magic' },
+    { cn: '背着魔法书包的', en: 'carrying a starry spellbook backpack on its back', series: 'magic' },
+    { cn: '围着星星小披肩的', en: 'wearing a tiny starry knitted shawl around its shoulders', series: 'magic' },
+  ];
   const BEAST_OUTFITS = [
     // ---- 甜品系 sweet ----
     { cn: '系着奶油蝴蝶结的', en: 'wearing a big fluffy cream whipped-cream bow', series: 'sweet' },
@@ -1589,7 +1631,8 @@
           const db = await openDb();
           const prow = await db.pets.get(row.id);
           const behaviors = await todayBehaviors();
-          const look = dailyLookFor(behaviors, dayKey(Date.now()), (prow && prow.seed) || (prow && prow.id));
+          const look = dailyLookFor(behaviors, dayKey(Date.now()), (prow && prow.seed) || (prow && prow.id), [],
+            prow && prow.kind);
           who = beastDisplayName(app, look);
         } catch (e) { /* 用 identity 兜底 */ }
       }
@@ -1981,7 +2024,10 @@
     const behaviors = await todayBehaviors(d);
     const row = await openDb().then(db => db.pets.get(pet.id));
     const app = (row && row.appearance) || pet.appearance || null;
-    const look = dailyLookFor(behaviors, d, (row && row.seed) || pet.seed || pet.id);
+    // ⚠️【2026-10-29】要带 kind —— 鹦鹉用的是自己那套衣服,
+    //   不带 kind → 名册写的衣服和图上画的衣服不是同一套（老毛病）。
+    const look = dailyLookFor(behaviors, d, (row && row.seed) || pet.seed || pet.id, [],
+      (row && row.kind) || pet.kind);
     return { behaviors, look, appearance: app };
   }
 
@@ -3515,7 +3561,14 @@ function careActionForButton(btnId) {
       const colorText = keepColors
         ? 'in exactly the same colours as the reference image'
         : 'with ' + breed.colorEn;
-      return 'a fluffy ' + breed.en + ' ' + colorText + mark + lookTail
+      // ⚠️【2026-10-29】道具表里有一批写的是 'in its paws'（爪子）——
+      //   鸟没有爪子, 写爪子模型就会给鹦鹉配上两只小爪 → 画成毛球兽 → 衣服穿不上。
+      //   → 鹦鹉改成「用喙拿着」(鹦鹉本来就是这么拿东西的)。
+      const parrotTail = lookTail
+        .replace(/in its paws/g, 'in its beak')
+        .replace(/in its paw\b/g, 'in its beak')
+        .replace(/above its paw\b/g, 'above its beak');
+      return 'a fluffy ' + breed.en + ' ' + colorText + mark + parrotTail
         + ', ' + ART_STYLE_LOCK;
     }
 
@@ -3586,6 +3639,8 @@ function careActionForButton(btnId) {
     const change = (stageRow && stageRow.marking) ? stageRow.marking : '';
     const imgOpts = {
       quality: 'medium',
+      // ⚠️【2026-10-29】鹦鹉要用【鸟的姿态】画六格 → 得知道这是哪种宠物
+      kind: row.kind,
       // 自动换装和手动生图【分开算次数】→ 自动换装不会把手动「换个模样」的名额吃掉
       counter: o.auto ? 'auto' : 'manual',
       budget: o.auto ? o.budget : undefined
@@ -4061,6 +4116,7 @@ function careActionForButton(btnId) {
       dayStartTs,
       BEAST_SPECIES,
       BEAST_OUTFITS,
+    PARROT_OUTFITS,
       BEAST_PALETTES,
       DIVINE_FORMS,
       DIVINE_STYLE_LOCK,

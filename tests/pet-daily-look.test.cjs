@@ -96,6 +96,19 @@ function grabFunc(src, name) {
   return null;
 }
 
+// ⚠️【2026-10-29】抠对象字面量 (POSE_SETS / LAYOUT_BODIES 这种)
+function grabObj(src, name) {
+  const i = src.indexOf('const ' + name + ' = {');
+  if (i < 0) return null;
+  const j = src.indexOf('{', i);
+  let depth = 0;
+  for (let k = j; k < src.length; k++) {
+    if (src[k] === '{') depth++;
+    else if (src[k] === '}') { depth--; if (!depth) return src.slice(j, k + 1); }
+  }
+  return null;
+}
+
 // ============================================================
 // ① 道具匹配: 泛词不算命中
 // ============================================================
@@ -228,7 +241,19 @@ section('① 每日换装: 蜕变提示词必须永远说「按今天这身重�
   const src = read('modules/pet-image.js');
   const fnSrc = grabFunc(src, 'buildEvolvePrompt');
   check('pet-image.js 里找得到 buildEvolvePrompt', !!fnSrc);
-  const buildEvolvePrompt = fnSrc ? new Function('return (' + fnSrc + ')')() : null;
+  // ⚠️【2026-10-29】buildEvolvePrompt 现在会调 poseSetFor / layoutTextFor
+  //   （六格姿态按宠物种类给）→ 抠函数的时候要把这几个一起抠出来，
+  //   否则这里会 ReferenceError: poseSetFor is not defined。
+  const POSE_SETS_SRC = grabObj(src, 'POSE_SETS');
+  const LAYOUT_BODIES_SRC = grabObj(src, 'LAYOUT_BODIES');
+  const helpers = ['poseSetFor', 'layoutBodyFor', 'layoutTextFor']
+    .map(n => grabFunc(src, n)).filter(Boolean);
+  const buildEvolvePrompt = fnSrc ? new Function([
+    'const POSE_SETS = ' + (POSE_SETS_SRC || '{}') + ';',
+    'const LAYOUT_BODIES = ' + (LAYOUT_BODIES_SRC || '{}') + ';',
+    helpers.join('\n'),
+    'return (' + fnSrc + ');'
+  ].join('\n'))() : null;
 
   if (buildEvolvePrompt) {
     const subject = 'a fluffy white cat wearing a red knitted scarf, with a tiny umbrella in front of it';

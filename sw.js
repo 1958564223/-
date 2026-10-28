@@ -585,7 +585,36 @@
 //   index.html 的 ?v=：modules/cinema-live.js 2.0.0 → 2.1.0、
 //   modules/cinema-chat.js 0.0.4 → 0.1.0；cinema-sandbox/index.html 里那两个也一起对齐。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.91.0';
+// v0.2.92.0 (2026-10-29): 宠物屋 —— 鹦鹉换装「只有徽章，没有新衣服」。
+//   用户原话：「怎么我刚才更新了，鹦鹉只有徽章，没有新衣服」。
+//
+//   【真因】探针 _reports/pet-test/print-real-prompt.cjs 把【真正发出去的提示词】打出来:
+//   ① 六格姿态 + 布局全是【四足哺乳动物】的词:
+//        "sitting with one front paw raised" / "curled up asleep" / "lying down"
+//        布局那句还写着 "its ears, tail, paws and outfit"
+//      → 让模型画一只【鸟】+ 抬前爪 → 它把鹦鹉画成毛球兽
+//      → 人穿的衣服(草莓裙/小熊睡衣/绣花鞋)根本穿不上去
+//      → 只会把「胸口别个小东西」画成一枚徽章 ⇒ 用户看到的正是「只有徽章」
+//   ② 那 72 件衣服里, 鸟穿不了一批(裙/连体衣/鞋/袜/围裙),
+//      还有两件是「胸口别个小东西」(薄荷糖/珍珠胸针) → 画出来也是徽章
+//   ③ 道具表里一批写的是 "in its paws" → 鸟没有爪子 → 模型给它配上两只小爪
+//
+//   【改了什么】只动鹦鹉, 猫狗/幻兽一行不碰:
+//   · pet-image.js: 六格姿态 + 布局按种类给 —— 鹦鹉用鸟的姿态
+//     (站枝头 / 闭眼 / 埋头理羽 / 低头啄食 / 仰望 / 展翅),
+//     布局改成 "its beak, head, wings, tail feathers and outfit";
+//   · pet-nest.js: 新增 PARROT_OUTFITS(24 件, 6 系列各 4 件) ——
+//     鸟穿得上的衣服: 领结/帽/围巾/斗篷/皇冠/花环/背带/披肩/斗笠…;
+//   · pet-nest.js: 鹦鹉的道具 "in its paws" → "in its beak";
+//   · pet-nest.js: 把宠物的 kind 传进 dailyLookFor / 生图入口
+//     (鹦鹉按 kind 挑自己那套衣服 + 用鸟的姿态画六格);
+//   · pet-nest.js: currentLook / 破壳那条路也传 kind ——
+//     否则【名册写的衣服】和【图上画的衣服】不是同一套(2026-10-28 刚修过的老毛病)。
+//
+//   index.html 的 ?v=：modules/pet-nest.js 0.0.26 → 0.0.27、
+//   modules/pet-image.js 0.0.5 → 0.0.6。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.92.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

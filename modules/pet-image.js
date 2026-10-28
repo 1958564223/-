@@ -883,11 +883,38 @@
   // 调 API
   // ============================================================
 
+  // ⚠️【2026-10-29 用户实测】「鹦鹉只有徽章，没有新衣服」。
+  //   原来的六格姿态全是【四足哺乳动物】的词:
+  //     "sitting with one front paw raised" / "curled up asleep" / "lying down"
+  //     布局那句还写着 "its ears, tail, paws and outfit"
+  //   → 让模型画一只【鸟】+ 抬前爪 + 爪子拿东西 → 它把鹦鹉画成毛球兽
+  //   → 人穿的衣服(草莓裙/小熊睡衣/绣花鞋)根本穿不上去
+  //   → 只会把「胸口别个小东西」画成一枚徽章 ⇒ 用户看到的正是「只有徽章」。
+  //   → 鸟用鸟的姿态: 站枝头 / 闭眼 / 埋头理羽 / 低头啄食 / 仰望 / 展翅。
+  const POSE_SETS = {
+    default: '1) sitting alert and looking at the viewer, 2) sitting with eyes closed content, 3) curled up asleep, 4) head lowered eating from a food bowl, 5) lying down looking up, 6) sitting with one front paw raised',
+    parrot: '1) perched upright on a branch and looking at the viewer, 2) perched with eyes closed content, 3) perched and dozing with its head tucked into its feathers, 4) head lowered pecking seeds from a small bowl, 5) perched and looking up, 6) perched with one wing raised'
+  };
+  // 布局里「哪些部位不许碰到格边」—— 鸟没有耳朵/爪子, 写 paws 会把它画成四足
+  const LAYOUT_BODIES = {
+    default: 'its ears, tail, paws and outfit',
+    parrot: 'its beak, head, wings, tail feathers and outfit'
+  };
+  function poseSetFor(kind) {
+    return (kind && POSE_SETS[kind]) || POSE_SETS.default;
+  }
+  function layoutBodyFor(kind) {
+    return (kind && LAYOUT_BODIES[kind]) || LAYOUT_BODIES.default;
+  }
+  function layoutTextFor(kind) {
+    return 'ONE image containing a 3 columns by 2 rows grid of six equal SQUARE cells, reading left to right then top to bottom, no gaps or borders between the cells, and in every cell the character is drawn SMALL and centered, filling only about 75% of that cell with a clear empty margin all around it, ' + layoutBodyFor(kind) + ' staying completely inside the cell and never touching or crossing the cell edges';
+  }
+
   function buildAtlasPrompt(subject, options) {
     const opts = options || {};
     const style = opts.style
       || 'warm children\'s picture-book illustration, soft watercolor texture, warm afternoon sunlight, gentle muted palette, the same art style across all six cells';
-    const poses = '1) sitting alert and looking at the viewer, 2) sitting with eyes closed content, 3) curled up asleep, 4) head lowered eating from a food bowl, 5) lying down looking up, 6) sitting with one front paw raised';
+    const poses = poseSetFor(opts.kind);
     const background = 'isolated on a fully transparent background, absolutely no ground shadow, no backdrop, no scenery, no text, no watermark, no border, no grid lines';
     // ⚠️【2026-10-27 用户定】「宠物只占格子 70-80% 的格子，还是六张」
     //   原来写的是「每格塞满那一个姿势、格子之间不留缝」
@@ -896,7 +923,7 @@
     //     而且邻格串进来的碎片在本格留下多余色块。
     //   → 改成「每格只占 75%，四周留白，任何部位都不许碰格边」，
     //     切边时切到的就只是留白（不会碰到宠物），邻格也串不进来。
-    const layout = 'ONE image containing a 3 columns by 2 rows grid of six equal SQUARE cells, reading left to right then top to bottom, no gaps or borders between the cells, and in every cell the character is drawn SMALL and centered, filling only about 75% of that cell with a clear empty margin all around it, its ears, tail, paws and outfit staying completely inside the cell and never touching or crossing the cell edges';
+    const layout = layoutTextFor(opts.kind);
     return [
       'A single ' + subject + '.',
       'The SAME individual character in every cell — identical face, identical fur/skin colors, identical eye color, identical markings, identical outfit and accessories.',
@@ -908,11 +935,12 @@
     ].join('\n');
   }
 
-  function buildEvolvePrompt(subject, change, referenceNote) {
+  function buildEvolvePrompt(subject, change, referenceNote, options) {
+    const opts = options || {};
     const style = 'warm children\'s picture-book illustration, soft watercolor texture, warm afternoon sunlight, gentle muted palette, the same art style across all six cells';
-    const poses = '1) sitting alert and looking at the viewer, 2) sitting with eyes closed content, 3) curled up asleep, 4) head lowered eating from a food bowl, 5) lying down looking up, 6) sitting with one front paw raised';
+    const poses = poseSetFor(opts.kind);
     const background = 'isolated on a fully transparent background, absolutely no ground shadow, no backdrop, no scenery, no text, no watermark, no border, no grid lines';
-    const layout = 'ONE image containing a 3 columns by 2 rows grid of six equal SQUARE cells, reading left to right then top to bottom, no gaps or borders between the cells, and in every cell the character is drawn SMALL and centered, filling only about 75% of that cell with a clear empty margin all around it, its ears, tail, paws and outfit staying completely inside the cell and never touching or crossing the cell edges';
+    const layout = layoutTextFor(opts.kind);
     const lines = [];
     lines.push('Keep exactly the SAME character from the reference image — same face, same colors, same eye color, same markings.');
     // ⚠️【2026-10-27 修 —— 这就是「小水壶画不出来」的真正根因】
@@ -1094,7 +1122,7 @@
       throw new Error('今天生图次数用完了（上限 ' + limit + ' 次），明天再说');
     }
     if (!referenceBlob) throw new Error('没有参考图，不能蜕变');
-    const prompt = buildEvolvePrompt(subject, change);
+    const prompt = buildEvolvePrompt(subject, change, undefined, o);
     const { blob } = await callEdits(prompt, referenceBlob);
     bumpTodayCount(counter);
     const processed = await postprocess(blob, { cutout: true });

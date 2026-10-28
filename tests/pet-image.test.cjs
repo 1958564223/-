@@ -182,6 +182,43 @@ section('生图契约: 蜕变提示词');
 }
 
 // ============================================================
+// ③ 鹦鹉用鸟的姿态（用户 2026-10-29 实测「鹦鹉只有徽章，没有新衣服」）
+// ============================================================
+// 【真因】六格姿态/布局全是【四足哺乳动物】的词:
+//   "sitting with one front paw raised" / "curled up asleep" / "lying down"
+//   布局那句还写着 "its ears, tail, paws and outfit"
+// → 让模型画一只【鸟】+ 抬前爪 → 它把鹦鹉画成毛球兽
+// → 人穿的衣服(草莓裙/小熊睡衣)根本穿不上去 → 只剩胸口一个小东西(看着像徽章)
+// → 鸟必须用鸟的姿态: 站枝头 / 埋头理羽 / 低头啄食 / 展翅
+section('生图契约: 鹦鹉用鸟的姿态（2026-10-29）');
+{
+  const { api } = loadPetImage();
+
+  const pa = api.buildAtlasPrompt('a fluffy sun conure parrot', { kind: 'parrot' });
+  check('鹦鹉的六格姿态是鸟的（站枝头/展翅）',
+    /perched upright on a branch/.test(pa) && /one wing raised/.test(pa), pa);
+  check('鹦鹉的姿态里没有「抬起前爪」', !/front paw raised/.test(pa));
+  check('鹦鹉的姿态里没有「蜷起来睡/趴着」（那是四足）',
+    !/curled up asleep/.test(pa) && !/lying down looking up/.test(pa));
+  check('鹦鹉的布局说的是喙/翅膀/尾羽',
+    /its beak, head, wings, tail feathers and outfit/.test(pa));
+  check('鹦鹉的布局里没有爪子/耳朵', !/paws/.test(pa) && !/ears/.test(pa));
+
+  const ca = api.buildAtlasPrompt('a fluffy cat');
+  check('不给种类时还是四足那套（猫狗/幻兽不受影响）',
+    /one front paw raised/.test(ca) && /its ears, tail, paws and outfit/.test(ca));
+
+  const pe = api.buildEvolvePrompt('a fluffy sun conure parrot', '', undefined, { kind: 'parrot' });
+  check('蜕变提示词（日常换装走的这条）也用鸟的姿态',
+    /perched/.test(pe) && !/front paw raised/.test(pe), pe);
+  check('蜕变提示词里鹦鹉的布局也是喙/翅膀',
+    /its beak, head, wings, tail feathers and outfit/.test(pe));
+  const ce = api.buildEvolvePrompt('a fluffy cat', '');
+  check('蜕变提示词不给种类时还是四足那套',
+    /one front paw raised/.test(ce) && /its ears, tail, paws and outfit/.test(ce));
+}
+
+// ============================================================
 // ③ 通道读取
 // ============================================================
 section('通道读取');

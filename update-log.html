@@ -166,11 +166,46 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.48 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.48</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（鹦鹉换装只有徽章，没有新衣服）</div>
+        <ul class="item-list">
+          <li><strong>你报的现象</strong> —— 「怎么我刚才更新了，鹦鹉只有徽章，没有新衣服」。</li>
+          <li><strong>徽章是画出来了的</strong> —— 那是<strong>道具</strong>，本来就能画。<strong>没画出来的是「衣服」</strong>，因为给模型的条件自相矛盾。</li>
+          <li><strong>矛盾在哪</strong> —— 我们让模型画一张<strong>六格图</strong>，六个姿势写的是：<strong>抬起一只前爪、蜷着睡、趴着、耳朵和尾巴和爪子不许碰格边</strong>。这些全是<strong>猫狗那一套</strong>。让一只<strong>鹦鹉</strong>「抬起前爪」，模型就会把它画成毛茸茸的圆球兽 —— <strong>草莓裙、小熊睡衣、绣花鞋</strong>这些它根本穿不上，于是衣服被丢掉，只剩胸口一个小东西（看着就是一枚徽章）。</li>
+          <li><strong>衣服库也是问题</strong> —— 那 72 件衣服里，鸟穿不了一批（连衣裙、连体衣、鞋、袜子、围裙），还有两件干脆是「<strong>胸口别一个小东西</strong>」→ 画出来同样是徽章。</li>
+          <li><strong>道具里还写着「爪子」</strong> —— 有一批道具写的是「<strong>拿在爪子里</strong>」。鸟没有爪子，写爪子模型就会给它配上两只小爪，同样把它画成四足兽。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">这次改了什么</div>
+        <ul class="item-list">
+          <li><strong>鹦鹉改用鸟的六个姿势</strong>：<strong>站在枝头、闭眼、埋头理羽、低头啄食、抬头看、展翅</strong>；「不许碰格边」也改成<strong>喙、头、翅膀、尾羽</strong>。</li>
+          <li><strong>鹦鹉有自己的 24 件衣服</strong> —— 全是<strong>穿在身上</strong>的：<strong>奶油领结、小饼干帽、棒棒糖丝带、草莓围兜、珍珠小皇冠、蕾丝领巾、小花环、天鹅绒小斗篷、流星围巾、小宇航头盔、喷气小背包、极光小纱、竹斗笠、祥云腰封、点翠发簪、红绸小披帛、贝壳发夹、浪花围巾、圆潜水镜、救生圈、巫师尖帽、兔耳兜帽、魔法书包、星星小披肩</strong>（6 个系列各 4 件，衣服和道具还是配套挑）。</li>
+          <li><strong>衣服位里不许再出现「顶在头上的一颗小行星」这种</strong> —— 你截图里那句「一顶小皇冠、<strong>头顶小行星的</strong>」：前面那个是<strong>道具</strong>，后面那个本来该是<strong>衣服</strong>，可它其实是「顶在头上的一颗小行星」，根本不是衣服 → 画出来只是头顶一个小东西，看着就像一枚徽章。现在<strong>衣服位只放穿在身上的东西</strong>（戴着/围着/披着/背着/系着/套着）。</li>
+          <li><strong>鹦鹉的道具改成用喙拿</strong>：「拿在爪子里」→「<strong>拿在喙里</strong>」。</li>
+          <li><strong>名册和图对上了</strong> —— 之前名册写的衣服和图上画的<b>可能不是同一套</b>，这次一并对齐（今天这身按宠物种类算，名册、说明、图、给 AI 看的那份全都用同一套）。</li>
+          <li><strong>猫狗和幻兽一点没动</strong> —— 它们本来就是四足，「爪子」对它们是对的，姿势和衣服保持原样。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">要看的</div>
+        <ul class="item-list">
+          <li>明天鹦鹉自动换装时，看它是不是<strong>穿上了</strong>（领结/帽/围巾/斗篷这类），而不是只多了一个小徽章。</li>
+          <li>想马上看：手动点一次「<strong>换个模样</strong>」就行（手动和自动分开算次数）。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.47 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.47</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复（影院越看越烫 / 不写总结 / 闪退）</div>

@@ -532,7 +532,11 @@ section('每日换装: 所有宠物都参与 + 衣服道具都进提示词（202
     }
   }, look);
   check('鹦鹉提示词里有今天的衣服', parrot.indexOf(look.outfit.en) >= 0, parrot);
-  check('鹦鹉提示词里有今天的道具', parrot.indexOf(look.icons[0].en) >= 0, parrot);
+  // ⚠️【2026-10-29】鹦鹉的道具里 "in its paws" 会改成 "in its beak"（鸟没有爪子）
+  //   → 参照物要跟着换，不然这条会误报。
+  const parrotIconEn = String(look.icons[0].en).replace(/in its paws?/g, 'in its beak');
+  check('鹦鹉提示词里有今天的道具（爪子已改成喙）',
+    parrot.indexOf(parrotIconEn) >= 0, parrot);
   check('鹦鹉提示词里没有中文', !/[一-龥]/.test(parrot), parrot);
 
   const cat = R.subjectForPet({ kind: 'cat', stage: 1, seed: 'seed-A', appearance: null }, look);
@@ -544,6 +548,9 @@ section('每日换装: 所有宠物都参与 + 衣服道具都进提示词（202
   // --- ④ 换装文字说明：所有种类都要有 ---
   const today = R.dayKey(Date.now());
   const todayLook = R.dailyLookFor([], today, 'seed-A', []);
+  // ⚠️【2026-10-29】鹦鹉用的是自己那套衣服 → 参照物也要带 kind
+  //   （不带 kind 就会拿「猫狗那身」当参照 → 误报"名册和图不是一个"）
+  const todayParrotLook = R.dailyLookFor([], today, 'seed-A', [], 'parrot');
   const parrotCn = R.formatPetAppearance({
     kind: 'parrot', stage: 1, seed: 'seed-A',
     appearance: {
@@ -552,7 +559,9 @@ section('每日换装: 所有宠物都参与 + 衣服道具都进提示词（202
     }
   });
   check('鹦鹉的说明里有今天这身（用户说「鹦鹉没看见换装文字说明」）',
-    parrotCn.indexOf(todayLook.outfit.cn) >= 0, parrotCn);
+    parrotCn.indexOf(todayParrotLook.outfit.cn) >= 0, parrotCn);
+  check('鹦鹉说明里的衣服是鹦鹉衣橱里的那件',
+    (R.PARROT_OUTFITS || []).some(o => o.cn === todayParrotLook.outfit.cn), todayParrotLook.outfit.cn);
   const catCn = R.formatPetAppearance({
     kind: 'cat', stage: 1, seed: 'seed-A',
     appearance: { kind: 'starter', identity: '小猫', palette: '', marking: '' }
@@ -575,6 +584,109 @@ section('每日换装: 所有宠物都参与 + 衣服道具都进提示词（202
     !/each cell fully filled/.test(imgSrc));
   check('还是六格 3×2（用户说动作数不改）',
     /3 columns by 2 rows grid of six equal SQUARE cells/.test(imgSrc));
+}
+
+// ============================================================
+// 鹦鹉换装: 「只有徽章，没有新衣服」(用户 2026-10-29 实测)
+// ============================================================
+// 【真因】探针 _reports/pet-test/print-real-prompt.cjs 把真正发出去的提示词打了出来:
+//   ① 六格姿态/布局全是【四足哺乳动物】的词("front paw raised" / "ears, tail, paws")
+//      → 让模型画鸟 + 抬前爪 → 它把鹦鹉画成毛球兽 → 人穿的衣服根本穿不上去
+//      → 只会把「胸口别个小东西」画成一枚徽章
+//   ② 那 72 件衣服里, 鸟穿不了一批(裙/连体衣/鞋/袜), 还有两件是「胸口别点小东西」
+//   ③ 道具表里一批写的是 "in its paws" → 鸟没有爪子 → 模型给它配上两只小爪
+// → 修法: 鹦鹉单独一套【鸟穿得上的衣服】+ 鸟的姿态 + 爪子改喙
+// ⚠️ 猫狗/幻兽一行不许动 (它们本来就是四足, paws 是对的)
+section('鹦鹉换装: 鸟的姿态 + 鸟穿得上的衣服 (2026-10-29)');
+{
+  const R = loadRules();
+  const nestSrc = read('modules/pet-nest.js');
+  const imgSrc = read('modules/pet-image.js');
+
+  // --- ① 鹦鹉衣橱 ---
+  // ⚠️ 这些断言必须【非空才有效】—— 空数组时 every/some 恒真 → 假绿
+  const po = R.PARROT_OUTFITS || [];
+  const hasWardrobe = po.length > 0;
+  check('鹦鹉有自己的一套衣服', hasWardrobe, po.length + ' 件');
+  check('鹦鹉衣服够换（≥ 16 件，一周不重样）', hasWardrobe && po.length >= 16, po.length + ' 件');
+  check('鹦鹉衣服没有鸟穿不了的（裙/连体衣/鞋/袜/围裙）',
+    hasWardrobe && !po.some(o => /dress|onesie|shoes|socks|apron|skirt|nightgown|hanfu|qipao|vest/i.test(o.en)),
+    po.filter(o => /dress|onesie|shoes|socks|apron|skirt|nightgown|hanfu|qipao|vest/i.test(o.en)).map(o => o.cn).join('、'));
+  check('鹦鹉衣服里没有四足的词（爪子/脚）',
+    hasWardrobe && !po.some(o => /paw|feet/i.test(o.en)));
+  check('鹦鹉衣服都是「一眼看得出是穿了什么」',
+    hasWardrobe && po.every(o => /wearing|holding|draped|carrying/.test(o.en)),
+    po.filter(o => !/wearing|holding|draped|carrying/.test(o.en)).map(o => o.cn).join('、'));
+  // ⚠️【2026-10-29 用户截图】「文字说明就没给鹦鹉安排衣服描述」——
+  //   用户看到的是「一顶小皇冠、头顶小行星的」: 前面是【道具】,
+  //   后面那个「头顶小行星的」本该是【衣服】, 可它其实是"顶在头上的一颗小行星",
+  //   根本不是衣服 → 画出来只是头顶一个小东西(看着像徽章) → 用户说"没有新衣服"。
+  //   → 鹦鹉的衣服必须是【穿在身上的】, 不能是"捧着/提着/叼着"那种(那是道具位)。
+  check('鹦鹉的衣服必须是【穿在身上】的（不是捧着/提着/叼着那种道具）',
+    hasWardrobe && po.every(o => !/^(holding|with a tiny|with a swirled)/.test(o.en)),
+    po.filter(o => /^(holding|with a tiny|with a swirled)/.test(o.en)).map(o => o.cn).join('、'));
+  check('鹦鹉衣服的中文名都是「穿着类」动词',
+    hasWardrobe && po.every(o => /^(戴着|围着|披着|背着|系着|套着|簪着|肩披)/.test(o.cn)),
+    po.filter(o => !/^(戴着|围着|披着|背着|系着|套着|簪着|肩披)/.test(o.cn)).map(o => o.cn).join('、'));
+  check('鹦鹉衣服没有重名', hasWardrobe && new Set(po.map(o => o.cn)).size === po.length);
+  const seriesCount = {};
+  po.forEach(o => { seriesCount[o.series] = (seriesCount[o.series] || 0) + 1; });
+  check('鹦鹉衣服 6 个系列都有（衣服和道具配套才成立）',
+    Object.keys(seriesCount).length === 6, JSON.stringify(seriesCount));
+  check('鹦鹉衣服每个系列至少 3 件（配套的道具才够挑）',
+    Object.keys(seriesCount).every(k => seriesCount[k] >= 3), JSON.stringify(seriesCount));
+
+  // --- ② 按种类选衣橱 ---
+  const plk = R.dailyLookFor([], '2026-01-01', 'seed-A', [], 'parrot');
+  check('鹦鹉的衣服来自鹦鹉衣橱',
+    po.some(o => o.cn === plk.outfit.cn), plk.outfit.cn);
+  const clk = R.dailyLookFor([], '2026-01-01', 'seed-A', [], 'cat');
+  check('猫的衣服还是来自原来那 72 件（不许被改坏）',
+    (R.BEAST_OUTFITS || []).some(o => o.cn === clk.outfit.cn), clk.outfit.cn);
+  check('鹦鹉和猫拿到的衣服不是同一件（不是把所有宠物都换了）',
+    plk.outfit.cn !== clk.outfit.cn, plk.outfit.cn + ' / ' + clk.outfit.cn);
+
+  // --- ③ 鹦鹉的爪子要改成喙 ---
+  // ⚠️ texts 要用「喝一杯拿铁」→ 记忆匹配会挑中【一杯热饮】(英文写的是 "in its paws")
+  //   不然随机挑到的道具可能压根没有 paws → 这条断言就假绿了
+  const plkBeak = R.dailyLookFor([], '2026-01-01', 'seed-A', ['今天喝了一杯拿铁'], 'parrot');
+  check('（前提）今天的道具英文里确实带爪子', /in its paws?/.test(plkBeak.icons[0].en), plkBeak.icons[0].en);
+  const breed = R.PARROT_BREEDS[0];
+  const parrotSubject = R.subjectForPet({
+    kind: 'parrot', stage: 1, seed: 'seed-A',
+    appearance: {
+      kind: 'parrot', breedKey: breed.key, identity: breed.label, palette: breed.colorCn,
+      marking: '心形胸羽', markEn: 'a small heart-shaped plume on the breast'
+    }
+  }, plkBeak);
+  check('鹦鹉提示词里没有爪子（in its paws）', !/in its paw/i.test(parrotSubject), parrotSubject);
+  check('鹦鹉提示词里道具改成了喙', /in its beak/i.test(parrotSubject), parrotSubject);
+  check('鹦鹉提示词里今天那件衣服在', parrotSubject.indexOf(plkBeak.outfit.en) >= 0, parrotSubject);
+  const catSubject = R.subjectForPet({ kind: 'cat', stage: 1, seed: 'seed-A', appearance: null }, clk);
+  check('猫的提示词还是爪子（猫有爪子，不许被改坏）', /in its paws/.test(catSubject) || !/in its paw/.test(catSubject), catSubject);
+
+  // --- ④ kind 得传到生图入口（不然姿态换不了）---
+  check('生图入口带着宠物的种类（鹦鹉要鸟的姿态）',
+    /kind: row\.kind/.test(nestSrc));
+  check('图集提示词按种类取姿态', /poseSetFor\(opts\.kind\)/.test(imgSrc));
+  check('蜕变提示词也按种类取姿态（日常换装走的是蜕变那条路）',
+    /buildEvolvePrompt\(subject, change, undefined, o\)/.test(imgSrc));
+  check('鹦鹉用鸟的姿态（站着/展翅，不是抬起前爪）',
+    /perched/.test(imgSrc) && /one wing raised/.test(imgSrc) &&
+    /parrot:/.test(imgSrc));
+  check('布局里鸟说的是喙/翅膀/尾羽（不是耳朵爪子）',
+    /its beak, head, wings, tail feathers and outfit/.test(imgSrc));
+  check('四足那套原样保留（猫狗/幻兽不受影响）',
+    /its ears, tail, paws and outfit/.test(imgSrc) &&
+    /one front paw raised/.test(imgSrc));
+
+  // --- ⑤ 名册和图必须是同一套（这条最容易又犯: 鹦鹉换了自己的衣橱, 名册没跟上）---
+  check('名册那条路也带 kind（不然名册写的衣服和图上画的不是一个）',
+    /dailyLookFor\(behaviors, d,[\s\S]{0,200}?row && row\.kind/.test(nestSrc));
+  check('破壳那条路也带 kind',
+    /dailyLookFor\(behaviors, dayKey\(Date\.now\(\)\)[\s\S]{0,200}?prow && prow\.kind/.test(nestSrc));
+  check('今天这身的缓存按宠物存（生图算的那份，界面优先用它）',
+    /rememberLookFor\(pet, look\)/.test(nestSrc) && /cachedLookFor/.test(nestSrc));
 }
 
 // ============================================================
@@ -915,19 +1027,33 @@ section('接线: sw.js 预缓存');
   //   不 bump 的话手机上吃的是浏览器 HTTP 缓存里的旧模块，新功能（齿轮面板/饿死）根本不出现。
   //   这条断言把「改了 pet-nest.js / pet-nest.css / pet-image.js 却忘了 bump」变成会报红。
   const html = read('index.html');
+  // ⚠️【2026-10-29 修】原来这里是【写死确切版本号】(got === want)
+  //   → 每 bump 一次版本号就会误报一次 (2026-10-28 踩过一次, 这次又踩)
+  //   → 改成【不低于这个版本】: 逐段比大小
   const EXPECT_V = {
-    'modules/pet-nest.js': '0.0.26',
-    'modules/pet-image.js': '0.0.5',
+    'modules/pet-nest.js': '0.0.27',
+    'modules/pet-image.js': '0.0.6',
     'modules/pet-speech.js': '0.0.3',
     'modules/backup-import-export.js': '0.0.40',
     'modules/data-management.js': '0.0.39',
     'css/pet-nest.css': '0.0.14'
   };
+  function verAtLeast(got, want) {
+    if (!got) return false;
+    const a = String(got).split('.').map(Number);
+    const b = String(want).split('.').map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const x = a[i] || 0, y = b[i] || 0;
+      if (x > y) return true;
+      if (x < y) return false;
+    }
+    return true;
+  }
   for (const [file, want] of Object.entries(EXPECT_V)) {
     const re = new RegExp(file.replace(/[/.]/g, '\\$&') + '\\?v=([0-9.]+)');
     const got = (html.match(re) || [])[1];
-    check(file + ' 的 ?v= 已 bump 到 ' + want + '（不 bump 手机上吃旧版，新功能不出现）',
-      got === want, '实际 ' + (got || '没找到'));
+    check(file + ' 的 ?v= 不低于 ' + want + '（不 bump 手机上吃旧版，新功能不出现）',
+      verAtLeast(got, want), '实际 ' + (got || '没找到'));
   }
 }
 

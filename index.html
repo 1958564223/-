@@ -309,10 +309,10 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
              没有参考图(首次生成) → 照旧写盲盒配色。羽化(终形态)例外，本就该换配色。
        index.html 的 ?v=：modules/pet-nest.js 0.0.25 → 0.0.26。
        ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。 -->
-  <script src="modules/pet-nest.js?v=0.0.26" defer></script>
+  <script src="modules/pet-nest.js?v=0.0.27" defer></script>
   <!-- 宠物屋的生图模块 (可选, 没有生图通道时宠物照样长大, 只是不换模样)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.getDb() 往同一个库存资产。 -->
-  <script src="modules/pet-image.js?v=0.0.5" defer></script>
+  <script src="modules/pet-image.js?v=0.0.6" defer></script>
   <!-- 宠物说话系统 (宠物自己开口)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.listPets() 和 rules.dimensionScores()。 -->
   <script src="modules/pet-speech.js?v=0.0.3" defer></script>

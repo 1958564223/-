@@ -292,9 +292,15 @@ section('⑦ 源码接线');
     /let icons = pickIconsFromText\(/.test(src));
   const R2 = loadRules();
   check('衣服库是 72 件（不是 20）', R2.BEAST_OUTFITS.length === 72, R2.BEAST_OUTFITS.length + ' 件');
-  check('带系列标记的共 72 衣服 + 40 道具 = 112 条',
-    (src.match(/series: '(sweet|fairy|galaxy|oriental|ocean|magic)'/g) || []).length === 112,
-    (src.match(/series: '(sweet|fairy|galaxy|oriental|ocean|magic)'/g) || []).length + ' 条');
+  // ⚠️【2026-10-29】鹦鹉有自己的一套 (PARROT_OUTFITS 24 件) → 总数 112 → 136
+  const seriesCount = (src.match(/series: '(sweet|fairy|galaxy|oriental|ocean|magic)'/g) || []).length;
+  const expectTotal = 72 + (R2.PARROT_OUTFITS ? R2.PARROT_OUTFITS.length : 0) + 40;
+  check('带系列标记的共 72 衣服 + ' + (R2.PARROT_OUTFITS ? R2.PARROT_OUTFITS.length : 0) +
+    ' 鹦鹉衣服 + 40 道具 = ' + expectTotal + ' 条',
+    seriesCount === expectTotal, seriesCount + ' 条');
+  check('鹦鹉衣橱是 24 件（鸟穿得上的衣服）',
+    (R2.PARROT_OUTFITS || []).length === 24,
+    (R2.PARROT_OUTFITS || []).length + ' 件');
 }
 
 // ============================================================
