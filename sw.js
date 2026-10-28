@@ -459,7 +459,58 @@
 //   index.html 的 ?v=：modules/cinema-room.js 0.29.3 → 0.29.4、modules/cinema-live.js 1.9.7 → 1.9.8、
 //   modules/cinema-chat.js 0.0.1 → 0.0.2；cinema-sandbox/index.html 里那三个也一起对齐。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.84.0';
+// v0.2.85.0 (2026-10-28): 影院「陪聊接不上话 / 导出丢剧情 / 长片卡住」三件一起修。
+//   起因（用户实测）：看一部长剧，5 分钟时总结了剧情，然后 Live 断了重连 —— 视频模型回来了，
+//   影院里主 API 聊天却接不上话；主 API 在影院里【没有外面聊天框的上文记忆】；
+//   导出剧情记忆后【长期记忆里没有内容】，之前的也白看了；退出再进影院剧就卡住放不动；
+//   出错退出来以后【外面也不能聊天】，只有大退才恢复。
+//   ① 陪聊零上文（真因：影院跑在 iframe 沙盒里，沙盒只加载 7 个文件 —— 没有 message-store.js
+//      / memory-summary.js / settings-presets.js / ai-response.js，外面的一切它都算不出来）。
+//      修法：宿主算好【外面聊天框的历史 + 长期记忆 + 主聊天提示词预设】发给沙盒
+//      （cinema:init 补发 + cinema:needContext 每次发消息前问一次），沙盒照单全收。
+//   ② 导出只落最后一块（真因：沙盒里的 db.chats 是【假的】 —— 它只把 longTermMemory 的
+//      最后一条 postMessage 给宿主，前面几条全丢；而导出紧接着把全部行从库里删掉）。
+//      修法：新增显式通道 cinema:exportMemory —— 沙盒把【全部】chunk 发给宿主，
+//      宿主写进真实长期记忆并回 ack，沙盒【收到 ack 才清账】，没写成功一行都不删。
+//   ③ 影院里说的话不落主聊天历史 → 新增 cinema:chatMessage，宿主用 messageStore 写进去。
+//   ④ 长片卡住（真因链：Live 推帧【完全没有背压保护】，连接一卡浏览器就无限缓冲待发帧；
+//      服务端 goAway 之后还在猛推帧，把重连用的存档点撑爆）。
+//      修法：bufferedAmount 超 2MB 就丢帧并告诉用户；goAway 立刻停推帧，重连成功再恢复。
+//      另外大文件提示改成说实话（会「播一截就卡住」+ 建议走短剧库流式播）。
+//   ⑤ 退出影院后「外面也不能聊天，只有大退才恢复」（真因：影院那个 iframe 是
+//      position:fixed + inset:0 + z-index:2147483647 —— 整个屏幕都在它下面，
+//      连外面顶栏和「再点一次退出」那个按钮都在它底下；而外面收掉它的唯一途径
+//      = 影院发一条 cinema:closed，那条消息只要没送到（影院退出流程中途抛异常 /
+//      影院页被重载 / 影院页崩了），整个 app 就被一个黑框盖死，外面点哪儿都没反应）。
+//      修法：① 房间在 documentElement 上挂 data-cinema-room-open="1"；
+//      ② 外面每 700ms 直接读 iframe 的 DOM（同一个站，读得到），标记没了就自己收掉；
+//      ③ 影院页 pagehide 时也补发一条 cinema:closed（覆盖「影院页被换掉/重载」）。
+//   index.html 的 ?v=：modules/cinema-room.js 0.29.4 → 0.31.0、modules/cinema-live.js 1.9.8 → 1.9.9、
+//   modules/cinema-chat.js 0.0.2 → 0.0.3、modules/live-client.js 0.4.0 → 0.4.1、
+//   modules/cinema-room.css 0.38.1 → 0.38.2；cinema-sandbox/index.html 里那几个也一起对齐
+//   （沙盒的 live-client.js 以前还挂着一个 ?v=0.1.0 的老缓存键，这次一并对齐）。
+// v0.2.86.0 (2026-10-28): 宠物屋三修（用户 2026-10-28 实测三连报）
+//   ① 每日换装没换衣服也没道具：蜕变提示词里「按今天这身重画」那句被
+//      "Additional detail to add: ..." 分支整条替换掉了 → 模型拿旧参考图照抄。
+//      修法：那句永远保留，再加一句点名六格都要有道具。
+//      另修「道具全网都是小碗」：关键词表里大半是泛词（吃/饭/饿/喝/睡/冷/热…），
+//      谁的一天都有 → 全都命中「一只小碗」，而同分时又按【中文名】排 → 全体第一个都是小碗。
+//      修法：泛词命中不算数 → 走【天+种子】兜底（每人每天都不一样）。
+//      ⚠️ 判据是「这个词泛不泛」，不是「关键词有两个字以上」——
+//         「听了一首歌」的"歌"、「读了一本书"的"书/读"都是单字，可那恰恰最该命中。
+//   ② 宠物说的话不落进聊天框：window.renderChatMessages 全项目根本没定义
+//      （真正渲染聊天的是 window.renderChatInterface）→ 那个 typeof 判断永远为假
+//      → 话写进库了但界面从不重绘 → 必须退出聊天框再进才看得见。
+//      修法：改调 renderChatInterface(chatId)（保留 renderChatMessages 兜底）。
+//      另修：启动时 state.activeChatId 还没设 → 一句都没写进任何会话
+//      → 新增 mostRecentChat()，按 lastMessageTimestamp 落到最近聊过的会话。
+//   ③ 桌宠太小：桌面 78px → 98px、手机 66px → 83px（用户要 20~30%，取中值 25%），
+//      尺寸统一走 CSS 变量 --pn-desktop-pet-size，要调只改那一个值。
+//   index.html 的 ?v=：modules/pet-nest.js 0.0.23 → 0.0.24、modules/pet-image.js 0.0.4 → 0.0.5、
+//   modules/pet-speech.js 0.0.2 → 0.0.3、modules/proactive-wake.js 0.2.15 → 0.2.16、
+//   modules/in-app-proactive-patrol.js 0.2.17 → 0.2.18、css/pet-nest.css 0.0.13 → 0.0.14。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.86.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

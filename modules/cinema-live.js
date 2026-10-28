@@ -628,7 +628,17 @@
       var b64 = grabFrameBase64(video);
       if (!b64) return;
       S.framesSent++;
-      S.client.sendVideoFrame(b64, 'image/jpeg');
+      var sent = S.client.sendVideoFrame(b64, 'image/jpeg');
+      // 🔴 2026-10-28: 背压丢帧 → 让用户知道"网络堵了, 模型那会儿看不见画面"。
+      //   不说的话用户只会觉得"模型变傻了", 查不到方向。
+      if (!sent && typeof S.client.getDroppedFrames === 'function') {
+        var dropped = S.client.getDroppedFrames() || 0;
+        if (dropped && dropped !== S._lastDroppedReported) {
+          S._lastDroppedReported = dropped;
+          appendSystemLine('⚠️ 网络堵住了，已经丢掉 ' + dropped +
+            ' 帧画面（不影响你看片，只是模型那会儿看不见屏幕）。');
+        }
+      }
       // 每 30 帧打一次, 免得刷屏
       if (S.framesSent % 30 === 0) {
         log('已发 ' + S.framesSent + ' 帧 (当前 ' + Math.round(b64.length * 0.75 / 1024) + 'KB/帧, t=' +
@@ -3357,7 +3367,14 @@
         log('usage: total=' + meta.totalTokenCount + ' prompt=' + meta.promptTokenCount +
           ' response=' + meta.responseTokenCount);
       },
-      onGoAway: function () { appendSystemLine('⚠️ 服务端即将断开连接'); },
+      onGoAway: function () {
+        appendSystemLine('⚠️ 服务端即将断开连接');
+        // 🔴 2026-10-28: goAway 之后连接随时会关 —— 这段时间推的每一帧都会进
+        //   会话上下文, 把要交给重连用的存档点撑得巨大, 重连就又慢又容易失败。
+        //   用户看到的正是"播着播着卡住不动了"。→ 立刻停推, 等重连成功再恢复
+        //   (scheduleReconnect 成功后会 startFrameLoop)。
+        stopSendingFrames('服务端即将断开');
+      },
       onError: function (err) { appendSystemLine('⚠️ Gemini Live 错误: ' + err.message); }
     });
 
@@ -3559,9 +3576,70 @@
   }
 
   /**
+   * 把要导出的 chunk 交给宿主写进【真实的】长期记忆, 等它回确认。
+   *
+   * ⚠️ 为什么必须等确认才清账 (2026-10-28):
+   *   沙盒里的 db.chats 是【假的】—— 以前它只把 longTermMemory 的最后一条
+   *   postMessage 给宿主, 前面几条全丢。于是: 导出切成 4 块, 只有最后 1 块到了
+   *   长期记忆, 剩下 3 块紧接着被"清账"从库里删掉 —— 界面报"✅ 已导出 4 条",
+   *   实际长期记忆里只有 1 条, 其余白看 (用户 2026-10-28 实测)。
+   *   → 现在: 宿主回 ok 才清账; 没回 ok (超时 / 宿主写失败) → 一行都不删。
+   */
+  var HOST_EXPORT_TIMEOUT_MS = 10000;
+  function requestHostExport(chunks) {
+    return new Promise(function (resolve) {
+      var hasHost = false;
+      try {
+        hasHost = !!(window.parent && window.parent !== window &&
+          typeof window.parent.postMessage === 'function');
+      } catch (e) { hasHost = false; }
+      if (!hasHost) {
+        resolve({ ok: false, error: '不在宿主里, 没法写进长期记忆' });
+        return;
+      }
+
+      var reqId = 'exp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      var done = false;
+
+      function cleanup() {
+        clearTimeout(timer);
+        try { window.removeEventListener('message', onMsg); } catch (e) { /* noop */ }
+      }
+      function onMsg(e) {
+        var d = e.data || {};
+        if (!d || d.type !== 'cinema:exportMemoryDone' || d.requestId !== reqId) return;
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve({ ok: !!d.ok, count: Number(d.count) || 0, error: d.error || '' });
+      }
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve({ ok: false, error: '宿主没回确认 (超时)' });
+      }, HOST_EXPORT_TIMEOUT_MS);
+
+      window.addEventListener('message', onMsg);
+      try {
+        window.parent.postMessage({
+          type: 'cinema:exportMemory',
+          requestId: reqId,
+          chunks: (chunks || []).map(function (c) { return { text: String(c.text || '') }; })
+        }, '*');
+      } catch (e) {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve({ ok: false, error: String((e && e.message) || e) });
+      }
+    });
+  }
+
+  /**
    * 导出。返回 Promise<{ok, count, error?}>。
    *
-   * ⚠️ 必须 await db.chats.put 成功才算数 —— 跟旧版写观影记忆一样的纪律。
+   * ⚠️ 必须等宿主回 ok 才算数 —— 跟旧版写观影记忆一样的纪律。
    *   "内存里 push 完了"不是写成功了。
    */
   function exportMemoriesToMemory() {
@@ -3577,16 +3655,14 @@
         renderPlotPanel();
         return { ok: false, count: 0, error: '还没有攒下的剧情记忆' };
       }
-      if (!chat.longTermMemory) chat.longTermMemory = [];
-      for (var i = 0; i < chunks.length; i++) {
-        chat.longTermMemory.push({
-          content: chunks[i].text,
-          timestamp: Date.now(),
-          source: 'cinema_watch_export'
-        });
-      }
-      return db.chats.put(chat).then(function () {
-        log('✅ 已导出 ' + chunks.length + ' 条到长期记忆');
+      // ⚠️ 2026-10-28: 不再自己 db.chats.put(chat) —— 沙盒里那个是假的,
+      //   只带得走最后一条 (见 requestHostExport 的注释)。
+      //   改成把全部 chunk 发给宿主, 宿主写进真实长期记忆并回 ack。
+      return requestHostExport(chunks).then(function (res) {
+        if (!res || !res.ok) {
+          throw new Error((res && res.error) || '宿主没确认写入');
+        }
+        log('✅ 已导出 ' + (res.count || chunks.length) + ' 条到长期记忆');
         return clearExported(chunks);
       });
     }).then(function (r) {
@@ -3762,6 +3838,19 @@
     }
     log('恢复发帧' + (reason ? ' (' + reason + ')' : ''));
     renderStatus('ready');
+  }
+
+  /**
+   * 只停推帧, 【不动】播放计时和摘要定时器。
+   *
+   * ⚠️ 跟 pauseFrames 的区别很重要:
+   *   pauseFrames 是"用户暂停了视频" —— 那里要 markPaused() 结账、要停摘要定时器。
+   *   这里只是"先别往 Live 里塞帧了"(服务端马上要断) —— 视频还在放, 计时要继续,
+   *   不然 5 分钟的账会被平白吃掉一轮。
+   */
+  function stopSendingFrames(reason) {
+    stopFrameLoop();
+    log('已停止推帧' + (reason ? ' (' + reason + ')' : ''));
   }
 
   function doSendUserText(text) {

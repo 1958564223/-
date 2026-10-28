@@ -282,7 +282,22 @@ async function main() {
   {
     const idx = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
     check('index.html 挂了 modules/cinema-chat.js', /modules\/cinema-chat\.js\?v=/.test(idx));
-    check('cinema-live.js 的 ?v= 已 bump', /modules\/cinema-live\.js\?v=1\.9\.8/.test(idx));
+    // ⚠️ 原来这里写死 '1.9.8' —— 每 bump 一次 cinema-live.js 就会误报一次
+    //   (2026-10-28 实测: bump 到 1.9.9 之后这个断言就红了, 但那不是回归)。
+    //   → 跟下面 CACHE_VERSION 一样改成"比版本号"。
+    const liveVer = (idx.match(/modules\/cinema-live\.js\?v=([0-9.]+)/) || [])[1];
+    const liveVerParts = String(liveVer || '').split('.').map(Number);
+    const liveAtLeast = (v, min) => {
+      if (!v.length || !Number.isFinite(v[0])) return false;
+      for (let i = 0; i < min.length; i++) {
+        if (!Number.isFinite(v[i])) return false;
+        if (v[i] > min[i]) return true;
+        if (v[i] < min[i]) return false;
+      }
+      return true;
+    };
+    check('cinema-live.js 的 ?v= 已 bump（不低于 1.9.8）',
+      liveAtLeast(liveVerParts, [1, 9, 8]), '实际 ' + liveVer);
 
     const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
     check('sw.js 预缓存了 modules/cinema-chat.js', /'\.\/modules\/cinema-chat\.js'/.test(sw));

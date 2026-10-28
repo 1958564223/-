@@ -900,6 +900,7 @@
     return [
       'A single ' + subject + '.',
       'The SAME individual character in every cell — identical face, identical fur/skin colors, identical eye color, identical markings, identical outfit and accessories.',
+      'It must be wearing exactly the outfit described above and holding or wearing exactly the accessory described above — both clearly visible in every one of the six cells, never omitted.',
       layout + '.',
       'The six poses, in order: ' + poses + '. Each pose is drawn small and centered inside its own cell, with the same empty margin around it.',
       'Style: ' + style + '.',
@@ -925,9 +926,15 @@
     }
     if (change) {
       lines.push('Additional detail to add: ' + change + '.');
-    } else {
-      lines.push('Give it exactly the outfit and accessories described above, in all six cells.');
     }
+    // ⚠️【2026-10-28 修 —— 用户实测「手动点换个模样, 衣服根本没换」】
+    //   原来这句写在 else 分支里 —— 只要 change（阶段花纹）非空，它就被【整条替换掉】。
+    //   而 change 对孵出来的宠物几乎永远非空 → 每次蜕变都缺了"按今天这身重画"这句，
+    //   模型拿着旧参考图照抄 → 衣服和道具永远不变。
+    //   → 现在这句【永远都要有】(它跟 change 是两件独立的事)。
+    lines.push('Give it exactly the outfit and accessories described above, in all six cells.');
+    // 小道具模型最容易漏 —— 再单独点名一次，六格里都得看得见。
+    lines.push('The accessory and the outfit must BOTH be clearly visible in EVERY one of the six cells — no cell may be missing either of them.');
     lines.push(layout + '.');
     lines.push('The six poses, in order: ' + poses + '. Each pose is drawn small and centered inside its own cell, with the same empty margin around it.');
     lines.push('Style: ' + style + '.');

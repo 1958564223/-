@@ -105,7 +105,7 @@
       if (features.length >= 3) break;
     }
     // 当天聊的内容 → 现挑一个能物化的小装饰（用户要的「惊喜感」在这）
-    let icons = pickIconsFromText((texts || []).join(' \n'), 1);
+    let icons = pickIconsFromText((texts || []).join(' \n'), 1, seed);
     // ⚠️【2026-10-27 用户提】「换装最好是连道具和衣服一起换哈」
     //   → 聊不到东西的那天只剩一件衣服，看着单薄 → 按「天 + 种子」兜底挑一个道具，
     //     保证【每次换装 = 衣服 + 道具 一起换】。
@@ -123,7 +123,38 @@
    * 今天这身（同步版）
    * ⚠️ 生图提示词是【同步】拼的（主聊天组装也是同步路径，不能 await）→ 这里只能用缓存
    */
+  // ---- 「今天这身」的按宠物缓存 (2026-10-28) ----
+  //   ⚠️ 为什么要有: 界面（名册/说明）走 todayLookForSync → cachedDayTexts()
+  //     （那个缓存不一定热），生图走 buildTodayLook → todayRepresentativeTexts()（现取）
+  //     → 两边可能算出【不同的道具】→ 名册写着"小碗"、图上画的是"渔夫帽"。
+  //   → 生图时把算出来的那份记下来，界面优先用它 → 名册写什么，图上就是什么。
+  let lookCache = { day: '', byPet: {} };
+
+  function lookCacheDay() { return dayKey(Date.now()); }
+
+  function rememberLookFor(pet, look) {
+    try {
+      const key = String((pet && pet.id) || '');
+      if (!key || !look) return;
+      const day = lookCacheDay();
+      if (lookCache.day !== day) lookCache = { day, byPet: {} };
+      lookCache.byPet[key] = look;
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function cachedLookFor(pet) {
+    try {
+      const key = String((pet && pet.id) || '');
+      if (!key) return null;
+      if (lookCache.day !== lookCacheDay()) return null;
+      return lookCache.byPet[key] || null;
+    } catch (e) { return null; }
+  }
+
   function todayLookForSync(pet) {
+    // 生图时算过的那份最准（界面和图必须是同一身）
+    const cached = cachedLookFor(pet);
+    if (cached) return cached;
     return dailyLookFor(
       cachedBehaviors(),
       dayKey(Date.now()),
@@ -162,23 +193,36 @@
    * 打分：命中【不同的同义词】越多越准（10 分/个），
    *      同一个词重复出现只补最多 5 分 —— 免得「歌」刷屏把别的都压掉。
    */
-  function pickIconsFromText(text, limit) {
+  function pickIconsFromText(text, limit, seed) {
     const s = String(text || '');
     if (!s.trim()) return [];
     const scored = [];
     for (const icon of ICON_LIBRARY) {
-      let hits = 0;
-      let freq = 0;
+      let hits = 0;              // 命中了几个【具体】关键词（泛词不计）
+      let freq = 0;              // 具体词一共出现了多少次
       for (const k of icon.keys) {
+        // ⚠️ 泛词命中不算数（吃/饭/饿/喝/玩/睡/冷/热…）——
+        //   谁的一天都有这些词，都算命中 → 全网都是同一个道具。
+        if (GENERIC_ICON_KEYS.has(k)) continue;
         let idx = s.indexOf(k);
         if (idx < 0) continue;
         hits++;
         while (idx >= 0) { freq++; idx = s.indexOf(k, idx + k.length); }
       }
+      // 一个具体词都没命中 → 这个意象不算数 → 交给【天+种子】兜底（每人每天不同）
       if (!hits) continue;
       scored.push({ icon, score: hits * 10 + Math.min(freq, 5) });
     }
-    scored.sort((a, b) => (b.score - a.score) || (a.icon.cn < b.icon.cn ? -1 : 1));
+    // ⚠️ 同分时【按种子分】—— 原来按中文名排序 → 情况一模一样时所有人拿到同一个道具。
+    //   改成按 hash(种子 + 道具名) 排 → 同样命中的人拿到的道具也不同。
+    const sk = String(seed || '');
+    scored.sort((a, b) => {
+      const d = (b.score - a.score);
+      if (d) return d;
+      const ha = hash32(sk + ':iconpick:' + a.icon.cn);
+      const hb = hash32(sk + ':iconpick:' + b.icon.cn);
+      return ha - hb;
+    });
     return scored.slice(0, limit || 1).map(x => x.icon);
   }
 
@@ -239,7 +283,10 @@
     const day = dayKey(Date.now());
     const behaviors = await todayBehaviors(day);
     const texts = await todayRepresentativeTexts();
-    return dailyLookFor(behaviors, day, (pet && (pet.seed || pet.id)) || '', texts);
+    const look = dailyLookFor(behaviors, day, (pet && (pet.seed || pet.id)) || '', texts);
+    // 记下来 → 界面（名册/说明/AI 上下文）用同一份，别再出现"界面写的和画出来的不是一个"
+    rememberLookFor(pet, look);
+    return look;
   }
 
   /** 中文组合名：「脑袋上飘着几个小音符的粉红奶龙」/「穿旗袍的奶龙」 */
@@ -477,6 +524,25 @@
     { cn: '一本小菜谱', en: 'a tiny cookbook in its paws', keys: ['菜谱', '做饭', '煮', '厨房', '烘焙'] },
     { cn: '一顶小渔夫帽', en: 'a tiny bucket hat on its head', keys: ['渔夫帽', '遮阳', '钓鱼'] }
   ];
+
+  // ⚠️【2026-10-28 用户实测】「所有用户的宠物服饰描述都是拿个小碗一双白手套」
+  //   真因: 关键词表里有一批【泛词】—— 吃/饭/饿/喝/玩/睡/冷/热/甜/新/家/门/水…
+  //   谁的一天里都会冒出"吃了饭""今天很热""有点累" → 全都命中「一只小碗」，
+  //   而原来的同分排序还按【中文名】排 → 全网第一个都是小碗。
+  //   → 泛词命中【不算数】；一个意象都没命中具体词就不采用 → 改走【天+种子】兜底，
+  //     每人每天都不一样。
+  //   ⚠️ 别改成"关键词要两个字以上"!「听了一首歌」的"歌"、「读了一本书」的"书/读"
+  //     都是单字，可那恰恰是最该命中的 → 判据是【这个词泛不泛】，不是【词长】。
+  const GENERIC_ICON_KEYS = new Set([
+    // 吃喝（人人每天都有 → 全体小碗/全体热饮）
+    '吃', '饭', '饿', '喂', '喝',
+    // 日常动作
+    '玩', '穿', '衣服', '穿搭', '搭配', '睡', '困', '梦', '夜',
+    // 身体 / 天气 / 口味 泛词
+    '冷', '热', '甜', '亮', '新', '轻', '飘', '飞', '水',
+    // 家 / 杂物 / 花钱
+    '门', '家', '锁', '装', '记录', '拍', '签', '买', '省', '好吃'
+  ]);
 
   // 聊天里提到什么 → 也算今天经历的一部分（关键词表，想加随时加）
   const CHAT_KEYWORD_FEATURES = [
@@ -1734,8 +1800,13 @@
   function formatPetAppearance(pet) {
     const a = pet.appearance;
     const base = KINDS[pet.kind] ? KINDS[pet.kind].label : pet.kind;
+    // ⚠️【2026-10-28 修】刚领养的宠物 appearance 还是 null → 以前直接 return 品种名，
+    //   名册上就只剩"小猫"，【看不见今天这身】
+    //   （更新日志 v4.41 写的是"名册和照顾弹窗里能看见它今天这身"）。
+    //   → 没有 appearance 也把今天这身（衣服 + 道具）带上。
+    const lookCn0 = todayLookCn(todayLookForSync(pet));
     if (!a) {
-      return base;
+      return lookCn0 ? base + ' · ' + lookCn0 : base;
     }
     // 今天它该长什么样（衣服 + 道具）
     // ⚠️【2026-10-27 用户提】「鹦鹉没看见换装文字说明」→

@@ -56,6 +56,15 @@
   //    我们视频是主输入, 不能照抄)
   var TURN_COVERAGE = 'TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO';
 
+  // 🔴 2026-10-28: 发送缓冲上限 (背压阈值)。
+  //
+  //   WebSocket 的 bufferedAmount 涨起来 = 服务端/网络跟不上, 而浏览器会
+  //   【无上限】把待发数据堆在内存里。影院这边 1 FPS × 每帧几十~上百 KB,
+  //   堵一分钟就是好几 MB —— 堵久了整页内存被打爆, 手机上就是
+  //   "看着看着卡住不动了, 退出影院外面也聊不了, 只有杀掉 app 才恢复"。
+  //   → 超过这个阈值就丢帧 (见 sendVideoFrame)。宁可少看几帧。
+  var MAX_BUFFERED_BYTES = 2 * 1024 * 1024;   // 2MB
+
   // ============================================================
   // 日志 (严格不打印任何凭据)
   // ============================================================
@@ -299,6 +308,20 @@
    *   { "realtimeInput": { "video": { "data": <base64>, "mimeType": "image/jpeg" } } }
    */
   LiveClient.prototype.sendVideoFrame = function (base64Jpeg, mimeType) {
+    // 🔴 2026-10-28: 背压保护 —— 缓冲太大就【丢这一帧】。
+    //
+    //   bufferedAmount 涨起来 = 服务端/网络跟不上, 而浏览器会【无上限】把待发
+    //   数据堆在内存里。1 FPS × 每帧几十~上百 KB, 堵 1 分钟就是好几 MB,
+    //   堵久了整页内存被打爆 —— 手机上表现就是"看着看着卡住不动了,
+    //   退出影院外面也聊不了, 只有杀掉 app 才恢复"(用户 2026-10-28 实测)。
+    //   → 宁可少看几帧, 也不能把内存吃光。丢帧会记数, 影院那边会提示用户。
+    if (this.ws && this.ws.readyState === 1 && typeof this.ws.bufferedAmount === 'number' &&
+        this.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+      this._droppedFrames = (this._droppedFrames || 0) + 1;
+      logWarn('帧被丢弃 (发送缓冲 ' + Math.round(this.ws.bufferedAmount / 1024) + 'KB 超阈值, 累计丢 ' +
+        this._droppedFrames + ' 帧)');
+      return false;
+    }
     return this._send({
       realtimeInput: {
         video: {
@@ -307,6 +330,11 @@
         }
       }
     });
+  };
+
+  /** 因背压丢掉的帧数 (影院那边用来给用户提示) */
+  LiveClient.prototype.getDroppedFrames = function () {
+    return this._droppedFrames || 0;
   };
 
   /**

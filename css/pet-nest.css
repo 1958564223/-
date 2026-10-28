@@ -669,7 +669,10 @@ dialog.pn-dialog {
   position: fixed;
   right: 14px;
   bottom: 92px;
-  width: 78px;
+  /* ⚠️ 2026-10-28 用户提「桌宠感觉显示的小了一点」→ 放大 25%
+     （原来 78px）。放大的倍数只在这一处调, 想再改改这里就行。 */
+  --pn-desktop-pet-size: 98px;
+  width: var(--pn-desktop-pet-size);
   z-index: 900;
   display: flex;
   flex-direction: column;
@@ -792,7 +795,8 @@ dialog.pn-dialog {
 
 @media (max-width: 480px) {
   #pet-nest-screen .pn-scene { border-radius: 0; }
-  #pn-desktop-pet { width: 66px; bottom: 110px; }
+  /* 同样 +25% (原来 66px) */
+  #pn-desktop-pet { --pn-desktop-pet-size: 83px; bottom: 110px; }
 }
 
 /* ============================================================

@@ -166,11 +166,82 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.43 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.43</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（每日换装）</div>
+        <ul class="item-list">
+          <li><strong>每天该换衣服和道具，但换出来的图里没道具、衣服也没换</strong> —— 你的原话：「有换服装但没画道具」「手动点换个模样，虽然重新画了但衣服都没换」。真因：蜕变（重新生成）用的那段话里，「<strong>就照今天这身重画</strong>」这句被「<strong>只改这一处花纹</strong>」整条<strong>替换</strong>掉了 —— 而几乎每只从蛋里孵出来的宠物都带着花纹，所以这句<strong>每次都没发出去</strong>。模型手里只有旧图，就照着旧图抄，<strong>衣服和道具自然一动不动</strong>。</li>
+          <li>改法：<strong>「就照今天这身重画」这句话永远都要说</strong>（它和「改花纹」是两件独立的事，不该互相顶掉），并且额外点名一句「<strong>衣服和道具六格里都要看得见，不许哪一格缺一件</strong>」—— 小道具模型最容易漏的就是这个。</li>
+          <li><strong>所有用户的宠物服饰都是「一个小碗一双白手套」，太雷同了</strong> —— 你的原话：「怎么我今天看见所有用户的宠物服饰描述都是拿个小碗一双白手套，如此雷同」。真因：挑道具靠<strong>关键词</strong>，而关键词表里有一堆<strong>泛词</strong>（吃 / 饭 / 饿 / 喝 / 玩 / 睡 / 冷 / 热 …）—— 谁的一天里都会冒出「今天吃了饭」「今天很热」，于是<strong>人人都命中同一个小碗</strong>；再加上原来<strong>同分时是按中文名排</strong>的，第一个永远是小碗。</li>
+          <li>改法：<strong>泛词命中不算数</strong>了 —— 只有像「咖啡 / 拿铁 / 生日 / 照片 / 下雨 / 小说」这种<strong>具体</strong>的词才算命中。哪天聊的都是泛词（没聊什么特别的），就<strong>按「今天 + 你这只宠物的种子」兜底</strong>挑一个 —— <strong>每只宠物每天都不一样</strong>；就算撞上同一个，同分也<strong>按种子排</strong>，不会全网撞车。<br>（实测：20 条真实的一天里，「小碗」从 8 次降到 <strong>0 次</strong>，同时「喝咖啡」这种该命中的<strong>照样命中热饮</strong>，没被误伤。）</li>
+          <li><strong>界面上写的穿搭和图上画的不是一个东西</strong> —— 界面读的是一份可能过期的缓存，图是用当下重新算的，两边能算出<strong>不同的道具</strong>（名册写着「小碗」，图上画的是「渔夫帽」）。现在<strong>画图时算出来的那一份会被记下来</strong>，界面优先用它 —— <strong>名册写什么，图上就是什么</strong>。</li>
+          <li><strong>刚领养的宠物，名册上只有品种名，看不到今天这身</strong> —— 现在名册和照顾弹窗里也会写出来（比如「一只小扇子、顶着小皇冠的」）。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（宠物说的话不落进聊天框）</div>
+        <ul class="item-list">
+          <li><strong>宠物说的话要退出聊天框再进去才看得见</strong> —— 你的原话：「宠物调后台活动 API 说的话，不能立刻落进聊天框，不像主 API 说的能马上显示」。真因：宠物说完话是<strong>写进库了</strong>，但让它「顺手把界面重画一下」的那个函数<strong>全项目根本没定义</strong> —— 真正干这活的是另一个名字，所以那句判断<strong>永远不成立</strong>，界面<strong>从来不重画</strong>。直到你退出聊天框再进去（那次走的是正常的渲染流程）才看得见。</li>
+          <li>改法：<strong>改调真正存在的那个渲染函数</strong>，宠物的话<strong>说完立刻就出现在聊天框里</strong>。同样写错的那两处（主动搭话、应用内巡场）也一并改了。</li>
+          <li><strong>刚开软件时弹的那句宠物话，最后聊天框里也没有</strong> —— 真因：刚启动时<strong>还没确定当前是哪个聊天</strong>，那句话<strong>一句都没写进任何会话</strong>。现在会<strong>落到你最近聊过的那一个</strong>里去。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title optimize">优化（桌宠变大）</div>
+        <ul class="item-list">
+          <li><strong>桌宠显示得有点小</strong> —— 你的原话：「桌宠我感觉显示的小了一点，能不能给它再放大个百分之二三十？」。按你说的区间取了中间值 <strong>+25%</strong>：电脑上 <strong>78px → 98px</strong>、手机上 <strong>66px → 83px</strong>。尺寸统一走一个变量，<strong>想再大一点或小一点，改一个数就行</strong>。</li>
+        </ul>
+      </div>
+    </div>
+    <!-- 4.42 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.42</span>
+        <span class="version-date">2026-10-28</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复</div>
+        <ul class="item-list">
+          <li><strong>影院里的聊天接不上话了，还完全不知道你在外面聊过什么</strong> —— 你的原话：「视频模型重连成功，但聊天模型就接不上话了」「主 API 在影院里没有外面聊天框的上文记忆」。真因：<strong>影院跑在一个单独的小页面里，那个页面只加载了 7 个文件</strong> —— 读不到你的聊天记录、读不到长期记忆、也读不到主聊天那套提示词预设。所以影院里的它<strong>是在一张白纸上跟你说话</strong>，外面聊过什么它一件都不知道。</li>
+          <li>改法：<strong>外面把这些都算好，再交给影院</strong> —— 外面聊天框的上下文、长期记忆、你的提示词预设，由外面读出来发过去；而且<strong>每发一句之前还会再问一次</strong>，所以你在外面新聊的内容，影院里下一句就能接上。</li>
+          <li><strong>影院里的对话现在也会进主聊天历史了</strong> —— 之前影院里说的话只留在影院那个小页面里，一关就没了；现在你在影院里说的话，外面聊天框里<strong>接着就能看见</strong>，出门接着聊能接上茬。</li>
+          <li><strong>观影模型（Gemini Live）断线重连，不再影响影院里的聊天</strong> —— 它们本来就是两条独立的路：一条看画面、一条说话。现在这条路上任何一步取不到东西，<strong>都会明确告诉你原因</strong>，不会再出现「打了字没反应、也不知道哪坏了」。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（导出剧情记忆）</div>
+        <ul class="item-list">
+          <li><strong>导出的剧情记忆，其实只进去了最后一块，前面的全丢了</strong> —— 你的原话：「导出总结的剧情记忆，结果发现并没有写进长期记忆里」「之前的也白看了」。真因：影院那个小页面里的「聊天表」是个<strong>假的</strong>，它<strong>只会把最后一条记忆发出去</strong>，前面几条全丢；而导出完紧接着又把库里的行全删了 —— 所以界面明明报「✅ 已导出 N 条」，实际只进去了最后一块，<strong>其余既没进长期记忆、也没留在库里</strong>。</li>
+          <li>实测：8 段剧情（40 分钟）切 4 块，<strong>实际只进去 1 块，丢了 74%</strong>。看得越久丢得越多。</li>
+          <li>改法：<strong>导出改成一条正经的通道</strong> —— 影院把<strong>所有</strong>块一起交给外面，由外面写进真正的长期记忆；<strong>外面确认写成功了，影院才去清账</strong>。没写成功就<strong>一行都不删</strong>，还能再点一次。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title optimize">优化（长片卡住）</div>
+        <ul class="item-list">
+          <li><strong>比较长的本地文件播一截就卡住</strong> —— 找到两条实锤：<strong>往观影模型推画面帧的时候完全没做背压保护</strong>（网络一堵，浏览器就把待发的画面<strong>无限堆在内存里</strong>，1 帧/秒、每帧几十上百 KB，堵久了整页内存被打爆 —— 手机上就表现成「卡住放不动」「退出影院外面也聊不了」「只有杀掉 app 才恢复」）；还有<strong>服务端说「我要断了」之后我们还在猛推帧</strong>，把重连要用的存档点撑得巨大，重连就又慢又容易失败。</li>
+          <li>改法：<strong>发送缓冲超过 2MB 就丢帧</strong>（宁可少看几帧也不吃内存），并且<strong>服务端一说要断就立刻停推</strong>，等重连成功再恢复。丢帧的时候<strong>会明确告诉你</strong>「网络堵住了，已经丢掉 N 帧」，不用再猜。</li>
+          <li>加本地影片超过 300MB 时，提示改成<strong>说实话</strong>：大文件在手机上播容易卡（片源要塞进手机内存，解码和推帧一起抢资源），并建议长剧改走<strong>短剧库 / 在线片源</strong>那条路 —— 电脑那边放文件、手机流式播，不占手机内存。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（退出影院后外面点不动）</div>
+        <ul class="item-list">
+          <li><strong>退出影院以后，外面整个 app 点不动，只有杀掉 app 才恢复</strong> —— 你的原话：「出错退出来以后外面也不能聊天，只有大退才恢复」。真因：影院是<strong>一个盖住整屏的小窗口</strong>（层级高到不能再高，连外面顶栏和「再点一次退出」那个按钮都在它底下），而外面<strong>收掉它的唯一途径</strong>是影院那边<strong>主动说一声「我关了」</strong>。那句话只要因为各种原因没送到 —— 影院退出的流程中途出错、影院那个小页面被重新加载、它崩了 —— 那个<strong>盖住整屏的窗口就留在屏幕上不动了</strong>，外面点哪儿都没反应。</li>
+          <li>改法：<strong>不再只等影院说「我关了」</strong> —— 外面每 0.7 秒<strong>自己看一眼影院那边的状态</strong>（同一个站，读得到），<strong>发现房间已经没了就自己把那个窗口收掉</strong>；影院页被换掉或重载时，也会<strong>主动补报一声</strong>。现在就算影院那边出了岔子，<strong>外面也一定能自己恢复</strong>，不会再出现「只有大退才行」。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.41 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.41</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-27</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复</div>

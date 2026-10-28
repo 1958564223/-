@@ -916,12 +916,12 @@ section('接线: sw.js 预缓存');
   //   这条断言把「改了 pet-nest.js / pet-nest.css / pet-image.js 却忘了 bump」变成会报红。
   const html = read('index.html');
   const EXPECT_V = {
-    'modules/pet-nest.js': '0.0.23',
-    'modules/pet-image.js': '0.0.4',
-    'modules/pet-speech.js': '0.0.2',
+    'modules/pet-nest.js': '0.0.24',
+    'modules/pet-image.js': '0.0.5',
+    'modules/pet-speech.js': '0.0.3',
     'modules/backup-import-export.js': '0.0.39',
     'modules/data-management.js': '0.0.39',
-    'css/pet-nest.css': '0.0.13'
+    'css/pet-nest.css': '0.0.14'
   };
   for (const [file, want] of Object.entries(EXPECT_V)) {
     const re = new RegExp(file.replace(/[/.]/g, '\\$&') + '\\?v=([0-9.]+)');

@@ -703,6 +703,9 @@ body.cinema-room-active {
   color: #ffcf9c;
   font-size: 12.5px;
   line-height: 1.6;
+  /* ⚠️ 2026-10-28: 警告文案现在有多行 (存储 + 播放两条),
+     textContent 里的 \n 默认会被折成空格 —— 必须显式保留换行。 */
+  white-space: pre-line;
 }
 
 .cinema-drawer-warn[hidden] {

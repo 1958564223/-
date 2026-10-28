@@ -57,6 +57,108 @@
   }
 
   // ============================================================
+  // 宿主上下文通道 (2026-10-28 新增)
+  //
+  // 【为什么必须有这条通道】
+  //   影院跑在 iframe 沙盒 (cinema-sandbox/index.html) 里, 那个页面只加载了
+  //   7 个文件: dexie / live-client / cinema-storage / cinema-img /
+  //   cinema-room / cinema-live / cinema-chat。
+  //   【没有】 message-store.js (外面聊天框的历史)、memory-summary.js (长期记忆)、
+  //   settings-presets.js (提示词预设)、ai-response.js (变量替换)。
+  //   → 沙盒自己拿不到这些, 所以【全部由宿主算好, 通过 postMessage 发过来】。
+  //
+  // 【上下文里有什么】
+  //   promptText —— 主聊天的提示词预设(已渲染好变量, 但还没剥 JSON 指令系统)
+  //   history    —— 外面聊天框最近 N 条(已格式化成 "(时间) 名字: 内容")
+  //   memoryText —— 长期记忆正文(向量记忆优先, 跟主聊天同一套)
+  //
+  // 【为什么发之前还要再问一次】
+  //   外面聊天框的历史会变(影院的对话也会被宿主写进主聊天历史),
+  //   长期记忆又是按 query 检索的 → 每发一条之前问宿主要一份最新的。
+  //   最多等 HOST_CONTEXT_TIMEOUT_MS, 拿不到就用手上这份旧的,
+  //   绝不因为等上下文把聊天卡死。
+  // ============================================================
+  var HOST_CONTEXT_TIMEOUT_MS = 2500;
+  var HOST = {
+    ctx: null,          // 宿主给的最新上下文
+    pending: {},        // requestId -> resolve
+    seq: 0
+  };
+
+  /** 有没有宿主可以对话 (在 iframe 沙盒里才有) */
+  function canPostToHost() {
+    try {
+      return !!(window.parent && window.parent !== window &&
+        typeof window.parent.postMessage === 'function');
+    } catch (e) { return false; }
+  }
+
+  function postToHost(msg) {
+    if (!canPostToHost()) return false;
+    try {
+      window.parent.postMessage(msg, '*');
+      return true;
+    } catch (e) {
+      logWarn('发给宿主失败:', e && e.message);
+      return false;
+    }
+  }
+
+  /** 宿主把上下文送过来了 (init 时) 或者刚问完要来的 */
+  function setHostContext(ctx) {
+    HOST.ctx = (ctx && typeof ctx === 'object') ? ctx : null;
+    if (HOST.ctx) {
+      log('收到宿主上下文 (历史 ' + ((HOST.ctx.history || []).length) + ' 条 / 记忆 ' +
+        String(HOST.ctx.memoryText || '').length + ' 字 / 提示词 ' +
+        String(HOST.ctx.promptText || '').length + ' 字)');
+    } else {
+      log('宿主上下文是空的');
+    }
+    return HOST.ctx;
+  }
+
+  /**
+   * 问宿主要一份最新的上下文。
+   * @returns {Promise<Object|null>} 拿不到就返回手上这份旧的 (可能是 null)
+   */
+  function requestHostContext(queryText) {
+    return new Promise(function (resolve) {
+      if (!canPostToHost()) { resolve(HOST.ctx); return; }
+      var reqId = 'ctx_' + (++HOST.seq) + '_' + Date.now();
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        delete HOST.pending[reqId];
+        resolve(HOST.ctx);
+      }, HOST_CONTEXT_TIMEOUT_MS);
+      HOST.pending[reqId] = function (ctx) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        delete HOST.pending[reqId];
+        resolve(ctx || HOST.ctx);
+      };
+      postToHost({ type: 'cinema:needContext', requestId: reqId, query: String(queryText || '') });
+    });
+  }
+
+  // 宿主的回包在这里接 (沙盒页面自己也监听 message, 但只认它那几种类型)
+  // ⚠️ 必须先判断 addEventListener 存在 —— node 里的单测用的是个假 window,
+  //   没有它会直接抛 "window.addEventListener is not a function" (2026-10-28 踩过)。
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('message', function (e) {
+      var d = e.data || {};
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'cinema:context') {
+        if (d.context) setHostContext(d.context);
+        var cb = HOST.pending[d.requestId];
+        if (cb) cb(d.context || HOST.ctx);
+      }
+    });
+  }
+
+  // ============================================================
   // 基础工具
   // ============================================================
   function getState() {
@@ -157,9 +259,14 @@
   // ============================================================
   // 长期记忆 —— 主聊天同一套
   // ============================================================
-  async function buildMemoryContext(chat, queryText) {
+  async function buildMemoryContext(chat, queryText, hostCtx) {
     var s = (chat && chat.settings) || {};
     var memMode = s.memoryMode || (s.enableStructuredMemory ? 'structured' : 'diary');
+    // ① 宿主给的 —— 跟主聊天同一套(向量记忆优先), 沙盒自己算不了
+    if (hostCtx && hostCtx.memoryText && String(hostCtx.memoryText).trim()) {
+      return String(hostCtx.memoryText);
+    }
+    // ② 沙盒里如果刚好有这些能力(独立打开沙盒页时的兜底)
     try {
       if (window.vectorMemoryManager && typeof window.vectorMemoryManager.buildMemoryContext === 'function') {
         var v = await window.vectorMemoryManager.buildMemoryContext(chat, memMode, queryText || '');
@@ -414,10 +521,31 @@
   // ============================================================
   // 主聊天历史 → messages
   // ============================================================
-  async function buildHistoryMessages(chat) {
+  async function buildHistoryMessages(chat, hostCtx) {
     var st = getState();
     var maxMemory = parseInt((chat.settings && chat.settings.maxMemory), 10) ||
       (st && st.globalSettings && parseInt(st.globalSettings.maxMemory, 10)) || 30;
+
+    // ① 宿主给的 —— 外面聊天框的真实历史(已格式化成 "(时间) 名字: 内容")
+    //    这是唯一能拿到"外面聊过什么"的路: 沙盒没有 message-store。
+    if (hostCtx && Array.isArray(hostCtx.history) && hostCtx.history.length) {
+      var fromHost = [];
+      for (var h = 0; h < hostCtx.history.length; h++) {
+        var item = hostCtx.history[h];
+        // 兼容两种: 纯字符串(旧格式) / {role, content}(新格式, 角色不能丢)
+        if (typeof item === 'string') {
+          if (item.trim()) fromHost.push({ role: 'user', content: item });
+          continue;
+        }
+        if (item && typeof item.content === 'string' && item.content.trim()) {
+          fromHost.push({
+            role: item.role === 'assistant' ? 'assistant' : 'user',
+            content: item.content
+          });
+        }
+      }
+      if (fromHost.length) return fromHost;
+    }
 
     var history = [];
     try {
@@ -464,38 +592,61 @@
   // ============================================================
   // 组 system prompt
   // ============================================================
-  async function buildSystemPrompt(chat, memoryCtx, cinemaCtx) {
-    var chatRef = userRefOf(chat);
+  /**
+   * 渲染主聊天的提示词预设 (模板 + 变量替换) —— 【不加影院块, 不剥指令】。
+   *
+   * 宿主也会调它 (宿主那边才有 getActiveChatPrompt / replaceTemplateVars),
+   * 渲好之后发给沙盒, 沙盒那边再剥 JSON 指令系统。
+   *
+   * ⚠️ 没有 replaceTemplateVars 就【渲染不了】(沙盒里就是这个情况) ——
+   *   这时候返回空字符串, 让调用方走兜底最小人设。
+   *   绝不能发一份变量全被抹空的提示词给模型(看着像提示词, 其实是空的)。
+   */
+  async function renderPromptText(chat, memoryCtx) {
     var template = '';
     try {
       if (typeof window.getActiveChatPrompt === 'function') {
         template = window.getActiveChatPrompt('single') || '';
       }
     } catch (e) { logWarn('读提示词预设失败', e); }
+    if (!String(template).trim()) return '';
+    if (typeof window.replaceTemplateVars !== 'function') return '';
+    var ctx = buildContextMap(chat, memoryCtx);
+    var filled = '';
+    try {
+      filled = window.replaceTemplateVars(template, ctx);
+    } catch (e) {
+      logWarn('提示词变量替换失败, 用原样', e);
+      filled = template;
+    }
+    // 剩下的 {{xxx}} 一律抹掉 —— 影院里没有的那些上下文不要留占位符
+    return String(filled).replace(/\{\{[^{}]*\}\}/g, '');
+  }
 
+  async function buildSystemPrompt(chat, memoryCtx, cinemaCtx, hostCtx) {
+    var chatRef = userRefOf(chat);
     var out = '';
-    if (String(template).trim()) {
-      var ctx = buildContextMap(chat, memoryCtx);
-      var filled = '';
-      try {
-        filled = (typeof window.replaceTemplateVars === 'function')
-          ? window.replaceTemplateVars(template, ctx)
-          : template;
-      } catch (e) {
-        logWarn('提示词变量替换失败, 用原样', e);
-        filled = template;
-      }
-      // 剩下的 {{xxx}} 一律抹掉 —— 影院里没有的那些上下文不要留占位符
-      filled = String(filled).replace(/\{\{[^{}]*\}\}/g, '');
-      out = stripInstructionSystem(filled);
+
+    // ① 宿主渲染好的提示词 (人设 / 关键关系 / 说话方式全在里面)
+    var promptText = (hostCtx && hostCtx.promptText) ? String(hostCtx.promptText) : '';
+    if (!promptText.trim()) promptText = await renderPromptText(chat, memoryCtx);
+    if (promptText.trim()) {
+      out = stripInstructionSystem(promptText);
     }
 
     // 兜底: 连提示词预设都没有 → 自己拼一份最小人设
+    //
+    // ⚠️ 这里必须自己 join('\n') —— 不能把【数组】直接赋给 out。
+    //   out 下面还要 += 影院场景块, 数组被字符串化时走的是 Array.toString(),
+    //   元素之间用【逗号】连接, 那些故意留的空行就变成了 ",,":
+    //     "# 你是谁,,你就是「测试角色」。,,人设标记ZZZ,"
+    //   排版全毁, 模型读到的提示词也一塌糊涂。
     if (!out.trim()) {
       var s = (chat && chat.settings) || {};
-      out = ['# 你是谁', '', '你就是「' + ((chat && (chat.name || chat.originalName)) || '角色') + '」。'];
-      if (s.aiPersona) { out.push(''); out.push(s.aiPersona); }
-      out.push('');
+      var fb = ['# 你是谁', '', '你就是「' + ((chat && (chat.name || chat.originalName)) || '角色') + '」。'];
+      if (s.aiPersona) { fb.push(''); fb.push(s.aiPersona); }
+      fb.push('');
+      out = fb.join('\n');
     }
 
     out += buildCinemaSceneBlock(chatRef);
@@ -648,6 +799,26 @@
   // 用户原话: "影院的会话就是要主聊天知道啊, 不存在污染" ——
   //   影院里说的话进主聊天历史, 外面聊天框接着就能看到, 主聊天也接得上茬。
   async function persistToMainChat(chat, msg) {
+    // ① 宿主通道 —— 影院的对话要真的进主聊天历史
+    //    (用户原话: "影院的会话就是要主聊天知道啊, 不存在污染")
+    //    沙盒里没有 message-store, 以前只能往本地那个假 db 上写,
+    //    结果退出影院这段对话就没了, 外面也看不见。
+    try {
+      if (canPostToHost()) {
+        postToHost({
+          type: 'cinema:chatMessage',
+          message: {
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp || Date.now(),
+            senderName: msg.senderName || ''
+          }
+        });
+        return true;
+      }
+    } catch (e) { logWarn('写进主聊天历史失败 (宿主通道)', e); }
+
+    // ② 兜底: 本地内存副本
     try {
       if (window.messageStore && typeof window.messageStore.addMessageToChat === 'function') {
         await window.messageStore.addMessageToChat(chat, msg);
@@ -683,6 +854,13 @@
     var chat = getChat();
     if (!chat) {
       logError('拿不到当前聊天对象');
+      // ⚠️ 以前这里只 logError, 界面上一点动静都没有 ——
+      //   用户看到的就是"打了字没反应", 会以为是模型断了。
+      //   陪聊跟 Live 是两条独立的路, 这里失败跟 Gemini 连不连得上无关。
+      var uiNoChat = window.CinemaLive;
+      if (uiNoChat && typeof uiNoChat.appendSystemLine === 'function') {
+        uiNoChat.appendSystemLine('⚠️ 陪聊用不了：没绑上聊天角色（回退到外面再进一次影院试试）。');
+      }
       return false;
     }
 
@@ -698,12 +876,16 @@
       if (ui && typeof ui.resetBubble === 'function') ui.resetBubble();
       if (ui && typeof ui.appendUserBubble === 'function') ui.appendUserBubble(msg);
 
+      // ① 先问宿主要一份最新的上下文 (外面聊天框的历史 + 长期记忆 + 提示词)
+      //    沙盒自己算不了这些 —— message-store / memory-summary 都不在沙盒里。
+      var hostCtx = await requestHostContext(msg);
+
       // ⚠️ 顺序很重要: 先读历史, 再落库。
       //   反过来的话, 刚落库的那句会在历史里出现一次, 我们又手动拼一次 → 重复。
-      var history = await buildHistoryMessages(chat);
-      var memoryCtx = await buildMemoryContext(chat, msg);
+      var history = await buildHistoryMessages(chat, hostCtx);
+      var memoryCtx = await buildMemoryContext(chat, msg, hostCtx);
       var cinemaCtx = getCinemaContext();
-      var systemPrompt = await buildSystemPrompt(chat, memoryCtx, cinemaCtx);
+      var systemPrompt = await buildSystemPrompt(chat, memoryCtx, cinemaCtx, hostCtx);
 
       await persistToMainChat(chat, { role: 'user', content: msg, timestamp: Date.now() });
 
@@ -755,9 +937,16 @@
     buildCinemaPlotBlock: buildCinemaPlotBlock,
     buildCinemaSceneBlock: buildCinemaSceneBlock,
     buildHistoryMessages: buildHistoryMessages,
+    buildMemoryContext: buildMemoryContext,
+    renderPromptText: renderPromptText,
     stripInstructionSystem: stripInstructionSystem,
     splitSections: splitSections,
     userRefOf: userRefOf,
+    // 宿主上下文通道 (宿主 ↔ 沙盒)
+    setHostContext: setHostContext,
+    getHostContext: function () { return HOST.ctx; },
+    requestHostContext: requestHostContext,
+    canPostToHost: canPostToHost,
     // 暴露给测试用: 主 API 配置是怎么拿到的 (沙盒场景靠宿主下发)
     getMainApiConfig: getMainApiConfig
   };

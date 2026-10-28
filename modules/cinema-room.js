@@ -954,8 +954,12 @@
     await refreshList();
     if (softWarn && softWarn.warn) {
       showCapacityWarn(
-        '本地影片已 ' + S.formatBytes(softWarn.total) + '，超过 300MB 提醒线。' +
-        '可以继续添加，但手机存储吃紧时影片可能被系统清理，建议删掉不常看的。'
+        '本地影片已 ' + S.formatBytes(softWarn.total) + '，超过 300MB 提醒线。\n\n' +
+        '① 存储：手机空间吃紧时影片可能被系统清理，建议删掉不常看的。\n' +
+        '② 播放：大文件在手机上播容易【播一截就卡住】（片源要整个塞进手机内存，' +
+        '解码 + 推帧一起抢资源，页面会卡死，退出影院外面也聊不了）。\n' +
+        '长剧建议改用「短剧库 / 在线片源」那条路 —— 电脑那边放文件，手机流式播，' +
+        '不占手机内存，也不会卡。'
       );
     }
     await playFilm(record.id);
@@ -2596,12 +2600,32 @@
     if (h > 0) els.root.style.setProperty('--cinema-topbar-h', h + 'px');
   }
 
+  // --------------------------------------------------------------------------
+  // 【房间开没开】的标记 (2026-10-28)
+  //
+  //   宿主要判断"沙盒里的房间还开不开", 靠的是同源读 iframe 的 DOM
+  //   (见下面 bindSandboxEntry 里的 watchSandboxRoom)。
+  //   挂在 documentElement 上: 沙盒整个重载后 body 是新的, 而 documentElement
+  //   也是新的 —— 两种情况宿主读到的都是"没有标记", 但【都要】把 iframe 收掉,
+  //   所以放哪儿都够用; 放 documentElement 是因为 body 上的 class 还会被别的逻辑动。
+  // --------------------------------------------------------------------------
+  var ROOM_OPEN_ATTR = 'data-cinema-room-open';
+
+  function markRoomOpen() {
+    try { document.documentElement.setAttribute(ROOM_OPEN_ATTR, '1'); } catch (e) { /* noop */ }
+  }
+
+  function markRoomClosed() {
+    try { document.documentElement.removeAttribute(ROOM_OPEN_ATTR); } catch (e) { /* noop */ }
+  }
+
   async function open() {
     ensureDom();
     initVisualViewport();
     els.root.classList.add('open');
     els.root.setAttribute('aria-hidden', 'false');
     document.body.classList.add('cinema-room-active');
+    markRoomOpen();
     syncTopbarHeight();
     // 人设绑定: 用当前正在用的那个角色 (跟旧观影一致: 打开时绑定 activeChat)
     if (global.CinemaLive) {
@@ -2668,6 +2692,7 @@
     els.root.classList.remove('open');
     els.root.setAttribute('aria-hidden', 'true');
     document.body.classList.remove('cinema-room-active');
+    markRoomClosed();
     setDrawer(false);
     setChatPanel(false);
     setSettingsSheet(false);
@@ -2699,7 +2724,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.30.2';
+  global.__CINEMA_VER = '0.32.0';
 
   global.CinemaRoom = {
     open: open,
@@ -2750,6 +2775,45 @@
     let frame = null;
     let ready = false;
     let vvRelay = null;
+
+    // 🔴 2026-10-28 宿主侧兜底: 沙盒那边【不吭声】了, 宿主自己把 iframe 收掉。
+    //
+    //   【为什么必须有】用户实测: 退出影院后"外面也不能聊天, 只有大退才恢复"。
+    //   真凶就是这个 iframe: position:fixed + inset:0 + z-index:2147483647
+    //   —— 整个屏幕都在它下面, 连宿主顶栏和"再点一次退出"那个按钮都在它底下。
+    //   而宿主收掉它的唯一途径 = 沙盒发来一条 cinema:closed (沙盒 body 摘 class 时发)。
+    //   那条消息只要没到 (沙盒退出流程中途抛异常 / 沙盒被重载 / 沙盒崩了),
+    //   整个 app 就被一个黑 iframe 盖死 —— 外面一点都点不动, 只有杀掉 app 进程才恢复。
+    //
+    //   【怎么做】不依赖沙盒配合: 宿主直接读 iframe 的 DOM (同源, 读得到),
+    //   看房间还开不开。开 → 留着; 没了 (或者沙盒那边整个重载了) → 宿主自己收掉。
+    var sandboxRoomSeen = false;
+    var sandboxWatchTimer = null;
+
+    function watchSandboxRoom() {
+      if (!frame) return;
+      var doc = null;
+      try { doc = frame.contentDocument; } catch (e) { return; }
+      if (!doc || !doc.documentElement) return;   // 还没加载好, 等下一轮
+      var open = doc.documentElement.getAttribute('data-cinema-room-open');
+      if (open === '1') { sandboxRoomSeen = true; return; }
+      // 房间没开。
+      // ⚠️ 还没进过房间的时候【不能】收 —— 那会儿沙盒还在开机页/选片页,
+      //   收了用户刚点开影院就没了。
+      if (!sandboxRoomSeen) return;
+      closeSandbox('沙盒那边房间没了');
+    }
+
+    function startSandboxWatch() {
+      stopSandboxWatch();
+      sandboxRoomSeen = false;
+      try { sandboxWatchTimer = setInterval(watchSandboxRoom, 700); } catch (e) { /* noop */ }
+    }
+
+    function stopSandboxWatch() {
+      if (sandboxWatchTimer) { try { clearInterval(sandboxWatchTimer); } catch (e) {} }
+      sandboxWatchTimer = null;
+    }
 
     // ---- 键盘视口转发 ----
     // iframe 里的 window.visualViewport【不会反映 iOS 键盘】(键盘影响的是顶层
@@ -2843,6 +2907,78 @@
     }
 
     // ---- 把当前活跃聊天打包给沙盒(只要 Gemini Live 需要的那几项) ----
+    function currentChatObject() {
+      try {
+        if (typeof state === 'undefined' || !state || !state.activeChatId) return null;
+        return (state.chats && state.chats[state.activeChatId]) || null;
+      } catch (e) { return null; }
+    }
+
+    /** 宿主这边跟陪聊有关的全局设置 —— 沙盒自己没有 globalSettings */
+    function pickGlobalSettings() {
+      const gs = (typeof state !== 'undefined' && state && state.globalSettings) || {};
+      return {
+        enableStreaming: gs.enableStreaming === true,
+        apiTemperature: gs.apiTemperature,
+        apiTopP: gs.apiTopP,
+        apiPresencePenalty: gs.apiPresencePenalty,
+        apiFrequencyPenalty: gs.apiFrequencyPenalty,
+        maxMemory: gs.maxMemory
+      };
+    }
+
+    /**
+     * 组装影院陪聊要用的上下文 (2026-10-28 新增)
+     *
+     * 【为什么在宿主这边做】
+     *   影院跑在 iframe 沙盒 (cinema-sandbox/index.html) 里, 那个页面只加载了
+     *   7 个文件 —— 没有 message-store.js (外面聊天框的历史)、memory-summary.js
+     *   (长期记忆)、settings-presets.js (提示词预设)、ai-response.js (变量替换)。
+     *   沙盒自己算不了这些 → 全部由宿主算好, 通过 postMessage 发过去。
+     *
+     * 【跟主聊天同源 —— 不是另写一套】
+     *   history    —— CinemaChat.buildHistoryMessages (同一套过滤/时间戳/称呼)
+     *   memoryText —— CinemaChat.buildMemoryContext (向量记忆优先, 同一套)
+     *   promptText —— CinemaChat.renderPromptText (主聊天的提示词预设)
+     */
+    async function buildCinemaHostContext(c, queryText) {
+      const ctx = { promptText: '', history: [], memoryText: '' };
+      if (!c) return ctx;
+      const CC = global.CinemaChat;
+      // ---- 长期记忆 ----
+      try {
+        if (CC && typeof CC.buildMemoryContext === 'function') {
+          ctx.memoryText = String(await CC.buildMemoryContext(c, queryText || '') || '');
+        }
+      } catch (e) { /* 回落普通记忆 */ }
+      if (!ctx.memoryText) {
+        try {
+          if (typeof global.getMemoryContextForPrompt === 'function') {
+            ctx.memoryText = String(global.getMemoryContextForPrompt(c) || '');
+          }
+        } catch (e) { /* noop */ }
+      }
+      // ---- 外面聊天框的历史 ----
+      try {
+        if (CC && typeof CC.buildHistoryMessages === 'function') {
+          const h = await CC.buildHistoryMessages(c);
+          ctx.history = (h || []).map(m => ({
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: String(m.content || ''),
+            timestamp: Number(m.timestamp) || 0,
+            senderName: m.senderName || ''
+          })).filter(m => m.content.trim());
+        }
+      } catch (e) { /* noop */ }
+      // ---- 主聊天的提示词预设 (已渲染好变量) ----
+      try {
+        if (CC && typeof CC.renderPromptText === 'function') {
+          ctx.promptText = String(await CC.renderPromptText(c, ctx.memoryText) || '');
+        }
+      } catch (e) { /* noop */ }
+      return ctx;
+    }
+
     function currentChatPayload() {
       try {
         if (typeof state === 'undefined' || !state || !state.activeChatId) return null;
@@ -2869,7 +3005,9 @@
           watchTogetherSettings: {
             geminiApiKey: (c.watchTogetherSettings && c.watchTogetherSettings.geminiApiKey) || ''
           },
-          longTermMemory: Array.isArray(c.longTermMemory) ? c.longTermMemory.slice(-5) : []
+          longTermMemory: Array.isArray(c.longTermMemory) ? c.longTermMemory.slice(-5) : [],
+          // 🔴 2026-10-28: 陪聊要的全局设置 (沙盒自己没有 state.globalSettings)
+          globalSettings: pickGlobalSettings()
         };
       } catch (e) { return null; }
     }
@@ -2881,14 +3019,103 @@
       // 🔴 2026-10-27: 顺带把主 API 配置也解出来给沙盒 (沙盒自己解析不了)。
       //   解析是异步的, 所以 init 里那份可能是 null —— 这条消息是补发的, 两条都留着。
       pushMainApiConfig();
+      // 🔴 2026-10-28: 上下文也异步 (要读消息表 + 向量记忆) —— 算好再补发一份。
+      //   不能塞进 init 里: 那会让开房多等一两秒。
+      pushCinemaContext('');
     }
 
-    function closeSandbox() {
-      if (!frame) return;
+    /** 把上下文补发给沙盒 (算好之后) */
+    function pushCinemaContext(queryText) {
+      const c = currentChatObject();
+      if (!c || !frame) return Promise.resolve(null);
+      return buildCinemaHostContext(c, queryText).then(ctx => {
+        if (!frame) return null;
+        try {
+          frame.contentWindow.postMessage({ type: 'cinema:context', requestId: '', context: ctx }, '*');
+        } catch (e) { /* noop */ }
+        return ctx;
+      }).catch(() => null);
+    }
+
+    function closeSandbox(reason) {
+      stopSandboxWatch();
+      // ⚠️ 以前这里是 "if (!frame) return;" —— 于是 frame 已经是 null 的时候,
+      //   body 上的 cinema-room-active 永远摘不掉: 宿主页面一直是 position:fixed,
+      //   整页点不动。现在即使没有 frame 也把 class 摘干净。
+      if (!frame) {
+        if (document.body) document.body.classList.remove('cinema-room-active');
+        return;
+      }
       try { frame.remove(); } catch (e) {}
       frame = null; ready = false;
       unbindViewportRelay();
       if (document.body) document.body.classList.remove('cinema-room-active');
+    }
+
+    // =========================================================================
+    // 影院 → 宿主的写回 (2026-10-28)
+    // =========================================================================
+
+    /**
+     * 剧情记忆导出: 把沙盒发来的【全部】chunk 写进真实的长期记忆。
+     * 写成功才回 ok —— 沙盒收到 ok 才清账, 没写成功一行都不删。
+     */
+    function handleCinemaExport(d) {
+      const reply = function (payload) {
+        if (!frame) return;
+        try {
+          frame.contentWindow.postMessage(Object.assign({
+            type: 'cinema:exportMemoryDone', requestId: d && d.requestId
+          }, payload || {}), '*');
+        } catch (e) { /* noop */ }
+      };
+      const c = currentChatObject();
+      if (!c) { reply({ ok: false, error: '没有找到角色会话' }); return; }
+      const chunks = (d && Array.isArray(d.chunks)) ? d.chunks : [];
+      if (!chunks.length) { reply({ ok: false, error: '没有要导出的内容' }); return; }
+      try {
+        if (!Array.isArray(c.longTermMemory)) c.longTermMemory = [];
+        let n = 0;
+        for (const ch of chunks) {
+          const text = String((ch && ch.text) || '').trim();
+          if (!text) continue;
+          c.longTermMemory.push({
+            content: text,
+            timestamp: Date.now(),
+            source: 'cinema_watch_export'
+          });
+          n++;
+        }
+        if (!n) { reply({ ok: false, error: '内容是空的' }); return; }
+        if (global.db && global.db.chats && global.db.chats.put) {
+          global.db.chats.put(c)
+            .then(function () { reply({ ok: true, count: n }); })
+            .catch(function (e) {
+              reply({ ok: false, error: (e && e.message) || '写库失败' });
+            });
+        } else {
+          reply({ ok: false, error: '宿主数据库还没开' });
+        }
+      } catch (e) {
+        reply({ ok: false, error: (e && e.message) || '未知错误' });
+      }
+    }
+
+    /** 影院里说的话 → 写进主聊天历史 (外面也看得见, 影院下一句也接得上) */
+    function handleCinemaChatMessage(d) {
+      const c = currentChatObject();
+      const m = d && d.message;
+      if (!c || !m || !String(m.content || '').trim()) return;
+      try {
+        if (global.messageStore && typeof global.messageStore.addMessageToChat === 'function') {
+          global.messageStore.addMessageToChat(c, {
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: String(m.content || ''),
+            timestamp: Number(m.timestamp) || Date.now(),
+            senderName: m.senderName || c.name || ''
+          }).catch(function () { /* 存不下也不能影响影院 */ });
+        }
+      } catch (e) { /* noop */ }
     }
 
     window.addEventListener('message', function (e) {
@@ -2898,6 +3125,31 @@
       if (d.type === 'cinema:needChat') sendChat();
       else if (d.type === 'cinema:ready') { ready = true; sendChat(); pushViewport(); }
       else if (d.type === 'cinema:closed') closeSandbox();
+      // 🔴 2026-10-28: 陪聊要最新的上下文 (外面聊天框的历史 + 长期记忆 + 提示词)。
+      //   沙盒算不了这些 → 宿主算, 按 query 取 (向量记忆按 query 检索)。
+      else if (d.type === 'cinema:needContext') {
+        const c = currentChatObject();
+        buildCinemaHostContext(c, d.query).then(ctx => {
+          if (!frame) return;
+          try {
+            frame.contentWindow.postMessage({
+              type: 'cinema:context', requestId: d.requestId, context: ctx
+            }, '*');
+          } catch (e) { /* noop */ }
+        }).catch(() => { /* noop */ });
+      }
+      // 🔴 2026-10-28: 影院的剧情记忆导出 → 写进【真实的】长期记忆。
+      //   ⚠️ 为什么不能靠沙盒自己写: 沙盒里的 db.chats 是假的, 它只把 longTermMemory
+      //   的【最后一条】发过来, 前面几条全丢 (用户实测: 导出说成功了, 实际只进去最后一块,
+      //   其它全被"清账"删掉, 白看)。→ 现在沙盒把全部 chunk 发过来, 这里一次性写进去,
+      //   写成功才回 ok, 沙盒收到 ok 才清账。没写成功一行都不删。
+      else if (d.type === 'cinema:exportMemory') {
+        handleCinemaExport(d);
+      }
+      // 🔴 2026-10-28: 影院里说的话也要进主聊天历史 (用户原话: "影院的会话就是要主聊天知道啊")
+      else if (d.type === 'cinema:chatMessage') {
+        handleCinemaChatMessage(d);
+      }
       else if (d.type === 'cinema:keyChanged') {
         // 用户在影院设置面板里改了 key → 写回当前聊天记录
         try {
@@ -2954,6 +3206,7 @@
         'background:#16111a;';
       document.body.appendChild(frame);
       frame.addEventListener('load', function () { sendChat(); pushViewport(); });
+      startSandboxWatch();
     });
   }
 

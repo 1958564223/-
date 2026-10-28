@@ -642,17 +642,46 @@
     try {
       const state = window.state;
       const id = state && state.activeChatId;
-      if (!id) return null;
-      return (state.chats && state.chats[id]) || null;
+      if (id && state.chats && state.chats[id]) return state.chats[id];
+      // ⚠️【2026-10-28 修 —— 用户实测「刚开软件弹的宠物语言，聊天框里看不见」】
+      //   刚开软件时还没进过任何聊天 → state.activeChatId 是空的 → 这里返回 null
+      //   → 宠物那句话【一句都没写进任何会话】→ 等于白说。
+      //   → 落到【最近聊过的那个会话】（chats 表有 lastMessageTimestamp 索引）。
+      return mostRecentChat();
     } catch (e) {
       return null;
     }
   }
 
+  /** 最近聊过的那个会话（没有 activeChatId 时用） */
+  function mostRecentChat() {
+    try {
+      const state = window.state;
+      const chats = (state && state.chats) || {};
+      const ids = Object.keys(chats);
+      if (!ids.length) return null;
+      let best = null, bestAt = -1;
+      for (const cid of ids) {
+        const c = chats[cid];
+        if (!c) continue;
+        const at = Number(c.lastMessageTimestamp || c.updatedAt || 0) || 0;
+        if (at > bestAt) { bestAt = at; best = c; }
+      }
+      return best;
+    } catch (e) { return null; }
+  }
+
   function renderChatIfActive(chatId) {
     try {
-      if (window.state && window.state.activeChatId === chatId
-        && typeof window.renderChatMessages === 'function') {
+      if (!window.state || window.state.activeChatId !== chatId) return;
+      // ⚠️【2026-10-28 修 —— 用户实测「宠物说的话要退出聊天框再进才能看见」】
+      //   原来调的是 window.renderChatMessages —— 这个函数【全项目都没有定义】！
+      //   (真正的渲染函数是 window.renderChatInterface，chat-interface.js 里暴露的)
+      //   → 那个 typeof 判断永远为假 → 话写进库了，界面【从不重绘】，
+      //     直到退出聊天框再进（重进时走 renderChatInterface）才看得见。
+      if (typeof window.renderChatInterface === 'function') {
+        try { window.renderChatInterface(chatId); } catch (e) { /* 忽略 */ }
+      } else if (typeof window.renderChatMessages === 'function') {
         window.renderChatMessages();
       }
     } catch (e) { /* 忽略 */ }
@@ -803,6 +832,7 @@
     desktopPetVisible,
     speechEnabled,
     chatInsertEnabled,
+    mostRecentChat,
     recentChatLines,
     lastSpokeAt,
     markSpoke
