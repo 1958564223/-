@@ -29,12 +29,15 @@ const read = (rel) => fs.readFileSync(P(...rel.split('/')), 'utf8');
 
 let passed = 0;
 let failed = 0;
+// 机器可读失败清单（反向验证脚本靠它做集合比对，别删）
+const failedNames = [];
 function ok(name, detail) {
   passed++;
   console.log('  [PASS] ' + name + (detail ? '  ' + detail : ''));
 }
 function fail(name, detail) {
   failed++;
+  failedNames.push(name);
   console.log('  [FAIL] ' + name + (detail ? '  ' + detail : ''));
 }
 function check(name, cond, detail) {
@@ -966,6 +969,11 @@ section('接线: 行为信号上报到宠物屋');
     /petNestAutoLookDay::/.test(nestSrc));
   check('画不成就跳过，不报错不影响别的', /换造型失败（忽略/.test(nestSrc));
   check('生图有每日上限兜底', /window\.PetImage\.CFG/.test(nestSrc) && /dailyLimit/.test(nestSrc));
+  // ⚠️【2026-10-29】这条卡的是「limit=0 的语义」:
+  //   limit=0 是【不限】, 不是【名额为零】。写成 if (used >= limit) 的话,
+  //   used=0 都会被拦 → 自动换装直接死掉。
+  check('自动换装的名额判断带 limit > 0（limit=0 是「不限」，不能当成「用满了」）',
+    /if \(limit > 0 && used >= limit\)/.test(nestSrc));
 }
 
 section('接线: index.html');
@@ -1588,7 +1596,7 @@ section('调度守卫 + 代表词来源（真跑一遍）');
       },
       showToast: (text, type) => { toasts.push({ text: text, type: type }); },
       PetImage: {
-        CFG: { dailyLimit: 3 },
+        CFG: { dailyLimit: cfg.dailyLimit === undefined ? 3 : cfg.dailyLimit },
         todayCount: () => Number(cfg.used || 0),
         async generateAtlas() { calls.atlas++; throw new Error('探针：到这一步就停'); },
         async evolveAtlas() { calls.atlas++; throw new Error('探针：到这一步就停'); },
@@ -1623,8 +1631,16 @@ section('调度守卫 + 代表词来源（真跑一遍）');
   // --- 守卫 2: 每日上限 ---
   const g2 = makeSandbox({ lastLookDay: '', used: 3 });
   await g2.sandbox.window.PetNest.refreshDailyLook('pet-1');
-  check('每日上限用满了就不再画（dailyLimit=3）',
+  check('自动换装名额用满了就不再画（沙盒里 dailyLimit=3；线上默认 0=不限）',
     g2.calls.atlas === 0, 'atlas 调用 ' + g2.calls.atlas + ' 次');
+  // --- 守卫 2': dailyLimit = 0（不限次数）时, used 再大也不拦 ---
+  //   用户 2026-10-29：「生图次数, 不想要三次的限制, 反正画多少自己掌握」
+  //   → limit = 0 的含义是【不限名额】, 不是【名额是 0】。
+  //   所以【自动换装】这条路也不能再拿 used 去卡人。
+  const g2b = makeSandbox({ lastLookDay: '', used: 999, dailyLimit: 0 });
+  await g2b.sandbox.window.PetNest.refreshDailyLook('pet-1');
+  check('生图不限次数时（dailyLimit=0），用得再多也不会被拦（画多少用户自己掌握）',
+    g2b.calls.atlas === 1, 'atlas 调用 ' + g2b.calls.atlas + ' 次');
 
   // --- 前置闸门: 当天啥也没发生, 不画（没东西可挑, 硬画就是随机凑）---
   const g3 = makeSandbox({ lastLookDay: '', used: 0, noSignals: true });
@@ -2109,6 +2125,7 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
 function printSummary() {
   console.log('\n================================');
   console.log('通过 ' + passed + ' / 失败 ' + failed);
+  console.log('__FAILURES__' + failedNames.join(''));
   console.log('================================');
   if (failed > 0) process.exit(1);
 }

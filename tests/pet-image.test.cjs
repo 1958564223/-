@@ -28,12 +28,15 @@ const read = (rel) => fs.readFileSync(P(...rel.split('/')), 'utf8');
 
 let passed = 0;
 let failed = 0;
+// 机器可读失败清单（反向验证脚本靠它做集合比对，别删）
+const failedNames = [];
 function ok(name, detail) {
   passed++;
   console.log('  [PASS] ' + name + (detail ? '  ' + detail : ''));
 }
 function fail(name, detail) {
   failed++;
+  failedNames.push(name);
   console.log('  [FAIL] ' + name + (detail ? '  ' + detail : ''));
 }
 function check(name, cond, detail) {
@@ -131,8 +134,9 @@ section('生图契约: CFG');
   check('存库宽高比 == 图集宽高比',
     Math.abs((C.storeWidth / C.storeHeight) - (1536 / 1024)) < 1e-9);
   check('给 AI 看的单只截图 = 256', C.snapshotSize === 256, String(C.snapshotSize));
-  check('每日生图上限 = 3（跟上游一致）', C.dailyLimit === 3, String(C.dailyLimit));
-  check('自动换装有独立名额（0 = 按宠物数量算）', C.autoLookBudget === 0, String(C.autoLookBudget));
+  // ⚠️【2026-10-29 用户定】「不想要三次的限制，反正画多少自己掌握」→ 0 = 不限
+  check('每日生图上限 = 0（不限，用户自己掌握画多少）', C.dailyLimit === 0, String(C.dailyLimit));
+  check('自动换装有独立名额（0 = 不限；每只宠物每天只画一次的守卫还在）', C.autoLookBudget === 0, String(C.autoLookBudget));
   check('羽化遍数 = 2', C.featherPasses === 2, String(C.featherPasses));
   check('抠图容差 > 0', C.tolerance > 0, String(C.tolerance));
 }
@@ -246,17 +250,33 @@ section('每日生图上限');
   store.petNestImageDailyDay = yesterdayKey();
   check('换天了 → 计数归零', api.todayCount() === 0);
 }
-section('每日上限: 到顶必须拦下来');
+section('每日上限: 默认【不限次数】（用户 2026-10-29：「画多少自己掌握」）');
+{
+  const { api, store } = loadPetImage();
+  store.petNestImageDailyDay = todayKey();
+  store.petNestImageDailyCount = '99';     // 已经画了 99 张
+  let msg = '';
+  try { await api.generateAtlas('a kitten'); } catch (e) { msg = e.message || String(e); }
+  check('画了 99 张也不拦（要走到发请求那一步才对）',
+    !/今天生图次数用完了/.test(msg) && /还没配生图 API 地址/.test(msg), msg);
+
+  msg = '';
+  try { await api.evolveAtlas('a kitten', 'a hat', { size: 1 }); } catch (e) { msg = e.message || String(e); }
+  check('蜕变也不拦', !/今天生图次数用完了/.test(msg), msg);
+}
+section('每日上限: 机制没坏 —— 显式给了上限还是要拦');
 {
   const { api, store } = loadPetImage();
   store.petNestImageDailyDay = todayKey();
   store.petNestImageDailyCount = '3';
+  api.CFG.dailyLimit = 3;                  // 想设回上限就改这一个数
   let msg = '';
   try { await api.generateAtlas('a kitten'); } catch (e) { msg = e.message || String(e); }
-  check('generateAtlas 超额 → 报错说今天用完了', /今天生图次数用完了/.test(msg), msg);
+  check('把 dailyLimit 设成 3 → 到顶还是拦下来', /今天生图次数用完了/.test(msg), msg);
   msg = '';
   try { await api.evolveAtlas('a kitten', 'a hat', { size: 1 }); } catch (e) { msg = e.message || String(e); }
-  check('evolveAtlas 超额 → 同样拦下来', /今天生图次数用完了/.test(msg), msg);
+  check('蜕变同样拦下来', /今天生图次数用完了/.test(msg), msg);
+  api.CFG.dailyLimit = 0;                  // 还原成不限
 }
 section('每日上限: 蜕变必须有参考图');
 {
@@ -279,12 +299,17 @@ section('每日上限: 自动换装和手动生图分开算（2026-10-27）');
 
   let msg = '';
   try { await api.generateAtlas('a kitten'); } catch (e) { msg = e.message || String(e); }
-  check('手动到顶 → 还是拦下来', /今天生图次数用完了/.test(msg), msg);
+  check('手动到顶也不再拦（不限次数了）', !/今天生图次数用完了/.test(msg), msg);
 
   msg = '';
   try { await api.generateAtlas('a kitten', { counter: 'auto', budget: 4 }); } catch (e) { msg = e.message || String(e); }
   check('自动换装有自己的名额（不被手动用满挡住）→ 走到发请求那一步',
     /还没配生图 API 地址/.test(msg), msg);
+
+  msg = '';
+  try { await api.generateAtlas('a kitten', { counter: 'auto', budget: 1 }); } catch (e) { msg = e.message || String(e); }
+  check('显式给了 budget 且用满了 → 还是拦（名额机制没坏）',
+    /今天生图次数用完了/.test(msg), msg);
 
   store.petNestImageAutoCount = '4';
   msg = '';
@@ -555,6 +580,7 @@ section('图集: 按格处理');
 // 汇总
 // ============================================================
 console.log('\n通过 ' + passed + ' / 失败 ' + failed);
+console.log('__FAILURES__' + failedNames.join(''));
 if (failed > 0) {
   console.error('\n❌ 有 ' + failed + ' 条断言没过');
   process.exit(1);

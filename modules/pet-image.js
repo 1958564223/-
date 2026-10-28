@@ -49,8 +49,11 @@
     storeWidth: 768,             // 存库尺寸（每格 256×256，手机上绰绰有余）
     storeHeight: 512,
     snapshotSize: 256,           // 给 AI 看的单只截图
-    dailyLimit: 3,               // 手动「换个模样」每日上限
-    autoLookBudget: 0,           // 每日【自动换装】名额（0 = 按宠物数量算，每只 1 张）
+    // ⚠️【2026-10-29 用户定】「不想要三次的限制，反正画多少自己掌握」
+    //   → 0 = 不限（手动「换个模样」想点多少次点多少次）
+    //   → 想设回上限就把这里改成数字（比如 3），下面所有地方都按它走
+    dailyLimit: 0,               // 手动「换个模样」每日上限（0 = 不限）
+    autoLookBudget: 0,           // 每日【自动换装】名额（0 = 不限；但每只宠物每天只画一次的守卫还在）
     tolerance: 46,               // 抠图容差（多遍递增：1× → 1.8× → 2.6×）
     backgroundColorKeys: 3,      // 边框取几种背景色（渐变/柔光背景用得上）
     backgroundColorSpread: 2.6,  // 其余背景色离主背景色多远之内才算数（× 容差）
@@ -129,14 +132,16 @@
     } catch (e) { /* 忽略 */ }
   }
 
-  /** 这一轮最多能用几次（options.budget 优先；没给就用全局上限） */
+  /** 这一轮最多能用几次（options.budget 优先；没给就用全局上限）。返回 0 = 不限。 */
   function limitFor(options) {
     const o = options || {};
     if (o.budget != null && o.budget !== '') {
       const b = Number(o.budget);
       if (!isNaN(b) && b > 0) return b;
     }
-    return Number(CFG.dailyLimit) || 3;
+    // ⚠️【2026-10-29】dailyLimit = 0 → 不限（用户自己掌握画多少）
+    const d = Number(CFG.dailyLimit) || 0;
+    return d > 0 ? d : 0;
   }
 
   function loadImage(blobOrUrl) {
@@ -1100,7 +1105,8 @@
     const o = options || {};
     const counter = o.counter === 'auto' ? 'auto' : 'manual';
     const limit = limitFor(o);
-    if (todayCount(counter) >= limit) {
+    // ⚠️【2026-10-29】limit = 0 → 不限次数（用户自己掌握画多少）
+    if (limit > 0 && todayCount(counter) >= limit) {
       throw new Error('今天生图次数用完了（上限 ' + limit + ' 次），明天再说');
     }
     const prompt = buildAtlasPrompt(subject, options);
@@ -1118,7 +1124,8 @@
     const o = options || {};
     const counter = o.counter === 'auto' ? 'auto' : 'manual';
     const limit = limitFor(o);
-    if (todayCount(counter) >= limit) {
+    // ⚠️【2026-10-29】limit = 0 → 不限次数（用户自己掌握画多少）
+    if (limit > 0 && todayCount(counter) >= limit) {
       throw new Error('今天生图次数用完了（上限 ' + limit + ' 次），明天再说');
     }
     if (!referenceBlob) throw new Error('没有参考图，不能蜕变');

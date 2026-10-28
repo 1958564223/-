@@ -166,11 +166,44 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.49 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.49</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">改动一：生图次数不再限制 3 次</div>
+        <ul class="item-list">
+          <li><strong>你提的</strong> —— 「生图次数，她们不想要三次的限制，<strong>反正画多少自己掌握</strong>」。</li>
+          <li><strong>改了什么</strong> —— 以前每天默认只准画 <strong>3 次</strong>，画满就直接拦下来。现在默认<strong>不限次</strong>，想画多少次画多少次。</li>
+          <li><strong>拦的功能没坏，只是默认不拦</strong> —— 你要是自己在设置里写死一个次数，或者给某次生图单独标了预算，<strong>照样拦得住</strong>。只是「什么都不设」的时候＝随便画。</li>
+          <li><strong>每天自动换装那条路单独算</strong> —— 它不受这次改动影响（还是每只宠物每天自动画一次），<strong>手动点「换个模样」才是你说了算</strong>。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">改动二：影院陪聊改走谷歌直连</div>
+        <ul class="item-list">
+          <li><strong>你说要加的</strong> —— 「影院主 API 聊天不能走谷歌直连吗？这的给我加上啊」。</li>
+          <li><strong>之前为什么走不通</strong> —— 影院是一个<strong>单独的小页面</strong>，它只加载了 7 个文件，<strong>主聊天那套「把消息转成谷歌格式」的工具不在里面</strong>。所以你在设置里把主 API 换成谷歌原生地址（<code>…/v1beta/models/…</code> 那种）时，影院这边<strong>自己转不了格式</strong>，就报错了。</li>
+          <li><strong>这次改了什么</strong> —— <strong>外面那页替你转</strong>：影院把要问的话交给外面的主聊天页，外面的页用<strong>和主聊天完全同一套</strong>转换逻辑发给谷歌，再把回答带回来给影院。</li>
+          <li><strong>不是另写一份，是复用同一套</strong> —— 所以影院和主聊天对同一句话的理解、格式、报错方式<strong>完全一致</strong>，不会出现「主聊天好好的，影院就说不行」。</li>
+          <li><strong>等不到就明说</strong> —— 外面那页处理失败，影院会<strong>把失败原因显示出来</strong>，不会闷声卡住让你以为是自己网络的问题。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">要看的</div>
+        <ul class="item-list">
+          <li>影院陪聊：把主 API 设成<strong>谷歌原生地址</strong>，进影院问一句话试试，看能不能正常回。</li>
+          <li>宠物屋：连着点几次「<strong>换个模样</strong>」，看会不会真的能一张接一张画下去。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.48 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.48</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复（鹦鹉换装只有徽章，没有新衣服）</div>

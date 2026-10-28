@@ -2728,7 +2728,7 @@
   // 版本戳: 只为一眼确认「手机上跑的到底是哪一份代码」。
   // PWA 有 service worker 缓存, 用户看到的经常是旧版, 没有戳根本分不清。
   // 每次改动影院都顺手改这里。
-  global.__CINEMA_VER = '0.32.0';
+  global.__CINEMA_VER = '0.33.0';
 
   global.CinemaRoom = {
     open: open,
@@ -2889,7 +2889,16 @@
               _mainApiCfg = {
                 proxyUrl: String(cfg.proxyUrl),
                 apiKey: String(cfg.apiKey),
-                model: String(cfg.model)
+                model: String(cfg.model),
+                // ⚠️【2026-10-29 用户要求】「影院主 API 聊天不能走谷歌直连吗？加上」
+                //   主 API 是谷歌原生地址(…/v1beta/models/…) 时, 沙盒【不能自己拼】
+                //   /chat/completions (那是 OpenAI 兼容的路径) → 必须走 Gemini 原生格式。
+                //   沙盒里没有 isGeminiNativeUrl / toGeminiRequestData(那两个在 utils.js /
+                //   ai-response.js, 沙盒没加载) → 所以这个标记由【宿主】判定后告诉沙盒,
+                //   真正的请求也由宿主代打(见 cinema:geminiRequest)。
+                isGeminiNative: (typeof window.isGeminiNativeUrl === 'function')
+                  ? !!window.isGeminiNativeUrl(String(cfg.proxyUrl))
+                  : false
               };
             }
             return _mainApiCfg;
@@ -3122,6 +3131,58 @@
       } catch (e) { /* noop */ }
     }
 
+    /**
+     * 沙盒请宿主【代打谷歌原生请求】（2026-10-29 用户要求：
+     * 「影院主 API 聊天不能走谷歌直连吗？加上」）
+     *
+     * 【为什么要宿主代打】影院跑在 iframe 沙盒里，沙盒只加载 7 个文件 —— 没有
+     *   ai-response.js / utils.js → 沙盒里【没有】toGeminiRequestData /
+     *   getGeminiResponseText / isGeminiNativeUrl。
+     *   沙盒自己拼 OpenAI 兼容的 `/chat/completions` 打到谷歌原生地址上 → 404。
+     *   → 所以：地址是不是谷歌原生由宿主判定（isGeminiNative 标记随 apiConfig 过去），
+     *     真正的请求也由宿主发（这个函数）。
+     *
+     * 【带上那张阅后即焚的图也没问题】
+     *   toGeminiRequestData 会把 OpenAI 格式的 image_url 转成 Gemini 的 inline_data。
+     */
+    async function handleCinemaGeminiRequest(d) {
+      var reqId = d && d.requestId;
+      function reply(payload) {
+        if (!frame || !reqId) return;
+        try {
+          frame.contentWindow.postMessage(Object.assign({
+            type: 'cinema:geminiResponse', requestId: reqId
+          }, payload || {}), '*');
+        } catch (e) { /* noop */ }
+      }
+      try {
+        if (typeof window.toGeminiRequestData !== 'function') {
+          reply({ ok: false, error: '宿主缺少 toGeminiRequestData，谷歌直连用不了' });
+          return;
+        }
+        var cfg = await resolveMainApiConfig();
+        if (!cfg) { reply({ ok: false, error: '主 API 没配好（地址 / API Key / 模型缺一个）' }); return; }
+        var g = window.toGeminiRequestData(
+          cfg.model, cfg.apiKey, String((d && d.systemPrompt) || ''),
+          Array.isArray(d && d.messages) ? d.messages : []);
+        var res = await fetch(g.url, g.data);
+        if (!res.ok) {
+          var errText = await res.text().catch(function () { return ''; });
+          reply({ ok: false, error: '谷歌直连 ' + res.status + ' ' + String(errText).slice(0, 200) });
+          return;
+        }
+        var data = await res.json();
+        var text = (typeof window.getGeminiResponseText === 'function')
+          ? window.getGeminiResponseText(data)
+          : (((data.candidates && data.candidates[0] && data.candidates[0].content &&
+              data.candidates[0].content.parts) || [])
+            .map(function (p) { return p.text || ''; }).join(''));
+        reply({ ok: true, text: text });
+      } catch (e) {
+        reply({ ok: false, error: String((e && e.message) || e) });
+      }
+    }
+
     window.addEventListener('message', function (e) {
       if (!frame) return;
       var d = e.data || {};
@@ -3153,6 +3214,11 @@
       // 🔴 2026-10-28: 影院里说的话也要进主聊天历史 (用户原话: "影院的会话就是要主聊天知道啊")
       else if (d.type === 'cinema:chatMessage') {
         handleCinemaChatMessage(d);
+      }
+      // 🔴 2026-10-29: 主 API 是【谷歌原生】地址时, 沙盒自己打不了 (它没有
+      //   toGeminiRequestData) → 沙盒把请求交给宿主代打, 宿主回文本。
+      else if (d.type === 'cinema:geminiRequest') {
+        handleCinemaGeminiRequest(d);
       }
       else if (d.type === 'cinema:keyChanged') {
         // 用户在影院设置面板里改了 key → 写回当前聊天记录

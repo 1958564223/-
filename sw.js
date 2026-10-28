@@ -614,7 +614,32 @@
 //   index.html 的 ?v=：modules/pet-nest.js 0.0.26 → 0.0.27、
 //   modules/pet-image.js 0.0.5 → 0.0.6。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.92.0';
+//
+// ── v0.2.93.0 ─────────────────────────────────────────────────
+//   【本轮两件事】
+//   ① 生图次数不再限制 3 次 —— 用户 2026-10-29 说「反正画多少自己掌握」
+//      · pet-image.js: CFG.dailyLimit 3 → 0 (0 = 不限);
+//        两处上限判断加 limit > 0 守卫 (limit=0 时不能当成「用满了」)。
+//      · pet-nest.js: autoLookLimit() 0 = 不限;
+//        maybeDailyRedraw 的 if (limit > 0 && used >= limit) ——
+//        否则 limit=0 会把【自动换装】也一起卡死。
+//      · 显式设上限 / 显式 budget 仍然拦得住 (机制没坏, 只是默认不限)。
+//
+//   ② 影院主 API 聊天走【谷歌原生直连】
+//      · cinema-room.js (宿主): resolveMainApiConfig() 标 isGeminiNative;
+//        新增 handleCinemaGeminiRequest() —— 用宿主已有的
+//        toGeminiRequestData / getGeminiResponseText, 不另写一份;
+//        消息监听加 cinema:geminiRequest 分支, 回 cinema:geminiResponse。
+//      · cinema-chat.js (沙盒): 新增 callGeminiViaHost() ——
+//        沙盒里没有 ai-response.js, 所以由宿主代打;
+//        沙盒没有 toGeminiRequestData 时不再直接报错, 改走宿主代打。
+//
+//   index.html 的 ?v=：modules/cinema-room.js 0.32.0 → 0.33.0、
+//   modules/cinema-chat.js 0.1.0 → 0.2.0、
+//   modules/pet-nest.js 0.0.27 → 0.0.28、
+//   modules/pet-image.js 0.0.6 → 0.0.7。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.93.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

@@ -203,9 +203,34 @@ function strip(s) {
   check('沙盒 pagehide 时也补报一声 (覆盖沙盒页被重载)',
     /pagehide[\s\S]{0,200}cinema:closed/.test(SANDBOX));
 
+  section('⑧ 谷歌原生直连: 宿主代打 (用户 2026-10-29)');
+  // 【背景】影院跑在 iframe 沙盒里, 沙盒只加载 7 个文件 —— 没有 ai-response.js /
+  //   utils.js → 沙盒里没有 toGeminiRequestData / getGeminiResponseText /
+  //   isGeminiNativeUrl。以前沙盒把 isGemini 判成 false, 拿 OpenAI 兼容的
+  //   /chat/completions 打到谷歌原生地址上 → 必 404。
+  //   → 修法: 宿主判定 + 宿主代打。
+  check('宿主认得 cinema:geminiRequest',
+    /d\.type === 'cinema:geminiRequest'/.test(ROOM));
+  const gemFn = body(ROOM, 'handleCinemaGeminiRequest');
+  check('有 handleCinemaGeminiRequest', !!gemFn);
+  check('用 toGeminiRequestData 转换 (和主聊天同一套, 不另写一份)',
+    // ⚠️【2026-10-29 收紧】光有 toGeminiRequestData 这个【词】不算 ——
+    //   函数里的 typeof 守卫和注释提到它, 都会让宽松写法误判成「有在用」。
+    //   必须真的【调用】它 (带左括号)。
+    /window\.toGeminiRequestData\(/.test(gemFn));
+  check('用 getGeminiResponseText 取文本',
+    /window\.getGeminiResponseText\(/.test(gemFn));
+  check('回包带 requestId (沙盒要对上)', /cinema:geminiResponse/.test(gemFn) && /requestId: reqId/.test(gemFn));
+  check('失败会把原因回给沙盒 (不静默)',
+    /ok: false/.test(gemFn) && /error:/.test(gemFn));
+  check('宿主判定谷歌原生, 并把标记随 apiConfig 发给沙盒',
+    /isGeminiNative:/.test(ROOM) && /window\.isGeminiNativeUrl/.test(ROOM));
+  check('沙盒那边有对应的请求/回包通道',
+    /cinema:geminiRequest/.test(CHAT) && /cinema:geminiResponse/.test(CHAT));
 
   console.log('\n========================================');
   console.log('  通过 ' + pass + ' / 失败 ' + fail);
+  console.log('__FAILURES__' + failed.join(''));
   if (failed.length) failed.forEach(f => console.log('   ✗ ' + f));
   console.log('========================================');
   if (fail) process.exit(1);

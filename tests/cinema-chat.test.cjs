@@ -37,12 +37,15 @@ const PRESETS_PATH = path.join(ROOT, 'modules', 'settings-presets.js');
 
 let passed = 0;
 let failed = 0;
+// 机器可读失败清单（反向验证脚本靠它做集合比对，别删）
+const failedNames = [];
 function ok(name, detail) {
   passed++;
   console.log('  [PASS] ' + name + (detail ? '  ' + detail : ''));
 }
 function fail(name, detail) {
   failed++;
+  failedNames.push(name);
   console.log('  [FAIL] ' + name + (detail ? '  ' + detail : ''));
 }
 function check(name, cond, detail) {
@@ -86,6 +89,13 @@ function makeSandbox(extraWin) {
   win.window = win;
 
   const sandbox = { console: console, window: win };
+  // ⚠️【2026-10-29】vm 沙盒里没有 setTimeout → 模块里任何 setTimeout/setInterval
+  //   一调用就 ReferenceError（"setTimeout is not defined"），
+  //   连带后面的逻辑全不执行（"请宿主代打"那个往返就是这么测不出来的）。
+  sandbox.setTimeout = setTimeout;
+  sandbox.clearTimeout = clearTimeout;
+  sandbox.setInterval = setInterval;
+  sandbox.clearInterval = clearInterval;
   // 生产环境里 `state` 是全局变量 (不只是 window.state) ——
   // ai-response.js 的 replaceTemplateVars 直接用裸的 `state.xxx`。
   sandbox.state = win.state;
@@ -345,8 +355,107 @@ async function main() {
   }
 
   // ------------------------------------------------------------
+  section('⑨ 谷歌原生直连（用户 2026-10-29：「影院主 API 聊天不能走谷歌直连吗？加上」）');
+  {
+    // 【背景】影院跑在 iframe 沙盒里, 沙盒只加载 7 个文件 —— 没有 ai-response.js /
+    //   utils.js → 沙盒里【没有】toGeminiRequestData / getGeminiResponseText /
+    //   isGeminiNativeUrl。以前沙盒把 isGemini 判成 false, 拿 OpenAI 兼容的
+    //   /chat/completions 打到谷歌原生地址上 → 必 404。
+    //   → 修法: 宿主判定并标记 + 宿主代打。
+    const chatSrc = fs.readFileSync(MODULE_PATH, 'utf8');
+    const roomSrc = fs.readFileSync(path.join(ROOT, 'modules', 'cinema-room.js'), 'utf8');
+
+    check('沙盒认得「主 API 是谷歌原生」这个标记',
+      /isGeminiNative/.test(chatSrc));
+    check('沙盒里没有 toGeminiRequestData 时改成请宿主代打（不再直接报错）',
+      /typeof window\.toGeminiRequestData !== 'function'/.test(chatSrc) &&
+      /callGeminiViaHost\(cfg, systemPrompt, messages, onDelta\)/.test(chatSrc));
+    check('沙盒会发 cinema:geminiRequest 给宿主',
+      /type: 'cinema:geminiRequest'/.test(chatSrc));
+    check('沙盒接得住宿主的回包 cinema:geminiResponse',
+      /d\.type === 'cinema:geminiResponse'/.test(chatSrc));
+    check('代打有超时（不会永远挂着）', /HOST_GEMINI_TIMEOUT_MS/.test(chatSrc));
+    check('以前那句「toGeminiRequestData 不可用」的直接报错没了',
+      !/主 API 是 Gemini 原生格式, 但 toGeminiRequestData 不可用/.test(chatSrc));
+
+    check('宿主认得 cinema:geminiRequest',
+      /d\.type === 'cinema:geminiRequest'/.test(roomSrc));
+    check('宿主用 toGeminiRequestData 转换（和主聊天同一套，不另写一份）',
+      /window\.toGeminiRequestData\(/.test(roomSrc));
+    check('宿主用 getGeminiResponseText 取文本',
+      /getGeminiResponseText/.test(roomSrc));
+    check('宿主把 isGeminiNative 标记随 apiConfig 发给沙盒',
+      /isGeminiNative:/.test(roomSrc));
+    check('宿主用 isGeminiNativeUrl 判断（那个函数只在宿主有）',
+      /window\.isGeminiNativeUrl/.test(roomSrc));
+
+    // ---- 行为: 沙盒发请求 → 宿主回包 → 拿到文本 ----
+    const posted = [];
+    const listeners = [];
+    const fake = makeSandbox({
+      state: {
+        chats: { 'chat-1': chat }, globalSettings: {}, activeChatId: 'chat-1',
+        apiConfig: {
+          proxyUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
+          apiKey: 'AIza-fake', model: 'gemini-2.5-pro', isGeminiNative: true
+        }
+      },
+      parent: { postMessage: function (m) { posted.push(m); } },
+      addEventListener: function (t, fn) { if (t === 'message') listeners.push(fn); }
+    });
+    const fakeApi = fake.api;
+
+    let delta = '';
+    const p = fakeApi.callGeminiViaHost(
+      { model: 'gemini-2.5-pro' }, '系统提示', [{ role: 'user', content: '你好' }],
+      function (t) { delta += t; });
+
+    check('沙盒把请求发给宿主了', posted.length === 1 && posted[0].type === 'cinema:geminiRequest',
+      posted.length ? posted[0].type : '一条都没发');
+    check('请求里带了系统提示和消息',
+      posted.length === 1 && posted[0].systemPrompt === '系统提示' &&
+      Array.isArray(posted[0].messages) && posted[0].messages.length === 1);
+    check('请求里有 requestId（回包要对上）',
+      posted.length === 1 && !!posted[0].requestId);
+
+    if (posted.length === 1) {
+      listeners.forEach(function (fn) {
+        fn({ data: {
+          type: 'cinema:geminiResponse', requestId: posted[0].requestId,
+          ok: true, text: '谷歌回的话'
+        } });
+      });
+      const got = await p;
+      check('拿到宿主回的文本', got === '谷歌回的话', String(got));
+      check('流式回调也拿到了', delta === '谷歌回的话', delta);
+    }
+
+    // ---- 失败路径: 宿主说失败 → 抛错, 不是静默 ----
+    const posted2 = [];
+    const listeners2 = [];
+    const fake2 = makeSandbox({
+      state: { chats: { 'chat-1': chat }, globalSettings: {}, activeChatId: 'chat-1' },
+      parent: { postMessage: function (m) { posted2.push(m); } },
+      addEventListener: function (t, fn) { if (t === 'message') listeners2.push(fn); }
+    });
+    let err = '';
+    try {
+      const p2 = fake2.api.callGeminiViaHost({ model: 'm' }, 'sys', [], null);
+      listeners2.forEach(function (fn) {
+        fn({ data: {
+          type: 'cinema:geminiResponse', requestId: posted2[0].requestId,
+          ok: false, error: '谷歌直连 400 坏请求'
+        } });
+      });
+      await p2;
+    } catch (e) { err = e.message || String(e); }
+    check('宿主报错 → 沙盒抛错（带原因，不静默）', /400/.test(err), err);
+  }
+
+  // ------------------------------------------------------------
   console.log('\n========================================');
   console.log('  通过 ' + passed + ' / 失败 ' + failed);
+  console.log('__FAILURES__' + failedNames.join(''));
   console.log('========================================');
   if (failed > 0) process.exit(1);
 }

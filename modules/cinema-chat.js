@@ -79,6 +79,9 @@
   //   绝不因为等上下文把聊天卡死。
   // ============================================================
   var HOST_CONTEXT_TIMEOUT_MS = 2500;
+  // ⚠️【2026-10-29】谷歌原生直连要请宿主代打 → 它的超时比"要上下文"长得多
+  //   （那是一次完整的模型请求，不是本地读一下上下文）
+  var HOST_GEMINI_TIMEOUT_MS = 120000;
   var HOST = {
     ctx: null,          // 宿主给的最新上下文
     pending: {},        // requestId -> resolve
@@ -154,6 +157,67 @@
         if (d.context) setHostContext(d.context);
         var cb = HOST.pending[d.requestId];
         if (cb) cb(d.context || HOST.ctx);
+      }
+      // ⚠️【2026-10-29】宿主代打谷歌原生请求的回包
+      else if (d.type === 'cinema:geminiResponse') {
+        var gcb = HOST.pending[d.requestId];
+        if (gcb) gcb({ ok: !!d.ok, text: d.text || '', error: d.error || '' });
+      }
+    });
+  }
+
+  /**
+   * 请宿主【代打谷歌原生请求】
+   *
+   * 【为什么不能沙盒自己打】影院跑在 iframe 沙盒里, 沙盒只加载 7 个文件 ——
+   *   没有 ai-response.js / utils.js → 沙盒里【没有】toGeminiRequestData,
+   *   也没有 getGeminiResponseText。而谷歌原生地址要的是 Gemini 格式
+   *   (contents / inline_data / x-goog-api-key), 不是 OpenAI 兼容那套
+   *   /chat/completions → 沙盒自己拼必然 404。
+   *   → 请求交给宿主发, 宿主把文本回传 (见 modules/cinema-room.js 的
+   *     handleCinemaGeminiRequest)。
+   *
+   * 【图也能带】messages 里那张【阅后即焚】的图是 OpenAI 格式的 image_url,
+   *   宿主的 toGeminiRequestData 会把它转成 inline_data。
+   */
+  function callGeminiViaHost(cfg, systemPrompt, messages, onDelta) {
+    return new Promise(function (resolve, reject) {
+      if (!canPostToHost()) {
+        reject(new Error('主 API 是谷歌原生地址，需要宿主代打，但这里联系不上宿主'));
+        return;
+      }
+      var reqId = 'gem_' + (++HOST.seq) + '_' + Date.now();
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        delete HOST.pending[reqId];
+        reject(new Error('谷歌直连超时（' + Math.round(HOST_GEMINI_TIMEOUT_MS / 1000) + ' 秒没回）'));
+      }, HOST_GEMINI_TIMEOUT_MS);
+      HOST.pending[reqId] = function (res) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        delete HOST.pending[reqId];
+        if (res && res.ok) {
+          var text = String(res.text || '');
+          if (onDelta && text) onDelta(text);
+          resolve(text);
+        } else {
+          reject(new Error((res && res.error) || '谷歌直连失败'));
+        }
+      };
+      var sent = postToHost({
+        type: 'cinema:geminiRequest',
+        requestId: reqId,
+        systemPrompt: String(systemPrompt || ''),
+        messages: Array.isArray(messages) ? messages : []
+      });
+      if (!sent) {
+        done = true;
+        clearTimeout(timer);
+        delete HOST.pending[reqId];
+        reject(new Error('发给宿主的请求没能送出去'));
       }
     });
   }
@@ -253,7 +317,14 @@
     if (!proxyUrl || !apiKey || !model) {
       throw new Error('主 API 没配好（地址 / API Key / 模型缺一个）');
     }
-    return { proxyUrl: proxyUrl, apiKey: apiKey, model: model };
+    // ⚠️【2026-10-29 用户要求】「影院主 API 聊天不能走谷歌直连吗？加上」
+    //   是不是谷歌原生地址, 优先用宿主判好的标记 (沙盒里没有 isGeminiNativeUrl),
+    //   独立打开页面时才有那个函数 → 自己判。
+    var isGeminiNative = !!(cfg && cfg.isGeminiNative);
+    if (!isGeminiNative && typeof window.isGeminiNativeUrl === 'function') {
+      try { isGeminiNative = !!window.isGeminiNativeUrl(proxyUrl); } catch (e) { /* noop */ }
+    }
+    return { proxyUrl: proxyUrl, apiKey: apiKey, model: model, isGeminiNative: isGeminiNative };
   }
 
   // ============================================================
@@ -709,9 +780,10 @@
   async function callMainApi(cfg, systemPrompt, messages, onDelta) {
     var st = getState();
     var gs = (st && st.globalSettings) || {};
-    var isGemini = (typeof isGeminiNativeUrl === 'function')
-      ? isGeminiNativeUrl(cfg.proxyUrl)
-      : false;
+    var isGemini = !!cfg.isGeminiNative ||
+      ((typeof isGeminiNativeUrl === 'function')
+        ? isGeminiNativeUrl(cfg.proxyUrl)
+        : false);
     var streaming = gs.enableStreaming === true && !isGemini;
     var signal = S.controller ? S.controller.signal : undefined;
 
@@ -726,8 +798,12 @@
 
     if (isGemini) {
       // Gemini 原生格式 —— 主聊天同一套转换
+      // ⚠️【2026-10-29】影院跑在 iframe 沙盒里, 沙盒【没有】ai-response.js /
+      //   utils.js → 没有 toGeminiRequestData → 谷歌原生地址必须【请宿主代打】。
+      //   (以前沙盒把 isGemini 判成 false, 拿 OpenAI 兼容的 /chat/completions
+      //    打到谷歌原生地址上 → 必 404。)
       if (typeof window.toGeminiRequestData !== 'function') {
-        throw new Error('主 API 是 Gemini 原生格式, 但 toGeminiRequestData 不可用');
+        return await callGeminiViaHost(cfg, systemPrompt, messages, onDelta);
       }
       var g = window.toGeminiRequestData(cfg.model, cfg.apiKey, systemPrompt, messages);
       var gres = await fetch(g.url, g.data);
@@ -987,6 +1063,8 @@
     // 宿主上下文通道 (宿主 ↔ 沙盒)
     setHostContext: setHostContext,
     getHostContext: function () { return HOST.ctx; },
+    // ⚠️【2026-10-29】暴露给测试用: 谷歌原生直连的「请宿主代打」往返
+    callGeminiViaHost: callGeminiViaHost,
     requestHostContext: requestHostContext,
     canPostToHost: canPostToHost,
     // 暴露给测试用: 主 API 配置是怎么拿到的 (沙盒场景靠宿主下发)

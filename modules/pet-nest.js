@@ -3706,7 +3706,10 @@ function careActionForButton(btnId) {
   // ============================================================
   // 10·五、每天自动换一次造型
   //   用户定的规矩：
-  //   - 每天最多自动 1 次（手动再点「换个模样」另外算，但都受每日 3 张上限管）
+  //   - 每天最多自动 1 次（手动再点「换个模样」另外算）
+  //   ⚠️【2026-10-29 用户定】生图次数【不限】了 —— "反正画多少自己掌握"
+  //     → CFG.dailyLimit = 0 → limit = 0 → 不拦
+  //     （每只宠物每天只画一次的守卫还在 → 同一只不会一天画好几张）
   //   - 画不成就跳过：不报错、不弹窗、造型不变（「大不了不换」）
   //   - 不累积：今天这套直接替换昨天那套
   //   - 用上一张当参考图蜕变 → 保证「还是同一只」
@@ -3744,7 +3747,8 @@ function careActionForButton(btnId) {
       // 自动换装走【自动】名额（跟手动生图分开算）→ 不会把手动「换个模样」卡住
       const used = Number(window.PetImage.todayCount ? window.PetImage.todayCount('auto') : 0);
       const limit = Number(opts && opts.budget) || autoLookLimit();
-      if (used >= limit) return null;                   // 今日自动换装的名额用完了
+      // ⚠️【2026-10-29】limit = 0 → 不限名额（用户自己掌握画多少）
+      if (limit > 0 && used >= limit) return null;   // 今日自动换装的名额用完了
       await setMeta(guardKey, day);
       autoLookRunning = true;
       try {
@@ -3763,12 +3767,16 @@ function careActionForButton(btnId) {
     }
   }
 
-  /** 自动换装每天的名额：没单独配就按全局上限 */
+  /** 自动换装每天的名额：没单独配就按全局上限。返回 0 = 不限。 */
   function autoLookLimit() {
     const cfg = (window.PetImage && window.PetImage.CFG) || {};
     const b = Number(cfg.autoLookBudget) || 0;
     if (b > 0) return b;
-    return Number(cfg.dailyLimit) || 3;
+    // ⚠️【2026-10-29】dailyLimit = 0 → 不限（用户自己掌握画多少）
+    //   自动换装这边也一样不限 —— 但「每只宠物每天只画一次」的守卫还在，
+    //   所以同一只不会一天画好几张。
+    const d = Number(cfg.dailyLimit) || 0;
+    return d > 0 ? d : 0;
   }
 
   /**
