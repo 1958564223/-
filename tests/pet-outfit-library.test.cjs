@@ -297,6 +297,63 @@ section('⑦ 源码接线');
     (src.match(/series: '(sweet|fairy|galaxy|oriental|ocean|magic)'/g) || []).length + ' 条');
 }
 
+// ============================================================
+// ⑧ 蜕变时的配色：别再写死盲盒配色（用户 2026-10-28：玫红色想保持住）
+// ============================================================
+section('⑧ 生图配色：有参考图就跟参考图走');
+{
+  const R = loadRules();
+  const app = {
+    beastSpecies: '九尾狐',
+    beastSpeciesEn: 'a fluffy fox spirit with nine tiny ribbon-like tails',
+    beastPaletteEn: 'deep berry purple',   // ← 莓紫，盲盒抽到的
+    palette: '莓紫'
+  };
+  const lk = R.dailyLookFor([], '2026-10-28', 'seed-x', []);
+  const mark = 'a soft heart-shaped tuft on the chest';
+  const keep = R.beastPrompt(app, lk, mark, true);
+  const write = R.beastPrompt(app, lk, mark, false);
+  check('蜕变时不再写死盲盒配色（否则每次都被拉回紫黑，跟参考图打架）',
+    keep.indexOf('deep berry purple') < 0, keep.slice(0, 90));
+  check('蜕变时改成「跟参考图同一个颜色」',
+    keep.indexOf('same colours as the reference image') >= 0);
+  check('首次生成（没有参考图）照旧写盲盒配色',
+    write.indexOf('deep berry purple') >= 0, write.slice(0, 90));
+
+  const pet = {
+    id: 'p1', kind: 'egg', stage: 1, seed: 'seed-x',
+    appearance: {
+      kind: 'fantasy', identity: '九尾狐', palette: '莓紫',
+      beastSpecies: '九尾狐', beastSpeciesEn: app.beastSpeciesEn,
+      beastPaletteEn: 'deep berry purple', markEn: mark
+    }
+  };
+  const s1 = R.subjectForPet(pet, lk, { keepColors: false });
+  const s2 = R.subjectForPet(pet, lk, { keepColors: true });
+  check('subjectForPet：keepColors=false → 写死配色',
+    s1.indexOf('deep berry purple') >= 0, s1.slice(0, 90));
+  check('subjectForPet：keepColors=true → 不写死配色（玫红能留住）',
+    s2.indexOf('deep berry purple') < 0, s2.slice(0, 90));
+
+  const src = read('modules/pet-nest.js');
+  const iRef = src.indexOf('if (row.assetRef)');
+  const iSub = src.indexOf('const subject = subjectForPet(');
+  check('提示词是在【拿到参考图之后】才拼的（不然不知道该不该写死配色）',
+    iRef >= 0 && iSub > iRef, 'ref@' + iRef + ' subject@' + iSub);
+  check('有参考图 → keepColors 传 true',
+    /subjectForPet\(row, await buildTodayLook\(row\), \{ keepColors: !!refBlob \}\)/.test(src));
+  check('beastPrompt 有 keepColors 这个开关',
+    /function beastPrompt\(app, look, markEn, keepColors\)/.test(src));
+  // ⚠️ 要在【beastPrompt 函数体内】找 —— 鹦鹉分支里也有同一句字符串，
+  //   全局搜会被凑巧匹配上（第一版就栽在这）。
+  const fnStart = src.indexOf('function beastPrompt(');
+  const fnEnd = src.indexOf('\n  }', fnStart);
+  const fnBody = fnStart >= 0 ? src.slice(fnStart, fnEnd) : '';
+  check('beastPrompt 里真的按 keepColors 分支写配色（不是只挂了个参数）',
+    fnBody.indexOf('keepColors') >= 0
+    && fnBody.indexOf('same colours as the reference image') >= 0);
+}
+
 console.log('\n通过 ' + passed + ' / 失败 ' + failed);
 if (failed > 0) {
   console.error('\n✗ 有 ' + failed + ' 条断言没过');

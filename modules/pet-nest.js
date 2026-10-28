@@ -336,15 +336,24 @@
     return (palette ? palette : '') + tail + species;
   }
 
-  /** 英文生图提示词：物种 + 配色 + 今天挑出来的小装饰 + 今天的特征 + 穿搭 + 花纹 + 审美锁 */
-  function beastPrompt(app, look, markEn) {
+  /**
+   * 英文生图提示词：物种 + 配色 + 今天挑出来的小装饰 + 今天的特征 + 穿搭 + 花纹 + 审美锁
+   * @param keepColors true = 【有参考图】→ 别再写死配色，跟参考图保持一致
+   *   ⚠️【2026-10-28 用户反馈】「九尾狐刚破壳是黑紫色，画到第三次变好看的玫红色了，后面想保持」
+   *     → 以前每次都硬写盲盒配色（"with deep berry purple fur"），
+   *       跟参考图里的玫红打架（而 buildEvolvePrompt 第一句又要求 "same colors"）→ 颜色反复漂。
+   *     → 有参考图时改成"跟参考图同一个颜色"，颜色才稳得住。
+   */
+  function beastPrompt(app, look, markEn, keepColors) {
     const speciesEn = (app && app.beastSpeciesEn) || 'a round cute fantasy beast';
     const paletteEn = (app && app.beastPaletteEn) || 'pastel pink';
     const lk = look || { features: [], icons: [], outfit: null };
     // 物种英文自带 "a/an/the"（不然拼出来是 "a a chubby dragon"），别再补一次冠词
     const sp = String(speciesEn).trim();
     const spWithArticle = /^(a|an|the)\s/i.test(sp) ? sp : 'a ' + sp;
-    const bits = [spWithArticle, 'with ' + paletteEn + ' fur'];
+    const bits = [spWithArticle, keepColors
+      ? 'in exactly the same colours as the reference image'
+      : 'with ' + paletteEn + ' fur'];
     for (const i of lk.icons || []) bits.push(i.en);
     for (const f of lk.features || []) bits.push(f.en);
     if (lk.outfit) bits.push(lk.outfit.en);
@@ -3460,8 +3469,10 @@ function careActionForButton(btnId) {
     return window.confirm('这会调用一次生图接口（可能产生费用），要画吗？');
   }
 
-  function subjectForPet(pet, lookOverride) {
+  function subjectForPet(pet, lookOverride, opts) {
     const app = pet.appearance || null;
+    // 有参考图（蜕变）→ 颜色跟参考图走，不再写死盲盒配色（见 beastPrompt 的说明）
+    const keepColors = !!(opts && opts.keepColors);
     // 今天这身：衣服 + 道具
     // ⚠️【2026-10-27 用户定】「所有宠物都要每天能换装」→ 鹦鹉、猫狗也必须有。
     // ⚠️ 生图提示词必须全英文 → 这里只取 look 里的 en（中文那套是给人看的）
@@ -3501,7 +3512,10 @@ function careActionForButton(btnId) {
       const breed = PARROT_BREEDS.find(b => b.key === (app && app.breedKey)) || PARROT_BREEDS[0];
       const mark = app && app.markEn ? ', ' + app.markEn : '';
       // ⚠️【2026-10-27 修】原来这条分支【完全不接今日造型】→ 鹦鹉永远不会换装
-      return 'a fluffy ' + breed.en + ' with ' + breed.colorEn + mark + lookTail
+      const colorText = keepColors
+        ? 'in exactly the same colours as the reference image'
+        : 'with ' + breed.colorEn;
+      return 'a fluffy ' + breed.en + ' ' + colorText + mark + lookTail
         + ', ' + ART_STYLE_LOCK;
     }
 
@@ -3511,7 +3525,7 @@ function careActionForButton(btnId) {
       const mark = app && app.markEn ? app.markEn : '';
       if (app && app.beastSpeciesEn) {
         // 新幻兽：物种 + 配色 + 今天挑出来的小装饰 + 审美锁
-        return beastPrompt(app, lk, mark);
+        return beastPrompt(app, lk, mark, keepColors);
       }
       // 老数据（2026-10-24 之前孵出来的）：物种英文从老表找，行为特征照样生效
       const speciesEn = app && app.identity
@@ -3524,7 +3538,7 @@ function careActionForButton(btnId) {
           || (BEAST_PALETTES.find(p => p.cn === app.palette) || {}).en
           || 'pastel pink')
         : 'pastel pink';
-      return beastPrompt({ beastSpeciesEn: speciesEn, beastPaletteEn: paletteEn }, lk, mark);
+      return beastPrompt({ beastSpeciesEn: speciesEn, beastPaletteEn: paletteEn }, lk, mark, keepColors);
     }
 
     // 猫狗：天生就是猫狗 → 物种 + 固定配色 + 今天这身
@@ -3534,7 +3548,8 @@ function careActionForButton(btnId) {
     }[pet.kind] || 'cute fantasy pet';
     const pal = petPaletteFor(pet);
     const bits = [kindText];
-    if (pal) bits.push('with ' + pal.en + ' fur');
+    if (keepColors) bits.push('in exactly the same colours as the reference image');
+    else if (pal) bits.push('with ' + pal.en + ' fur');
     for (const b of lookBits) bits.push(b);
     return bits.join(', ') + ', ' + ART_STYLE_LOCK;
   }
@@ -3568,7 +3583,6 @@ function careActionForButton(btnId) {
 
     const stageKey = pet.id + '::' + row.stage;
     const stageRow = await d.stages.get(stageKey);
-    const subject = subjectForPet(row, await buildTodayLook(row));
     const change = (stageRow && stageRow.marking) ? stageRow.marking : '';
     const imgOpts = {
       quality: 'medium',
@@ -3588,6 +3602,10 @@ function careActionForButton(btnId) {
       // 猫狗：没有生图资产，但有 starter 图集 → 拿它当参考图（保证还是那只猫）
       refBlob = await starterSpriteBlob(row);
     }
+    // ⚠️【2026-10-28】提示词要在【知道有没有参考图】之后再拼 ——
+    //   有参考图 → 颜色跟参考图走（用户要保留"画到第三次那个玫红色"）；
+    //   没有参考图（首次生成）→ 照旧写盲盒配色。
+    const subject = subjectForPet(row, await buildTodayLook(row), { keepColors: !!refBlob });
     if (refBlob) {
       // ⚠️【2026-10-27 修】原来 change 写死成 'grow a little more mature and keep the same look'
       //   → 蜕变提示词只让模型改这一点，【当日穿搭压根没进请求】（用户实测：小水壶画不出来）

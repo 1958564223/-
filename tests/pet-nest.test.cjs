@@ -916,7 +916,7 @@ section('接线: sw.js 预缓存');
   //   这条断言把「改了 pet-nest.js / pet-nest.css / pet-image.js 却忘了 bump」变成会报红。
   const html = read('index.html');
   const EXPECT_V = {
-    'modules/pet-nest.js': '0.0.25',
+    'modules/pet-nest.js': '0.0.26',
     'modules/pet-image.js': '0.0.5',
     'modules/pet-speech.js': '0.0.3',
     'modules/backup-import-export.js': '0.0.39',

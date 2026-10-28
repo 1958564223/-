@@ -166,11 +166,35 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.45 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.45</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（生图颜色老是变回原来那个）</div>
+        <ul class="item-list">
+          <li><strong>画出来的宠物，颜色每次都在两个色之间跳</strong> —— 你的原话：「音音的宠物九尾狐，刚破壳的时候是黑紫色的不好看，她画到第三次的时候变成好看的玫红色了，后面想保持，又怕生图参考是第一次破壳那张」。</li>
+          <li><strong>先回答你的担心：参考图一直是【上一张】</strong> —— 每画完一次，下一次就把「参考图」换成刚画出来的那张，一路往前滚。<strong>所以「玫红那张」会被一直当参考</strong>，不会突然跳回第一次破壳那张。</li>
+          <li><strong>真正把颜色拉回去的，是提示词里写死的那句话</strong> —— 每只宠物的<strong>底色是领养那天就定死的</strong>（16 种配色抽一个），你那只九尾狐抽到的是「莓紫」。于是<strong>每次画图都在请求里硬写「深紫毛」</strong>，一边又要模型「保持参考图的颜色」—— 两句打架，<strong>颜色就来回漂</strong>。你看到的「第三次变玫红」，就是这么来的。</li>
+          <li>改法：<strong>只要有参考图，就不再写死底色</strong>，改成「<strong>跟参考图同一个颜色</strong>」—— 这样<strong>玫红就能稳稳留住</strong>；只有<strong>第一次</strong>画（还没参考图）才按抽到的底色来。</li>
+          <li>⚠️ 例外：<strong>羽化成神兽</strong>时颜色<strong>本来就应该换</strong>，那一步还是按神兽的配色走。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">顺带说清楚</div>
+        <ul class="item-list">
+          <li><strong>每天的「衣服」跟聊天内容无关，一天一套</strong> —— 这是你要的：衣服每天从 72 件娃衣里按「今天 + 这只宠物」定一套，<strong>聊什么都不会改它</strong>；<strong>只有道具</strong>会跟着当天聊的内容走（聊咖啡配热饮、聊生日配气球）。</li>
+          <li>如果你在界面上看到的还是<strong>旧衣服</strong>，多半是<strong>今天早上那次生图算出来的</strong>被缓存着（界面优先显示"画图时算的那一份"，这是为了保证名册写的和图上画的一致）—— <strong>刷新一下页面</strong>，或者等它下一次换装，就会是新的华丽衣服。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.44 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.44</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-28</span>
       </div>
       <div class="section">
         <div class="section-title new">新增（服装库大扩容）</div>

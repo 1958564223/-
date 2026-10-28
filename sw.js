@@ -521,7 +521,16 @@
 //      → 「一块小磨刀石」「一块小砖头」这类日常杂物不再出现在服饰描述里（用户反馈）。
 //   index.html 的 ?v=：modules/pet-nest.js 0.0.24 → 0.0.25。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.87.0';
+// v0.2.88.0 (2026-10-28 下午): 生图配色跟参考图走（用户「玫红色想保持住」）
+//   参考图一直是【上一次生成的那张】(row.assetRef 链式往前滚)，不是第一次破壳那张。
+//   真正把颜色拉回去的是提示词: 幻兽配色领养时就定死(BEAST_PALETTES 16 选 1)，
+//   每次请求都硬写 "with deep berry purple fur"，跟参考图里的玫红打架
+//   (而 buildEvolvePrompt 第一句又要求 "same colors") → 颜色在紫黑↔玫红之间反复漂。
+//   修法: 有参考图(蜕变) → 不写死配色，改成 "in exactly the same colours as the reference image"；
+//         没有参考图(首次生成) → 照旧写盲盒配色；羽化(终形态)例外，本就该换配色。
+//   index.html 的 ?v=：modules/pet-nest.js 0.0.25 → 0.0.26。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.88.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
