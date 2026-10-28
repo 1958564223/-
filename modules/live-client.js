@@ -338,6 +338,18 @@
   };
 
   /**
+   * 现在发得出去吗? (发送缓冲没满)
+   *
+   * 🔴 2026-10-29: 影院那边先问这个, 满了就连帧都不用抽 ——
+   *   抽帧的 JPEG 编码 + base64 是白干的 (每帧 1.3MB 垃圾), 原来是先抽再丢。
+   */
+  LiveClient.prototype.canSendFrame = function () {
+    if (!this.ws || this.ws.readyState !== 1) return false;
+    if (typeof this.ws.bufferedAmount !== 'number') return true;
+    return this.ws.bufferedAmount <= MAX_BUFFERED_BYTES;
+  };
+
+  /**
    * 发用户文字并【显式结束回合】, 触发 Gemini 生成。
    *
    * 为什么用 clientContent 而不是 realtimeInput.text:
@@ -502,6 +514,23 @@
     this.setupDone = false;
     this.state = 'idle';      // 让 connect() 里的重入守卫放行
     return this.connect();
+  };
+
+  /**
+   * 丢弃会话存档点, 下一个连接是【全新会话】。
+   *
+   * ⚠️ 为什么必须有这个 (2026-10-29, 用户实测「十五分钟左右浏览器崩溃闪退」):
+   *   Live 会话的输入预算有限 (131,072 token), 而每一帧画面都要算 image token
+   *   (官方: 258 tokens/tile)。带着 resume handle 重连 = 继承那个已经撑爆的上下文
+   *   → 服务端立刻再掐 → 重连风暴 → 手机狂热 + 闪退。
+   *   主动丢掉 handle 换干净会话, 上下文归零, 稳。
+   *   剧情记忆不靠这个连续 —— 靠提示词里带的【滚动锚】。
+   */
+  LiveClient.prototype.resetSession = function () {
+    this._resumeHandle = null;
+    this._resumable = false;
+    log('已丢弃会话存档点, 下一个连接是全新会话');
+    return this.reconnect();
   };
 
   /**

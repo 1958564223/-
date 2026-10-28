@@ -45,12 +45,38 @@
   var PLOT_PANEL_ID = 'cinema-plot-panel';
   var STATUS_ID = 'cinema-live-status';
 
-  // 1 FPS —— 官方建议上限, 旧文件已验证
-  var FRAME_INTERVAL_MS = 1000;
-  var JPEG_QUALITY = 0.6;
+  // 🔴 2026-10-29: 帧率 1 FPS → 0.2 FPS (每 5 秒一帧)。**这是这轮最重要的一个数**。
+  //
+  //   起因 (用户 2026-10-29 实测三连报): 「本地视频看的时候越看手机越烫,
+  //   看了十分钟动漫一句剧情总结都没写, 最后十五分钟左右浏览器崩溃闪退」。
+  //
+  //   探针实测 (_reports/pet-test/probe-cinema-heat.cjs, 15 分钟):
+  //     上行 79.3MB = 5.3MB/分钟 —— 手机射频持续满载, 这就是「越看越烫」的来源;
+  //     下行 9.1MB, 其中 9.1MB 全是【用完就丢】的模型音频。
+  //
+  //   为什么降到 0.2 FPS 不影响写剧情:
+  //     一段 5 分钟的剧情, 0.2 FPS = 60 张画面 —— 谁出场、发生了什么、停在哪里,
+  //     60 张足够了。原来 1 FPS 是 300 张, 多出来的 240 张对写剧情没有增量价值,
+  //     只是把手机带宽和 Live 会话的 token 预算烧掉。
+  var FRAME_INTERVAL_MS = 5000;
+  var JPEG_QUALITY = 0.5;
 
-  // 🔴 新增: 抽帧降采样长边上限 (官方推荐 768)
-  var FRAME_MAX_DIM = 768;
+  // 🔴 2026-10-29: 768 → 512。
+  //   token 只跟【帧数】走 (同样 16:9 切成同样几个 tile), 降分辨率省的是【字节】——
+  //   上行量直接砍一半以上。字节降了, 手机发热和电量都跟着降。
+  var FRAME_MAX_DIM = 512;
+
+  // 🔴 2026-10-29: 一个 Live 会话最多发多少帧, 超过就换干净会话。
+  //
+  //   为什么要设上限: 每一帧画面都要算 image token (官方文档: 258 tokens/tile,
+  //   裁剪单位 = min(边)/1.5 → 512x288 约 6 个 tile ≈ 1548 tokens/帧),
+  //   而 Live 会话的输入预算是 131,072。1 FPS 下 8~14 分钟就把预算撑爆,
+  //   服务端开始掐连接 → 重连 → 而重连又【带着 resume handle】,
+  //   继承那个已经爆掉的上下文 → 立刻再爆 → 重连风暴 → 手机狂热 + 闪退。
+  //
+  //   现在帧率降到 0.2 FPS, 80 帧 ≈ 6.7 分钟, 稳稳在预算内;
+  //   真到了上限就【主动换干净会话】(不继承旧上下文), 而不是等服务端来掐。
+  var SESSION_FRAME_BUDGET = 80;
 
   // ---- 阶段剧情摘要 (与旧文件一致) ----
   var WATCH_SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
@@ -62,7 +88,14 @@
   var ANCHOR_MAX_CHARS = 500;
   var SEGMENT_MAX_CHARS = 700;
   var SERIES_OUTLINE_MAX_CHARS = 1500;    // 短剧: 攒够一批合并出的总纲
-  var SUMMARY_REQUEST_TIMEOUT_MS = 45000;
+  // 🔴 2026-10-29: 45 秒 → 90 秒。
+  //   探针实测: 服务端 turn 3~12 秒时摘要能写进去, turn 35 秒时【一段都写不进去】——
+  //   因为 45 秒硬超时把请求判了死刑, 静默 resolve(''), 用户只看到「没总结」。
+  //   放宽到 90 秒, 让慢一点的 turn 也有机会把剧情写出来。
+  var SUMMARY_REQUEST_TIMEOUT_MS = 90000;
+
+  // 🔴 2026-10-29: 摘要失败后多久重试一次 (别让用户干等 5 分钟)。
+  var SUMMARY_RETRY_DELAY_MS = 60 * 1000;
 
   // 🔴 2026-10-27: 单集剧情要等的【摘要通道】上限 (毫秒)。
   //
@@ -81,10 +114,17 @@
   // 所以 Live 多开一条【高频短句】通道: 每隔一段时间写一句"此刻屏幕上是谁在干什么",
   // 覆盖式存进 watchSession.liveNow, 只给主 API 当上文用。
   //
-  // 为什么默认 30 秒而不是 15 秒:
-  //   这一条每个 turn 的输入是"这 30 秒的帧"(~30 张), 单次开销只有 5 分钟摘要的 1/10,
-  //   但它会占 Live 的 turn 队列。所以宁可慢一点, 也不跟用户抢。
-  var LIVE_NOW_INTERVAL_MS = 30 * 1000;
+  // 🔴 2026-10-29: 30 秒 → 120 秒 (实况降频到 4 倍慢)。
+  //
+  //   起因: 探针实测「服务端 turn 一慢, 5 分钟的剧情总结就一段都写不进去」。
+  //   实况每 30 秒就往 Live 发一个 turn, 而 AUDIO 是 3.8-live 唯一的 response modality
+  //   → 每发一个 turn, 服务端就生成一段音频回来, 我们 JSON.parse 完直接扔掉
+  //   (15 分钟实测下行 9.1MB, 100% 是这种废音频)。
+  //   turn 越密 → 队列越长 → 5 分钟的摘要请求排到后面 → 撞 45 秒硬超时 → 静默作废。
+  //
+  //   降频后: 15 分钟只有 7~8 个实况 turn, 队列基本是空的, 摘要能排上,
+  //   废音频也少 3/4。实况只是陪聊的补充 (主 API 才是陪聊主力), 慢一点不心疼。
+  var LIVE_NOW_INTERVAL_MS = 120 * 1000;
   var LIVE_NOW_TIMEOUT_MS = 20000;
   // 摘要快到期时, 实况让路 (摘要优先 —— 摘要进的是剧情记忆, 实况只是陪聊的补充)
   var LIVE_NOW_YIELD_BEFORE_SUMMARY_MS = 15000;
@@ -419,6 +459,11 @@
     canvas: null,
     ctx: null,
     framesSent: 0,
+    // 🔴 2026-10-29: 本次【会话】已经发了多少帧 (用来算 Live 的 token 预算)。
+    //   framesSent 是从开房算起的总数, 不适合做预算。
+    sessionFrames: 0,
+    // 到预算了 → 找一个空档换干净会话 (不继承旧上下文)
+    _needFreshSession: false,
     paused: false,
     statusEl: null,
     bubbleEl: null,
@@ -430,6 +475,77 @@
     //   这段时间主会话【不许】自动重连 (不然撞并发, 精炼照样失败)。
     _refineBorrowed: false
   };
+
+  // ============================================================
+  // 诊断日志 (2026-10-29)
+  //
+  // 为什么加: 用户报「十分钟一句剧情总结都没写」时, 界面上什么线索都没有 ——
+  // 失败是静默的, 断线也没人知道。iPhone 上又拿不到 console。
+  // 所以把关键事件写进 localStorage, 失败提示里直接带上一行诊断,
+  // 用户截个图我就能看到「断了几次 / 丢了几帧 / 发了多少帧 / 摘要成几次败几次」。
+  // ============================================================
+  var DIAG_KEY = 'cinema_live_diag_v1';
+  var DIAG_MAX = 40;
+
+  // 事件名 → 人话 (进诊断框给用户看的)
+  var DIAG_TEXT = {
+    connect: 'Live 连上了',
+    close: 'Live 断了',
+    goAway: '服务端说它要断了',
+    summaryOk: '剧情写进去了',
+    summaryFail: '剧情没写成',
+    fresh: '换了干净会话（帧预算用完）'
+  };
+
+  function diagPush(ev, data) {
+    try {
+      var arr = [];
+      try { arr = JSON.parse(localStorage.getItem(DIAG_KEY) || '[]'); } catch (e) { arr = []; }
+      if (!Array.isArray(arr)) arr = [];
+      arr.push({ t: Date.now(), ev: ev, d: data || null });
+      while (arr.length > DIAG_MAX) arr.shift();
+      localStorage.setItem(DIAG_KEY, JSON.stringify(arr));
+    } catch (e) { /* noop */ }
+    // 🔴 2026-10-29: 顺便推进影院设置面板里那个【已有的】诊断框 ——
+    //   用户点 ⚙设置 → 底部「诊断」→ 截图, 就能一次给我全部硬数据,
+    //   不用等「总结失败」才有东西可看。
+    try {
+      if (global && typeof global.__cinemaDiagPush === 'function') {
+        global.__cinemaDiagPush('[Live] ' + (DIAG_TEXT[ev] || ev) +
+          (data ? ' ' + JSON.stringify(data) : ''));
+      }
+    } catch (e2) { /* noop */ }
+  }
+
+  function diagStats() {
+    var n = { connects: 0, closes: 0, goAway: 0, summaryOk: 0, summaryFail: 0, fresh: 0 };
+    try {
+      var arr = JSON.parse(localStorage.getItem(DIAG_KEY) || '[]');
+      if (!Array.isArray(arr)) return n;
+      arr.forEach(function (r) {
+        if (r.ev === 'connect') n.connects++;
+        else if (r.ev === 'close') n.closes++;
+        else if (r.ev === 'goAway') n.goAway++;
+        else if (r.ev === 'summaryOk') n.summaryOk++;
+        else if (r.ev === 'summaryFail') n.summaryFail++;
+        else if (r.ev === 'fresh') n.fresh++;
+      });
+    } catch (e) { /* noop */ }
+    return n;
+  }
+
+  /** 一行诊断摘要, 拼进失败提示里 —— 用户截图我就能看到 */
+  function diagOneLine() {
+    var n = diagStats();
+    var dropped = 0;
+    try {
+      if (S.client && typeof S.client.getDroppedFrames === 'function') {
+        dropped = S.client.getDroppedFrames() || 0;
+      }
+    } catch (e) { /* noop */ }
+    return '（诊断: 连上 ' + n.connects + ' 次 / 断了 ' + n.closes + ' 次 / 摘要成 ' + n.summaryOk +
+      ' 败 ' + n.summaryFail + ' / 已发 ' + S.framesSent + ' 帧 / 丢帧 ' + dropped + '）';
+  }
 
   // ============================================================
   // 工具
@@ -625,9 +741,16 @@
         return;
       }
       if (S.paused) { S.paused = false; renderStatus('ready'); log('视频恢复播放, 继续发帧'); }
+      // 🔴 2026-10-29: 先问客户端「缓冲满了吗」, 满了【直接跳过这一轮】。
+      //   原来是先抽帧 (JPEG 编码 + base64, 每帧 1.3MB 垃圾) 再发现要丢 → 白干。
+      if (typeof S.client.canSendFrame === 'function' && !S.client.canSendFrame()) {
+        S.skippedByBackpressure = (S.skippedByBackpressure || 0) + 1;
+        return;
+      }
       var b64 = grabFrameBase64(video);
       if (!b64) return;
       S.framesSent++;
+      S.sessionFrames = (S.sessionFrames || 0) + 1;
       var sent = S.client.sendVideoFrame(b64, 'image/jpeg');
       // 🔴 2026-10-28: 背压丢帧 → 让用户知道"网络堵了, 模型那会儿看不见画面"。
       //   不说的话用户只会觉得"模型变傻了", 查不到方向。
@@ -639,13 +762,35 @@
             ' 帧画面（不影响你看片，只是模型那会儿看不见屏幕）。');
         }
       }
+      // 🔴 2026-10-29: 本会话发够预算了 → 记下来, 找个空档换干净会话。
+      //   (不能等服务端来掐 —— 掐了重连还会带着爆掉的上下文, 立刻再爆。)
+      if (S.sessionFrames >= SESSION_FRAME_BUDGET) {
+        S._needFreshSession = true;
+        log('本会话已发 ' + S.sessionFrames + ' 帧, 到达预算 —— 找个空档换干净会话');
+      }
+
+      // 🔴 2026-10-29: 找空档换干净会话 (不继承爆掉的上下文)。
+      //   必须等没有在途的摘要 —— 换会话会把在途请求打断。
+      if (S._needFreshSession && !watchSession.pendingSummary && !watchSession.summaryBusy) {
+        S._needFreshSession = false;
+        S.sessionFrames = 0;
+        diagPush('fresh');
+        log('换干净会话 (不继承旧上下文)');
+        try { saveHandle(null); } catch (e) { /* noop */ }
+        try {
+          if (S.client && typeof S.client.resetSession === 'function') S.client.resetSession();
+        } catch (e) { logWarn('换干净会话失败:', (e && e.message) || e); }
+        return;
+      }
+
       // 每 30 帧打一次, 免得刷屏
       if (S.framesSent % 30 === 0) {
         log('已发 ' + S.framesSent + ' 帧 (当前 ' + Math.round(b64.length * 0.75 / 1024) + 'KB/帧, t=' +
           video.currentTime.toFixed(1) + 's)');
       }
     }, FRAME_INTERVAL_MS);
-    log('开始 1 FPS 视频帧发送 (长边降采样到 ' + FRAME_MAX_DIM + ', 保持宽高比)');
+    log('开始 ' + (1000 / FRAME_INTERVAL_MS).toFixed(1) + ' FPS 视频帧发送 (长边降采样到 ' +
+      FRAME_MAX_DIM + ', 保持宽高比)');
     // 实况通道跟帧循环同生共死 (2026-10-23): 有帧才有"此刻画面"可言
     startLiveNowLoop();
   }
@@ -1593,10 +1738,22 @@
           // 而摘要正文因为别的路径刷新过又能显示出来。
           renderPlotPanel();
           log('✅ 段落剧情已记录 (第 ' + watchSession.segCount + ' 段)');
+          diagPush('summaryOk', { seg: watchSession.segCount });
+        } else {
+          // 🔴 2026-10-29: 之前失败是【完全静默】的 —— 用户只看到「十分钟一句总结都没写」,
+          //   却不知道是模型慢、格式没认出来、还是连接断了。现在说出来, 顺便带上诊断。
+          diagPush('summaryFail', { why: 'format' });
+          appendSystemLine('⚠️ 这一段剧情没写进去（模型写的没认出格式，或者太短了）。' + diagOneLine());
         }
         return ok;
       })
-      .catch(function (err) { logWarn('阶段摘要失败:', err.message); return false; })
+      .catch(function (err) {
+        logWarn('阶段摘要失败:', err.message);
+        diagPush('summaryFail', { why: String((err && err.message) || err) });
+        appendSystemLine('⚠️ 这一段剧情没总结出来（' +
+          (err && err.message ? err.message : '出错了') + '）。60 秒后会再试一次。' + diagOneLine());
+        return false;
+      })
       .then(function (ok) {
         finishSummary(watchSession.pendingSummary);
         flushQueuedUserText();
@@ -1643,7 +1800,14 @@
         return;
       }
 
-      runStageSummary({ reason: '5 分钟到' });
+      runStageSummary({ reason: '5 分钟到' }).then(function (ok) {
+        // 🔴 2026-10-29: 失败了就【60 秒后再试一次】, 别让用户干等 5 分钟。
+        //   (这会把 finally 里排好的那个 5 分钟后的定时器顶掉 —— 那是对的: 就是要早一点再试。)
+        if (ok) return;
+        if (!S.enabled || S._leaving) return;
+        watchSession.lastSummaryStartedAt = totalPlayedMs();
+        scheduleStageSummary(SUMMARY_RETRY_DELAY_MS);
+      });
     } catch (e) {
       logWarn('阶段摘要调度异常:', (e && e.message) || e);
     } finally {
@@ -3283,7 +3447,10 @@
     if (state === 'ready') {
       if (!flapLast) clearRetry();
       flapLast = false;
-      appendSystemLine('✅ Gemini Live 已连接，正在持续接收视频画面（1 帧/秒）');
+      S.sessionFrames = 0;
+      diagPush('connect');
+      appendSystemLine('✅ Gemini Live 已连接，正在持续接收视频画面（每 ' +
+        Math.round(FRAME_INTERVAL_MS / 1000) + ' 秒一帧）');
       if (watchSession.closed || !watchSession.watchSessionId) {
         newWatchSession(S.chatId);
         appendSystemLine('📖 我会每隔几分钟整理一次剧情，攒着给你看。');
@@ -3309,6 +3476,7 @@
       //   少了这一句, 那个请求会赖到 45s 超时, 期间新一集一集都不再总结,
       //   而且模型吐的字全被它吞掉 —— 用户实测"看完一集没总结起, 重看一遍还是没有"。
       abortPendingSummary('连接断开');
+      diagPush('close', { why: String(detail || '') });
       // 非用户主动关闭 → 走 session resumption 重连
       scheduleReconnect(detail || '连接被关闭');
     }
@@ -3368,6 +3536,7 @@
           ' response=' + meta.responseTokenCount);
       },
       onGoAway: function () {
+        diagPush('goAway');
         appendSystemLine('⚠️ 服务端即将断开连接');
         // 🔴 2026-10-28: goAway 之后连接随时会关 —— 这段时间推的每一帧都会进
         //   会话上下文, 把要交给重连用的存档点撑得巨大, 重连就又慢又容易失败。

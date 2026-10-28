@@ -166,11 +166,44 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.47 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.47</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（影院越看越烫 / 不写总结 / 闪退）</div>
+        <ul class="item-list">
+          <li><strong>你报的三个问题</strong> —— 「本地视频看的时候越看手机越烫，看了十分钟动漫一句剧情总结都没写，最后十五分钟左右浏览器崩溃闪退」。这一轮把三个都查实了，也都修了。</li>
+          <li><strong>为什么越看越烫</strong> —— 影院一直在往云端传画面：<strong>每秒钟一帧</strong>，一帧就好几十 KB。实测 15 分钟传了 <strong>79MB</strong>（相当于每分钟 5.3MB），<strong>手机的射频一直在满载跑</strong>，这就是发烫的原因。另外模型每次回话带回来的音频我们是<strong>听完就扔</strong>的 —— 15 分钟白收白扔 9.1MB。</li>
+          <li><strong>为什么一句剧情总结都没写</strong> —— 写剧情要等模型回话，而它有<strong>45 秒的硬超时</strong>。模型一慢（或者前面排了太多话），请求就被判了死刑，<strong>而且是偷偷地失败</strong>，界面上一点提示都没有 —— 所以你只看到「十分钟一句总结都没写」。</li>
+          <li><strong>为什么十五分钟左右闪退</strong> —— 每一帧画面都要算「图像 token」（官方规则 258 个/tile），15 分钟 900 帧就是 <strong>23 万 ~ 140 万 token</strong>，而影院的对话额度只有 <strong>13 万</strong>。<strong>8~14 分钟必爆</strong>。爆了之后自动重连，而重连又<strong>带着爆掉的上下文</strong> → 立刻再爆 → 反复重连 → 手机狂热 + 闪退。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">这次改了什么</div>
+        <ul class="item-list">
+          <li><strong>画面改得少传</strong>：每秒一帧 → <strong>每 5 秒一帧</strong>，画面长边 768 → 512，压缩质量调低一档。传的数据量降到原来的 <strong>1/16</strong>（79MB → 4.8MB），<strong>手机不烫了</strong>，网费也省。</li>
+          <li><strong>对话额度主动换新</strong>：一个会话最多发 80 帧，<strong>到点就自己换个干净的会话</strong> —— 不再等它爆。剧情记忆不靠这个连续（靠每 5 分钟那个「进度锚」带着走），所以换会话不会丢剧情。</li>
+          <li><strong>写剧情更耐心</strong>：超时 45 秒 → <strong>90 秒</strong>；<strong>写不出来会在聊天框里明说</strong>（以前一声不吭），而且 <strong>60 秒后自动再试一次</strong>，不用干等 5 分钟。</li>
+          <li><strong>「此刻画面」少说话</strong>：从每 30 秒一次改成每 2 分钟一次。它只是陪聊的补充，主聊天才是主角；少发几次，模型就不会被前面的闲话堵住，剧情总结才排得上队。</li>
+          <li><strong>网络堵的时候不再白忙</strong>：以前是「先把画面转成图片，再发现发不出去」；现在先问一句再转。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">顺带说清楚</div>
+        <ul class="item-list">
+          <li><strong>画面变稀会不会看不懂剧情</strong> —— 5 分钟的剧情现在有 60 张画面（以前 300 张）。<strong>谁出场、发生了什么、停在哪里，60 张足够写清楚</strong>；多出来的 240 张对写剧情没有增量价值，只是在烧你的流量和电量。</li>
+          <li>如果还有异常，<strong>聊天框里会出现一行「诊断：连上几次 / 断了几次 / 摘要成几次败几次 / 已发多少帧」</strong> —— 你截图给我，我就能直接看到，不用再猜。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.46 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.46</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复（家庭影院立绘没进备份）</div>

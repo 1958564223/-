@@ -546,7 +546,37 @@
 //      在 Dexie 事务里 await 会让事务提前提交，所以还原放在事务【外面】做。
 //   index.html 的 ?v=：modules/backup-import-export.js 0.0.39 → 0.0.40。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.89.0';
+// v0.2.90.0 (2026-10-29): 影院「越看越烫 / 一句剧情总结都没写 / 十五分钟闪退」三修。
+//   起因（用户原话）：「本地视频看的时候越看手机越烫，看了十分钟动漫一句剧情总结都没写，
+//   最后十五分钟左右浏览器崩溃闪退」「以前放这种动漫不会闪退的」。
+//
+//   【查出来的三个真因】探针 _reports/pet-test/probe-cinema-heat.cjs
+//   把真的 cinema-live.js + live-client.js 装进 Node vm（假时钟 + 假 WebSocket），
+//   15 分钟秒级跑完，拿到硬数字：
+//     ① 上行 5.3MB/分钟（15 分钟 79.3MB）→ 手机射频持续满载 = 发烫；
+//        下行 9.1MB 100% 是【用完就丢】的模型音频（AUDIO 是 gemini-3.8-live 唯一 modality）；
+//     ② 5 分钟摘要请求有 45 秒硬超时 → 服务端 turn 一慢就静默作废。
+//        对照实测：turn 3s/12s → 写进 2 段；turn 35s / 排队堆积 → 0 段；
+//     ③ 每帧画面都算 image token（官方文档 258 tokens/tile），900 帧 = 232k~1.4M token，
+//        而 Live 会话输入预算 131,072 → 8~14 分钟必爆；重连又带 resume handle，
+//        继承爆掉的上下文 → 立刻再爆 → 重连风暴 → 狂热 + 闪退。
+//
+//   【改了什么】
+//     · 帧率 1 → 0.2 FPS；抽帧长边 768 → 512；JPEG 质量 0.6 → 0.5（上行 ↓16.5 倍）；
+//     · 每个 Live 会话最多发 80 帧，到点【主动换干净会话】（不继承爆掉的上下文）；
+//     · 摘要超时 45s → 90s；失败【在聊天框里明说】+ 60 秒后重试（以前完全静默）；
+//     · 「此刻画面」实况 30s → 120s（少占 turn 队列，少收 3/4 废音频）；
+//     · 抽帧前先问背压（满了连帧都不用抽，不白干 JPEG 编码）；
+//     · 诊断日志写 localStorage，失败提示里带一行诊断（下次截图我就能拿到硬数据）。
+//
+//   【实测 before → after】15 分钟：帧 902 → 180，上行 79.3MB → 4.8MB，
+//   废音频 9.1MB → 2.5MB，turn 30 → 9，会话 1 → 3；
+//   慢服务端下「剧情写进去几段」0 → 2（修前一段都写不进去）。
+//
+//   index.html 的 ?v=：modules/cinema-live.js 1.9.9 → 2.0.0、
+//   modules/live-client.js 0.4.1 → 0.5.0；cinema-sandbox/index.html 里那两个也一起对齐。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.90.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

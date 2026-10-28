@@ -1881,8 +1881,22 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
     (html2.match(/pet-nest\.js\?v=([0-9.]+)/) || [])[1]);
   check('index.html 的 pet-nest.css ?v= 已 bump', /pet-nest\.css\?v=0\.0\.1[3-9]/.test(html2),
     (html2.match(/pet-nest\.css\?v=([0-9.]+)/) || [])[1]);
-  check('sw.js 的 CACHE_VERSION 已 bump', /const CACHE_VERSION = 'v0\.2\.8[2-9]\.\d+'/.test(sw2),
-    (sw2.match(/const CACHE_VERSION = '([^']+)'/) || [])[1]);
+  // ⚠️ 这里原来写死 `/v0\.2\.8[2-9]\.\d+/` —— 每 bump 一次就会误报一次
+  //   (2026-10-28 实测: sw.js 已经是 v0.2.84.0, 这条断言一直在报红;
+  //    2026-10-29 又撞上 v0.2.90.0)。改成【逐段比大小, 只要不低于就过】。
+  {
+    const cv = (sw2.match(/const CACHE_VERSION = '([^']+)'/) || [])[1] || '';
+    const parts = cv.replace(/^v/, '').split('.').map(Number);
+    const floor = [0, 2, 82, 0];   // 不低于 v0.2.82.0
+    let okCv = parts.length === 4;
+    if (okCv) {
+      for (let i = 0; i < 4; i++) {
+        if (parts[i] > floor[i]) { okCv = true; break; }
+        if (parts[i] < floor[i]) { okCv = false; break; }
+      }
+    }
+    check('sw.js 的 CACHE_VERSION 已 bump (不低于 v0.2.82.0)', okCv, cv);
+  }
 
   // ⑥ 行为：喂食走同一份 care()（扣粮食 + 涨饱腹 + 涨成长）
   const F = makeSandbox({ lastLookDay: '', used: 0, dom: true });

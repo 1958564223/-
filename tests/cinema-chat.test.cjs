@@ -263,7 +263,17 @@ async function main() {
     check('导出 recordAssistant', /recordAssistant:\s*recordAssistantFinal/.test(live));
     check('watchSession 里有 liveNow 字段', /liveNow:\s*\{\s*text:\s*''/.test(live));
     check('实况通道存在', /function requestLiveNow\(\)/.test(live) && /function tickLiveNow\(\)/.test(live));
-    check('实况默认 30 秒', /LIVE_NOW_INTERVAL_MS\s*=\s*30\s*\*\s*1000/.test(live));
+    // ⚠️ 2026-10-29: 实况从 30 秒改成 120 秒 (降频)。
+    //   原因: 实况每 30 秒发一个 Live turn, 队列一堵, 5 分钟的剧情总结就撞超时写不进去;
+    //   而且 AUDIO 是唯一 response modality, 每 turn 回来的音频我们是用完就丢的。
+    //   这里【不要】再写死具体秒数 —— 以后再调会误报一次。
+    //   判据: 间隔不能短于 120 秒。
+    (function () {
+      const m = /LIVE_NOW_INTERVAL_MS\s*=\s*([^;]+);/.exec(live);
+      let v = 0;
+      try { v = Function('return (' + (m ? m[1] : '0') + ')')(); } catch (e) { v = 0; }
+      check('实况间隔不少于 120 秒 (2026-10-29 从 30 秒降频)', v >= 120000, v + 'ms');
+    })();
     check('实况是覆盖式单条 (不是数组)', /watchSession\.liveNow\s*=\s*\{\s*text:\s*t,\s*at:\s*Date\.now\(\)/.test(live));
     check('实况跟帧循环同生命周期', /startLiveNowLoop\(\);/.test(live) && /stopLiveNowLoop\(\);/.test(live));
   }

@@ -656,6 +656,10 @@
 
     global.__cinemaTL = function () { tlDump('手动触发'); };
     global.__cinemaTLMark = tlMark;
+    // 🔴 2026-10-29: 把已有的诊断收集器暴露给 cinema-live.js。
+    //   Live 那边的连上/断开/丢帧/剧情成败也进这个框 ——
+    //   用户「⚙设置 → 底部『诊断』→ 截图」一次就能给我全部硬数据。
+    global.__cinemaDiagPush = diagLogPush;
   }
 
   // --------------------------------------------------------------------------
