@@ -166,11 +166,35 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.46 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.46</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（家庭影院立绘没进备份）</div>
+        <ul class="item-list">
+          <li><strong>你问的「家庭影院记录是不是没进备份」</strong> —— 查清楚了，答案是<strong>「一半进了，一半被吞了」</strong>。</li>
+          <li><strong>进了的</strong>：片单（片名 / 时长 / 加进去的时间）、播放进度、剧情记忆（每一集的摘要、整部剧的前情提要）、以及<strong>你在影院里说过的对话</strong>（它跟外面聊天记在同一个地方）—— 这些都好好地在备份里。</li>
+          <li><strong>被吞掉的</strong>：<strong>人物立绘和房间背景</strong>。原因是备份文件是把数据库转成 JSON 存的，而这两样是「图片文件」本身 —— 一转 JSON 就变成了一个空壳 <code>{}</code>，等于什么都没存。<strong>换个网址或换台手机导入，影院里的人就只剩空位</strong>。</li>
+          <li>改法：这两张图在导出时<strong>转成图片数据（base64）一起带走</strong>，导入时再还原成真正的图片，<strong>立绘的位置、大小都照旧</strong>。</li>
+          <li><strong>影片文件本体还是不带</strong> —— 一部片子可能几百 MB，塞进备份会把手机内存撑爆。片单和进度会保留，换设备后<strong>重新添加一次影片文件</strong>就能看（影院里本来就有「影片本体不在了，请重新添加」这句提示）。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">顺带说清楚两件事</div>
+        <ul class="item-list">
+          <li><strong>换网址之后「前情提要全没了」，不是备份丢了</strong> —— 是浏览器<strong>按网址隔离本地数据</strong>：网址一换，就相当于换了一台空白的手机。旧网址的数据还好好地待在旧网址里，<strong>旧站导出 → 新站导入</strong>就能接上。</li>
+          <li>如果你用的是<strong>换网址之前的旧站导出的备份</strong>，那一份里的<strong>立绘本来就是空的</strong>（旧站没有这个能力），救不回来；但<strong>从这一版起，之后的备份都能带走立绘了</strong>。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.45 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.45</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复（生图颜色老是变回原来那个）</div>

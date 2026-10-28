@@ -530,7 +530,23 @@
 //         没有参考图(首次生成) → 照旧写盲盒配色；羽化(终形态)例外，本就该换配色。
 //   index.html 的 ?v=：modules/pet-nest.js 0.0.25 → 0.0.26。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.88.0';
+// v0.2.89.0 (2026-10-29): 家庭影院「进备份」的漏洞 —— 立绘/背景是 Blob, 一律被压成 {}。
+//   起因（用户原话）：「发现一个问题，家庭影院记录是不是没进备份？」
+//   查出来的事实：宿主主库 6 张影院表里两张带二进制 ——
+//     cinemaChars { id, image: Blob }  ← 人物立绘 + 房间背景
+//     cinemaBlobs { id, file: File }   ← 影片本体
+//   备份是 JSON.stringify 出来的 → Blob/File 一律被压成 {} ⇒ 立绘整个丢掉。
+//   修法：① 立绘/背景导出时转 base64 dataURL，导入时还原成 Blob（位置/大小照旧）；
+//        ② 影片本体不进备份（太大，base64 会撑爆手机内存）—— 元数据/进度保留，
+//           换设备后重新加一次文件；导入时老备份里的空壳 {} 会被清掉，
+//           免得 createObjectURL({}) 抛异常。
+//   6 条导出链路（分片ZIP/流式/传统Blob/选择性/GitHub分片/GitHub大数据）都接上了，
+//   4 条导入链路（整库/选择性/高级合并/GitHub恢复）都接上了。
+//   ⚠️ 还原 Blob 要 await blob.arrayBuffer()，那不是 IDB 请求 ——
+//      在 Dexie 事务里 await 会让事务提前提交，所以还原放在事务【外面】做。
+//   index.html 的 ?v=：modules/backup-import-export.js 0.0.39 → 0.0.40。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.89.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

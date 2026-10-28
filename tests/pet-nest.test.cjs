@@ -919,7 +919,7 @@ section('接线: sw.js 预缓存');
     'modules/pet-nest.js': '0.0.26',
     'modules/pet-image.js': '0.0.5',
     'modules/pet-speech.js': '0.0.3',
-    'modules/backup-import-export.js': '0.0.39',
+    'modules/backup-import-export.js': '0.0.40',
     'modules/data-management.js': '0.0.39',
     'css/pet-nest.css': '0.0.14'
   };
