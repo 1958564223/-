@@ -513,6 +513,34 @@
     log('reconnect() 调用' + (had ? ' (带 handle, 保留上下文)' : ' (无 handle, 从头开始)'));
     this.setupDone = false;
     this.state = 'idle';      // 让 connect() 里的重入守卫放行
+
+    // 🔴 2026-10-29 (用户实测「live 断了怎么都重连不上」):
+    //   必须先处理掉【旧 socket】, 否则它会把这个新连接判死。
+    //
+    //   以前 reconnect() 只在「服务端先断开」之后才被调用 —— 那时旧 socket
+    //   早就 closed、onclose 也触发过了, 所以没人受害。
+    //   2026-10-29 新加的「摘要后换干净会话」(resetSession) 是【第一次在
+    //   连接还活着的时候主动重连】→ 旧 socket 还开着 → 踩雷:
+    //     旧 socket 的 onclose → self.setupDone = false + state = closed
+    //     → 而 self.ws 已经是新 socket 了 → 新连接被判死
+    //     → isReady() 永远为假 → 上层 waitUntilReady 超时 → 判定重连失败
+    //     → 再排一次重连 → 又留一个孤儿 socket → 死循环。
+    //   而且 isReady() 永远为假 → 剧情摘要那条路每次早退 → 一句都不写。
+    //
+    //   做法: 先把旧 socket 的回调【摘掉】(它之后怎么关都碰不到 self),
+    //   再关掉它, 最后把 this.ws 置空。
+    //   ⚠️ 只调 WebSocket 原生的 close(), 不调本文件的 close() ——
+    //      本文件的 close() 会把 _closingByUser 置真(那是"用户主动关闭"用的)。
+    var old = this.ws;
+    this.ws = null;
+    if (old) {
+      try {
+        old.onopen = null; old.onmessage = null; old.onerror = null; old.onclose = null;
+        old.close(1000, 'reconnect');
+      } catch (e) {
+        logWarn('关旧 socket 失败:', e && e.message);
+      }
+    }
     return this.connect();
   };
 

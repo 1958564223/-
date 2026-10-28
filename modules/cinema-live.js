@@ -736,7 +736,22 @@
         log('换干净会话 (不继承旧上下文)');
         try { saveHandle(null); } catch (e) { /* noop */ }
         try {
-          if (S.client && typeof S.client.resetSession === 'function') S.client.resetSession();
+          if (S.client && typeof S.client.resetSession === 'function') {
+            // 🔴 2026-10-29 (用户实测「live 断了怎么都重连不上」):
+            //   这个 promise 以前【没人接】—— 失败时是 unhandled rejection,
+            //   而且【不会触发任何重连安排】→ live 就此不 ready
+            //   → tickStageSummary 每次早退 → 剧情一句都不写。
+            //   现在接住它: 失败就按「重连」处理, 不让它悄悄消失。
+            var freshP = S.client.resetSession();
+            if (freshP && typeof freshP.then === 'function') {
+              freshP.then(function () {
+                log('已换成干净会话');
+              }).catch(function (err) {
+                logWarn('换干净会话失败:', (err && err.message) || err);
+                scheduleReconnect('换干净会话失败');
+              });
+            }
+          }
         } catch (e) { logWarn('换干净会话失败:', (e && e.message) || e); }
         return;
       }
@@ -1777,7 +1792,19 @@
       if (S._leaving) return;              // 要退出了, 不必再排
       var video = getVideo();
       if (!video || video.paused || video.ended) return; // 暂停中, finally 会重排
-      if (!S.client || !S.client.isReady()) return;      // 还没 ready, finally 会重排
+      if (!S.client || !S.client.isReady()) {
+        // 🔴 2026-10-29 (用户实测「重新进去接着看, 看再久都不总结剧情」):
+        //   以前这里静默 return —— 用户只看到「一句剧情总结都没写」,
+        //   完全不知道真正原因是【live 没连上】(live 没连上 → 摘要根本发不出去)。
+        //   现在最多每 2 分钟在聊天区明说一次, 免得又变成"找不着原因"。
+        var now = Date.now();
+        if (!S._noLiveWarnedAt || now - S._noLiveWarnedAt > 120000) {
+          S._noLiveWarnedAt = now;
+          appendSystemLine('⚠️ Gemini Live 还没连上 —— 剧情要靠它整理, 所以现在还没写。' + diagOneLine());
+        }
+        return;      // 还没 ready, finally 会重排
+      }
+      S._noLiveWarnedAt = 0;
 
       // summaryBusy 为 false 但 pendingSummary 有值 = 实况在途 (实况是静默的, 不占 summaryBusy)
       if (watchSession.pendingSummary) {

@@ -2348,6 +2348,120 @@
     });
   }
 
+  // ============================================================
+  // 桌宠命中区: 按【宠物实际可见像素】判 (2026-10-29 用户实测)
+  // ============================================================
+  //
+  // 精灵是六格图集, 宠物只占格子中间一部分 —— 下面那截是透明的。
+  // 事件绑在整个容器 #pn-desktop-pet 上 → 看不见的空白照样能点,
+  // 点了就拖动宠物 / 弹出菜单 (用户原话「宠物下方很长一个空间」)。
+  //
+  // 这里在运行时用 canvas 量一次图集, 算出每帧的可见包围盒,
+  // 点的时候按坐标判 —— 视觉一个字都不改 (不像 clip-path 会裁掉阴影)。
+  //
+  // 【量不到就放行】: 图片加载失败 / 跨域取不到像素 → 退回原来的行为,
+  // 绝不会变成「点不到了」。
+  let spriteHitCache = null;      // { url, boxes: [6 个 {top,right,bottom,left} (0~1)] }
+  let spriteHitMeasuring = false;
+
+  /**
+   * 量一次图集, 算出 6 帧各自的可见包围盒。
+   * @param {string} url 图片地址 (assets 路径或 blob:)
+   */
+  function measureSpriteHitBoxes(url) {
+    if (!url) return;
+    if (spriteHitCache && spriteHitCache.url === url) return;
+    if (spriteHitMeasuring) return;
+    spriteHitMeasuring = true;
+    try {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = function () {
+        try {
+          const W = img.naturalWidth, H = img.naturalHeight;
+          if (!W || !H) return;
+          const cv = document.createElement('canvas');
+          cv.width = W; cv.height = H;
+          const ctx = cv.getContext('2d', { willReadFrequently: true });
+          if (!ctx) return;
+          ctx.drawImage(img, 0, 0);
+          const data = ctx.getImageData(0, 0, W, H).data;
+          const gw = Math.floor(W / 3), gh = Math.floor(H / 2);
+          const boxes = [];
+          for (let r = 0; r < 2; r++) {
+            for (let c = 0; c < 3; c++) {
+              let minX = gw, minY = gh, maxX = -1, maxY = -1;
+              for (let y = 0; y < gh; y++) {
+                for (let x = 0; x < gw; x++) {
+                  const a = data[((r * gh + y) * W + (c * gw + x)) * 4 + 3];
+                  if (a > 12) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                  }
+                }
+              }
+              if (maxX < 0) { boxes.push({ top: 0, right: 1, bottom: 1, left: 0 }); continue; }
+              boxes.push({
+                top: minY / gh, bottom: (maxY + 1) / gh,
+                left: minX / gw, right: (maxX + 1) / gw
+              });
+            }
+          }
+          spriteHitCache = { url: url, boxes: boxes };
+        } catch (e) {
+          /* 量不到就保持旧行为 */
+        } finally {
+          spriteHitMeasuring = false;
+        }
+      };
+      img.onerror = function () { spriteHitMeasuring = false; };
+      img.src = url;
+    } catch (e) {
+      spriteHitMeasuring = false;
+    }
+  }
+
+  /**
+   * 纯函数: 这个点算不算点在宠物身上?
+   *
+   * @param {number} clientX @param {number} clientY
+   * @param {{left,top,width,height}} rect 精灵盒子的矩形
+   * @param {number} frame 当前帧号 (0~5)
+   * @param {Array} boxes 6 帧的包围盒 (0~1 的归一化坐标)
+   * @returns {boolean} true = 算点在宠物身上
+   */
+  function petHitTest(clientX, clientY, rect, frame, boxes) {
+    if (!rect || !rect.width || !rect.height) return true;
+    if (!boxes || !boxes.length) return true;          // 没量到 → 放行
+    const nx = (clientX - rect.left) / rect.width;
+    const ny = (clientY - rect.top) / rect.height;
+    if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return false;   // 点在精灵盒外
+    const b = boxes[frame] || boxes[0];
+    if (!b) return true;
+    return nx >= b.left && nx <= b.right && ny >= b.top && ny <= b.bottom;
+  }
+
+  /** 这次点击到底落在宠物身上吗? (名字标签也算 —— 它就在宠物旁边) */
+  function petPointOnPet(clientX, clientY) {
+    const nameEl = el('pn-desktop-pet-name');
+    if (nameEl) {
+      try {
+        const nr = nameEl.getBoundingClientRect();
+        if (nr && nr.width && nr.height &&
+          clientX >= nr.left && clientX <= nr.right &&
+          clientY >= nr.top && clientY <= nr.bottom) return true;
+      } catch (e) { /* noop */ }
+    }
+    const sprite = el('pn-desktop-pet-sprite');
+    if (!sprite) return true;
+    let rect = null;
+    try { rect = sprite.getBoundingClientRect(); } catch (e) { rect = null; }
+    const boxes = spriteHitCache ? spriteHitCache.boxes : null;
+    return petHitTest(clientX, clientY, rect, desktopPetFrame, boxes);
+  }
+
   function setSpriteFrame(node, frame) {
     const col = frame % 3;
     const row = Math.floor(frame / 3) % 2;
@@ -3068,6 +3182,8 @@
         if (url) {
           sprite.style.backgroundImage = 'url("' + url + '")';
           sprite.hidden = false;
+          // 量一次这张图集的可见区 (命中判定要用)
+          try { measureSpriteHitBoxes(url); } catch (e) { /* noop */ }
           const divine = !!(pet.appearance && pet.appearance.kind === 'divine');
           if (divine) sprite.classList.add('pn-sprite-divine');
           else if (isHatchKind(pet.kind) && pet.stage > 0) sprite.classList.add('pn-sprite-hatched');
@@ -3189,6 +3305,11 @@ function careActionForButton(btnId) {
       // 用 class 的话这里永远判不中 → 按菜单按钮也会进拖动 + setPointerCapture，
       // 指针捕获会把后续 click 全抢到 wrap 上 → 按钮的 onclick 根本不触发（用户实测：两个按钮都点不动）
       if (e.target.closest('#pn-desktop-pet-menu')) return;
+      // 🔴 2026-10-29 (用户实测「宠物下方很长一个空间, 点到都会挪动宠物或弹出弹窗」):
+      //   精灵图是六格图集, 宠物只占格子中间一部分, 下面那截是透明的;
+      //   事件又绑在整个容器上 → 空白照样能点。
+      //   现在按【宠物实际可见像素】判: 点了空白就当没点。
+      try { if (!petPointOnPet(e.clientX, e.clientY)) return; } catch (err) { /* noop */ }
       dragging = true;
       moved = false;
       startX = e.clientX; startY = e.clientY;
@@ -3257,6 +3378,8 @@ function careActionForButton(btnId) {
       }
       // 同上：菜单用 id 判定，点菜单里的空白处不能把菜单又切回去
       if (e.target.closest('#pn-desktop-pet-menu')) return;
+      // 🔴 2026-10-29: 同 pointerdown —— 点了宠物下方的空白, 不弹菜单
+      try { if (!petPointOnPet(e.clientX, e.clientY)) return; } catch (err) { /* noop */ }
       const menu = el('pn-desktop-pet-menu');
       if (menu) menu.hidden = !menu.hidden;
     });
@@ -4073,6 +4196,8 @@ function careActionForButton(btnId) {
     // 给测试用：把纯规则函数暴露出来（tests/pet-nest.test.cjs 直接验算，不用起浏览器）
     rules: {
       grainsFor,
+      // 桌宠命中判定 (纯函数, 测试直接验算)
+      petHitTest,
       temperament,
       growthTarget,
       currentSatiety,

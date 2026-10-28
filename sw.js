@@ -639,7 +639,40 @@
 //   modules/pet-nest.js 0.0.27 → 0.0.28、
 //   modules/pet-image.js 0.0.6 → 0.0.7。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.93.0';
+//
+// ── v0.2.94.0 ─────────────────────────────────────────────────
+//   【本轮两件事】用户 2026-10-29 实测
+//
+//   ① 影院「live 断了怎么都重连不上 / 再进去看再久都不总结剧情」
+//      · live-client.js: reconnect() 以前【不关旧 socket】——
+//        connect() 里 self.ws = ws 直接覆盖了引用, 旧 socket 变孤儿,
+//        但它的 onclose 还绑在同一个 self 上:
+//          旧 socket 一关 → setupDone=false → 【新连接被判死】
+//          → isReady() 永远为假 → 上层 waitUntilReady 超时 →
+//            判定重连失败 → 再排一次重连 → 死循环
+//          → 而且 isReady() 永远为假 → 摘要那条路每次早退 → 一句都不写
+//      · 现在: 先把旧 socket 的回调摘掉, 再关掉它, 最后 this.ws = null。
+//        (探针 _reports/pet-test/probe-live-reconnect.cjs 实锤)
+//      · cinema-live.js: resetSession() 的 promise 以前没人接 →
+//        失败时是 unhandled rejection 且【不会触发任何重连安排】;
+//        现在接住它, 失败就按「重连」处理。
+//      · cinema-live.js: live 长时间没 ready 时, 聊天区会明说
+//        「Gemini Live 还没连上 —— 剧情要靠它整理, 所以现在还没写」
+//        (以前是静默早退, 用户只看到「一句总结都没写」, 完全查不到原因)
+//
+//   ② 宠物屋「桌宠下方很长一个空间, 点到都会挪动宠物或弹菜单」
+//      · 精灵是六格图集, 宠物只占格子中间一部分, 下面那截是透明的;
+//        事件又绑在整个容器 #pn-desktop-pet 上 → 空白照样能点。
+//      · 实测: 宠物可见高只占格高 50%~91%, 下方平均空出 9%~20% 格高,
+//        再加名字标签 → 宠物下面近 30px 看不见但能点。
+//      · 现在: 运行时用 canvas 量一次图集, 算出每帧的可见包围盒;
+//        点的时候按坐标判, 点了空白就当没点。量不到就保守放行。
+//
+//   index.html 的 ?v=：modules/live-client.js 0.5.0 → 0.6.0、
+//   modules/cinema-live.js 2.1.0 → 2.2.0、
+//   modules/pet-nest.js 0.0.28 → 0.0.29。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.94.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

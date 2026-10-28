@@ -166,11 +166,61 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.50 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.50</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（影院 live 断了重连不上 / 再进去看再久都不总结剧情）</div>
+        <ul class="item-list">
+          <li><strong>你报的</strong> —— 「看到三分钟左右，总结了一次剧情提要，然后 <strong>live 断了怎么都重连不上</strong>，于是我退出了影院，再次进去接着看<strong>这下看再久都不总结剧情了</strong>」。</li>
+          <li><strong>找到真凶了</strong> —— 上次那版为了防发烫，加了一条「<strong>每次总结完就换一次干净会话</strong>」。换会话的时候，<strong>旧连接没被关干净</strong>：旧连接后来被服务端一关，顺手把<strong>新连接也判成了死的</strong>（它俩用的是同一个状态对象）。</li>
+          <li><strong>连起来是这样死的</strong>：新连接被判死 → 程序以为「没连上」→ 又重连 → 每次重连又留一个旧连接 → <strong>无限循环</strong>。界面上看就是「怎么都重连不上」。</li>
+          <li><strong>为什么「再进去也不总结」是同一个病</strong> —— 剧情总结要靠 live 才能写。live 一直判死 → <strong>总结那条路每次都提前退出</strong> → 所以视频照看，<strong>但一句剧情都不会写</strong>。不是两个毛病，是一个。</li>
+          <li><strong>为什么以前没犯</strong> —— 老代码只在「服务端先断开」之后才重连，那时候旧连接早关好了。<strong>新加的「总结完换会话」是第一次在连接还活着的时候主动换</strong> → 才踩到这个坑。所以这是上次那版修发烫时带出来的。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">这次改了什么</div>
+        <ul class="item-list">
+          <li><strong>换会话时先把旧连接关干净</strong>：先把旧连接的回调摘掉（它之后怎么关都碰不到新连接），再关掉它。</li>
+          <li><strong>换会话失败不再悄悄消失</strong> —— 以前失败是个没人接的<strong>空头承诺</strong>（连重连都不会安排）。现在失败就当「连接有问题」，按重连处理。</li>
+          <li><strong>以后不写剧情会告诉你原因</strong> —— 以前 live 没连上时是<strong>闷声不响</strong>，你只看到「一句总结都没写」，完全不知道卡在哪。现在聊天区会直接说：<strong>「Gemini Live 还没连上 —— 剧情要靠它整理，所以现在还没写」</strong>。</li>
+          <li><strong>画面和画质一行没动</strong>（还是一秒一帧、长边 768），还是每 2 分钟总结一次。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（桌宠下面一大块空白，点到会乱动）</div>
+        <ul class="item-list">
+          <li><strong>你报的</strong> —— 「宠物桌宠本来只有小小的一块面积，但是<strong>宠物下方很长一个空间，点到都会挪动宠物或者弹出弹窗</strong>，是不是它那个透明面积太大了」。</li>
+          <li><strong>你猜对了</strong> —— 确实是透明面积太大。桌宠的图是<strong>六格拼图</strong>，宠物只画在每格中间，<strong>下面那截是空的</strong>；但点鼠标这件事认的是<strong>整个大方框</strong>，不管那里有没有东西。</li>
+          <li><strong>量出来有多少</strong> —— 宠物本身只占格子的 <strong>50%~91%</strong>，下面平均空出 <strong>9%~20%</strong>；再加上名字那一小条，宠物底下有<strong>近 30px 看不见但能点</strong>的地方（手机上一样宽）。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">桌宠这次改了什么</div>
+        <ul class="item-list">
+          <li><strong>先量一遍，再按实物判定</strong> —— 页面会自己量一遍你那张图，算出宠物真正占的地方；<strong>点到宠物身上才响应，点到下面那片空白就当没点</strong>（不会乱拖，也不会乱弹菜单）。</li>
+          <li><strong>画面一个字没改</strong> —— 宠物长什么样、放在哪、多大，全都跟以前一样，只是「哪里算点到它」变准了。</li>
+          <li><strong>万一量不出来</strong>（图加载失败之类），就<strong>退回以前的行为</strong>，绝不会变成「点不到了」。</li>
+          <li><strong>名字那一小条仍然能点</strong>（点名字照样弹菜单）。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">要看的</div>
+        <ul class="item-list">
+          <li>影院：看本地长剧，<strong>过几分钟应该能连着总结好几次</strong>；万一又断了，聊天区会直接告诉你断在哪一步。</li>
+          <li>桌宠：<strong>点宠物身上</strong>能拖能弹菜单；<strong>点它下面那片空白</strong>什么都不会发生。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.49 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.49</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title fix">改动一：生图次数不再限制 3 次</div>

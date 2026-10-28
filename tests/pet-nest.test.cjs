@@ -2119,6 +2119,74 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
     !!ev && ev.action === 'comfort', ev ? 'action=' + ev.action : '没写事件');
 }
 
+  // ------------------------------------------------------------
+  section('桌宠命中区: 点空白不该有反应（2026-10-29 用户实测）');
+  {
+    const nestSrc2 = read('modules/pet-nest.js');
+
+    check('有 measureSpriteHitBoxes（运行时量图集的可见区）',
+      /function measureSpriteHitBoxes\s*\(/.test(nestSrc2));
+    check('pointerdown 里会判「点的是不是宠物身上」',
+      /pointerdown[\s\S]{0,600}?petPointOnPet\(/.test(nestSrc2));
+    const hitCalls = (nestSrc2.match(/petPointOnPet\(e\.clientX, e\.clientY\)/g) || []).length;
+    check('click 里也会判（不然点了空白还是弹菜单）',
+      hitCalls >= 2, '调用处 ' + hitCalls + ' 个 (pointerdown + click)');
+    check(
+      'rules 里暴露了 petHitTest（纯函数, 测试直接验算）',
+      /rules:\s*\{[\s\S]{0,400}?petHitTest/.test(nestSrc2));
+
+    // ---- 行为级: 把纯函数抠出来单独跑 ----
+    // petHitTest 是纯函数(只用参数), 所以能像 cinema-api-config.test.cjs
+    // 那样把它单独抠出来在 vm 里跑, 不用起整个宠物屋沙盒。
+    function extractTopFn(src, name) {
+      let start = src.indexOf('function ' + name + '(');
+      if (start < 0) return '';
+      const rest = src.slice(start + 1);
+      const m = rest.match(/\n  (?:function |const |let |var |\/\/ )/);
+      if (!m) return src.slice(start);
+      return src.slice(start, start + 1 + m.index);
+    }
+    const fnSrc = extractTopFn(nestSrc2, 'petHitTest');
+    check('能抠出 petHitTest 的源码', fnSrc !== '', fnSrc.length + ' 字符');
+    if (fnSrc) {
+      const sb = {};
+      vm.createContext(sb);
+      vm.runInContext(fnSrc, sb, { filename: 'petHitTest.js' });
+      const fn = sb.petHitTest;
+      check('抠出来的函数能调用', typeof fn === 'function');
+      if (typeof fn === 'function') {
+        // 第 0 帧宠物占中间 60%, 下面 25% 是空白
+        const boxes = [
+          { top: 0.10, right: 0.90, bottom: 0.75, left: 0.10 },
+          { top: 0.05, right: 0.95, bottom: 0.95, left: 0.05 },
+          { top: 0.10, right: 0.90, bottom: 0.75, left: 0.10 },
+          { top: 0.05, right: 0.95, bottom: 0.95, left: 0.05 },
+          { top: 0.10, right: 0.90, bottom: 0.75, left: 0.10 },
+          { top: 0.05, right: 0.95, bottom: 0.95, left: 0.05 }
+        ];
+        const rect = { left: 100, top: 100, width: 100, height: 100 };
+        check(
+          '点在宠物身上 → 算命中（能拖能弹菜单）',
+          fn(150, 140, rect, 0, boxes) === true);
+        check(
+          '★ 点在宠物下方的空白 → 不算命中（这就是用户抱怨的那块）',
+          fn(150, 190, rect, 0, boxes) === false);
+        check(
+          '★ 点在精灵盒外面 → 不算命中',
+          fn(150, 300, rect, 0, boxes) === false);
+        check(
+          '换到另一帧会按那一帧的包围盒判（帧和帧大小不同）',
+          fn(150, 190, rect, 1, boxes) === true);
+        check(
+          '量不到包围盒时保守放行（不会变成「点不到了」）',
+          fn(150, 190, rect, 0, null) === true);
+        check(
+          '矩形无效时保守放行',
+          fn(150, 190, { left: 0, top: 0, width: 0, height: 0 }, 0, boxes) === true);
+      }
+    }
+  }
+
   printSummary();
 })().catch(e => { console.error(e); process.exit(1); });
 
