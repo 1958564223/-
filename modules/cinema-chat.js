@@ -506,13 +506,15 @@
       }
     }
 
-    // 此刻实况 —— 单条, 覆盖式 (不是数组)。带时间戳, 免得模型当成"刚刚发生的事"
+    // 最近一段剧情结束时的那张画面 (2026-10-29) —— 单条, 覆盖式 (不是数组)。
+    //   带时间戳, 免得模型把它当成"刚刚发生的事"。
+    //   图本身在 messages 里以多模态形式附上 (见 send), 这里只给一句定位说明。
     var live = ctx.liveNow;
-    if (live && String(live.text || '').trim()) {
+    if (live && (String(live.text || '').trim() || live.image)) {
       var ago = live.at ? Math.max(0, Math.round((Date.now() - live.at) / 1000)) : 0;
       L.push('');
-      L.push('## 此刻画面');
-      L.push('（' + ago + ' 秒前你看到的：' + String(live.text).trim() + '）');
+      L.push('## 最近一段的画面');
+      L.push('（' + ago + ' 秒前, 剧情走到这里的画面' + (live.image ? '，图见下面' : '') + '）');
     }
 
     return L.join('\n');
@@ -892,11 +894,51 @@
       var cfg = await getMainApiConfig();
       var messages = history.concat([{ role: 'user', content: msg }]);
 
+      // 🔴 2026-10-29: 附上【最近一段剧情结束时的那张画面】(阅后即焚)。
+      //   主 API 靠文字剧情总结聊天, 偶尔能看见这张图就够了 ——
+      //   不再让 Live 每 30 秒写一句「此刻画面」(那会把 Live 的串行 turn 队列占满,
+      //    摘要被挤到后面撞超时 → 一句剧情总结都没写)。
+      var shot = cinemaCtx && cinemaCtx.liveNow && cinemaCtx.liveNow.image;
+      var withShot = !!shot;
+      if (withShot) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: '（这是刚才那段剧情结束时的画面）' },
+            { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + shot } }
+          ]
+        });
+      }
+
       var full = '';
-      var answer = await callMainApi(cfg, systemPrompt, messages, function (delta) {
-        full += delta;
-        if (ui && typeof ui.renderAssistantBubble === 'function') ui.renderAssistantBubble(full);
-      });
+      var answer = null;
+      try {
+        answer = await callMainApi(cfg, systemPrompt, messages, function (delta) {
+          full += delta;
+          if (ui && typeof ui.renderAssistantBubble === 'function') ui.renderAssistantBubble(full);
+        });
+      } catch (e) {
+        // 主 API 不支持识图 → 带图请求会 400 → 自动重试一次不带图的, 陪聊照常
+        if (!withShot) throw e;
+        logWarn('带图请求失败, 回落成纯文字重试一次:', (e && e.message) || e);
+        messages = messages.filter(function (m) {
+          return !(Array.isArray(m.content) && m.content.some(function (p) { return p.type === 'image_url'; }));
+        });
+        answer = await callMainApi(cfg, systemPrompt, messages, function (delta) {
+          full += delta;
+          if (ui && typeof ui.renderAssistantBubble === 'function') ui.renderAssistantBubble(full);
+        });
+      } finally {
+        // 🔴 2026-10-29: 【阅后即焚】—— 图用完立刻烧掉, 不留在任何地方。
+        //   主 API 那头已经看过了; 再留着只会越堆越多 (内存/备份/导出都跟着涨)。
+        if (withShot) {
+          try {
+            if (window.CinemaLive && typeof window.CinemaLive.burnLiveNowImage === 'function') {
+              window.CinemaLive.burnLiveNowImage();
+            }
+          } catch (e2) { /* noop */ }
+        }
+      }
 
       full = String(answer || full || '').trim();
       if (!full) throw new Error('主 API 返回了空内容');

@@ -113,7 +113,7 @@ function frameBytesForSource(src) {
 }
 
 async function runScenario(cfg) {
-  const liveSrc = read('modules/cinema-live.js');
+  let liveSrc = null;
   const opts = Object.assign({
     minutes: 15,
     turnLatencyMs: 3000,
@@ -122,6 +122,16 @@ async function runScenario(cfg) {
     transcriptChunks: 4,
     audioBase64Len: 80 * 1024,     // 每条消息带 80KB base64 音频
     label: 'scenario',
+    // 🔴 2026-10-29: 实况通道的三种模式。
+    //   off      = 完全关掉 (d0f41e1 之前的样子: Live 只看画面 + 每 5 分钟一段总结)
+    //   live     = 旧做法: 实况发 Live turn (要配旧版 cinema-live.js)
+    //   provider = 新做法: 实况走主 API, 【不占 Live 的 turn 队列】
+    liveNowMode: 'provider',
+    // 跑指定版本的 cinema-live.js (before/after 对照用)
+    liveSrcOverride: null,
+    clientSrcOverride: null,
+    // provider 返回的那句话
+    liveNowText: '此刻屏幕上, 一个穿风衣的男人正举着手电照向仓库深处。',
     // 现实中的 Live 模型是【说话】回答的 —— 转写是连续口语, 没有【】标记、没有换行。
     summaryText:
       '好的。剧情进度是主角一行人赶到山下的旧仓库，发现了失踪三年的兄长留下的箱子，' +
@@ -130,6 +140,8 @@ async function runScenario(cfg) {
       '只剩磁带机亮着一点红灯，随后磁带自动转了起来，传出兄长三年前录下的声音。',
     liveText: '此刻屏幕上，一个穿风衣的男人正举着手电照向仓库深处。'
   }, cfg || {});
+  // 被测的 cinema-live.js —— 可以是【任意版本】(before/after 对照用)
+  liveSrc = opts.liveSrcOverride ? String(opts.liveSrcOverride) : read('modules/cinema-live.js');
   // 帧大小跟着【被测代码】的真实分辨率走 —— before/after 才在同一把尺子上
   opts.frameBase64Len = cfg && cfg.frameBase64Len ? cfg.frameBase64Len : frameBytesForSource(liveSrc);
 
@@ -137,7 +149,12 @@ async function runScenario(cfg) {
   const stats = {
     bytesOut: 0, bytesIn: 0, audioBytesIn: 0, messagesIn: 0,
     frameCount: 0, frameBytes: 0, turnCount: 0, turnDone: 0,
-    turnQueue: [], setupCount: 0, fresh: 0
+    turnQueue: [], setupCount: 0, fresh: 0,
+    // 🔴 2026-10-29: turn 明细 —— 用来算「每个 turn 要重读多少累积帧」
+    turnLog: [],          // {kind, sentAt, framesAtSend, inflightAtSend, doneAt}
+    serialQueue: [],      // 真串行队列 (Live 的 turn 就是串行的)
+    serialPumping: false,
+    providerCalls: 0,        // 实况 provider 被叫了几次 (走主 API 的次数)
   };
   const chatLines = [];
 
@@ -167,17 +184,48 @@ async function runScenario(cfg) {
       }
       if (msg.realtimeInput && msg.realtimeInput.video) {
         stats.frameCount++;
+        // 🔴 本【连接】的帧数 —— 换会话后归零, 这才是「单个 turn 要重读多少帧」
+        this._frames = (this._frames || 0) + 1;
         stats.frameBytes += s.length;
         return;
       }
       if (msg.clientContent) {
         stats.turnCount++;
-        const backlog = stats.turnCount - 1;
-        const wait = opts.turnLatencyMs + backlog * opts.queuePenaltyMs;
-        later(() => this.answerTurn(msg), wait);
+        const rawText = (msg.clientContent.turns[0].parts[0].text || '');
+        const kind = rawText.indexOf('此刻屏幕') >= 0 ? 'liveNow' : 'summary';
+        // 🔴 这个 turn 发出时, 会话里【已经累积了多少帧】→ 就是它要重读的上下文
+        const rec = {
+          kind: kind,
+          sentAt: clock.now(),
+          framesAtSend: this._frames || 0,
+          inflightAtSend: stats.turnCount - stats.turnDone
+        };
+        stats.turnLog.push(rec);
+        stats.serialQueue.push({ msg: msg, rec: rec });
+        this._pump();
       }
     }
-    answerTurn(msg) {
+    // 🔴 2026-10-29: 真串行 turn 队列。
+    //   Live 的 turn 是【一个做完下一个才能开始】的 —— 原来那个
+    //   "wait = 基础延迟 + backlog × penalty" 是假排队, 量不出真实的堆积。
+    _pump() {
+      if (stats.serialPumping) return;
+      const item = stats.serialQueue.shift();
+      if (!item) { stats.serialPumping = false; return; }
+      stats.serialPumping = true;
+      // 🔴 2026-10-29: 真实 Live 的 turn 耗时【正比于上下文大小】——
+      //   它要重读会话里累积的全部帧 (258 token/帧)。累积帧越多, 这个 turn 越慢。
+      //   之前这里是固定延迟, 量不出「实况 turn 把后面的摘要 turn 拖死」。
+      const wait = opts.turnLatencyMs + opts.queuePenaltyMs +
+        (opts.perFrameTurnMs || 0) * (item.rec && item.rec.framesAtSend ? item.rec.framesAtSend : 0);
+      later(() => {
+        this.answerTurn(item.msg, item.rec);
+        stats.serialPumping = false;
+        this._pump();
+      }, wait);
+    }
+
+    answerTurn(msg, rec) {
       const raw = (msg.clientContent.turns[0].parts[0].text || '');
       const isSummary = raw.indexOf('此刻屏幕') < 0;   // 实况指令一定带「此刻屏幕」
       const text = isSummary ? opts.summaryText : opts.liveText;
@@ -201,6 +249,7 @@ async function runScenario(cfg) {
         later(() => this.deliver(payload), i * opts.chunkIntervalMs);
       }
       later(() => {
+        if (rec) rec.doneAt = clock.now();
         stats.turnDone++;
         this.deliver({ serverContent: { turnComplete: true } });
       }, chunks * opts.chunkIntervalMs);
@@ -296,8 +345,12 @@ async function runScenario(cfg) {
   sandbox.parent = sandbox;
 
   const ctx = vm.createContext(sandbox);
-  vm.runInContext(read('modules/live-client.js'), ctx, { filename: 'live-client.js' });
-  vm.runInContext(read('modules/cinema-live.js'), ctx, { filename: 'cinema-live.js' });
+  vm.runInContext(opts.clientSrcOverride ? String(opts.clientSrcOverride) : read('modules/live-client.js'), ctx, { filename: 'live-client.js' });
+  // 🔴 实况通道开关: 关掉 startLiveNowLoop 的启动 = 复现「刚写好」时的样子
+  if (opts.liveNowMode === 'off') {
+  }
+
+  vm.runInContext(liveSrc, ctx, { filename: 'cinema-live.js' });
 
   // 聊天框里出现的每一行都记下来 —— 用来验"失败要告诉用户"
   const chatBox = getEl('cinema-chat-messages');
@@ -310,6 +363,16 @@ async function runScenario(cfg) {
     if (node) node.parentNode = this;
     return node;
   };
+
+  // 🔴 2026-10-29: 新架构下, 实况由 cinema-chat.js (主 API) 执行。
+  //   harness 里不加载 cinema-chat.js, 所以这里手动注册一个假的 provider。
+  if (opts.liveNowMode === 'provider' && ctx.CinemaLive &&
+      typeof ctx.CinemaLive.setLiveNowProvider === 'function') {
+    ctx.CinemaLive.setLiveNowProvider(function (b64) {
+      stats.providerCalls++;
+      return Promise.resolve(opts.liveNowText);
+    });
+  }
 
   // ---- 启动 ----
   // ⚠️ enable() 里 connect() 返回 Promise, 而假时钟的 setTimeout 只在 advance() 时才跑 ——
@@ -353,6 +416,13 @@ async function runScenario(cfg) {
     segCount: c.segCount,
     segments: (c.segments || []).length,
     liveNow: !!(c.liveNow && c.liveNow.text),
+    turnLog: stats.turnLog,
+    providerCalls: stats.providerCalls,
+    // 🔴 token 账: 每个 turn 都要重读会话里累积的全部帧 (258 token/帧, 官方)
+    //   → 实况 turn 越多, 后面每个 turn 要重读的上下文就越大。
+    inputTokenK: +(stats.turnLog.reduce(function (a2, r) {
+      return a2 + r.framesAtSend * 258;
+    }, 0) / 1000).toFixed(0),
     chatLines: chatLines,
     ctx: ctx
   };

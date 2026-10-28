@@ -175,26 +175,29 @@
       <div class="section">
         <div class="section-title fix">修复（影院越看越烫 / 不写总结 / 闪退）</div>
         <ul class="item-list">
-          <li><strong>你报的三个问题</strong> —— 「本地视频看的时候越看手机越烫，看了十分钟动漫一句剧情总结都没写，最后十五分钟左右浏览器崩溃闪退」。这一轮把三个都查实了，也都修了。</li>
-          <li><strong>为什么越看越烫</strong> —— 影院一直在往云端传画面：<strong>每秒钟一帧</strong>，一帧就好几十 KB。实测 15 分钟传了 <strong>79MB</strong>（相当于每分钟 5.3MB），<strong>手机的射频一直在满载跑</strong>，这就是发烫的原因。另外模型每次回话带回来的音频我们是<strong>听完就扔</strong>的 —— 15 分钟白收白扔 9.1MB。</li>
-          <li><strong>为什么一句剧情总结都没写</strong> —— 写剧情要等模型回话，而它有<strong>45 秒的硬超时</strong>。模型一慢（或者前面排了太多话），请求就被判了死刑，<strong>而且是偷偷地失败</strong>，界面上一点提示都没有 —— 所以你只看到「十分钟一句总结都没写」。</li>
-          <li><strong>为什么十五分钟左右闪退</strong> —— 每一帧画面都要算「图像 token」（官方规则 258 个/tile），15 分钟 900 帧就是 <strong>23 万 ~ 140 万 token</strong>，而影院的对话额度只有 <strong>13 万</strong>。<strong>8~14 分钟必爆</strong>。爆了之后自动重连，而重连又<strong>带着爆掉的上下文</strong> → 立刻再爆 → 反复重连 → 手机狂热 + 闪退。</li>
+          <li><strong>你报的三个问题</strong> —— 「本地视频看的时候越看手机越烫，看了十分钟动漫一句剧情总结都没写，最后十五分钟左右浏览器崩溃闪退」。</li>
+          <li><strong>先认一件事：你是对的</strong> —— 影院从一开始就是<strong>一秒一帧</strong>，从来没变过；刚写好那版放一集也不会发热闪退。所以「少传画面」这个方向是错的，这一版把画面质量<strong>原样还回去了</strong>。</li>
+          <li><strong>真正的原因是「此刻画面」</strong> —— 影院每隔一会儿会问模型一句「此刻屏幕上是什么」，用来给陪聊提供画面描述。<strong>但模型的对话是一次只能做一件事</strong>：这句问话和「写剧情总结」抢同一个位置。问话每 30 秒占一次，总结就被挤到后面排队，<strong>排到 141~173 秒</strong> → 超时作废 → <strong>一句剧情总结都没写</strong>。</li>
+          <li><strong>为什么最后会闪退</strong> —— 模型每回一句话都要把<strong>这个对话里看过的全部画面</strong>重新算一遍。攒到 899 帧时，<strong>一句话的输入就高达 23 万 token</strong>，而额度只有 13 万 —— 早就超了。超了之后自动重连，而重连<strong>又带着爆掉的上下文</strong> → 立刻再爆 → 反复重连 → 手机狂热 + 闪退。</li>
         </ul>
       </div>
       <div class="section">
         <div class="section-title fix">这次改了什么</div>
         <ul class="item-list">
-          <li><strong>画面改得少传</strong>：每秒一帧 → <strong>每 5 秒一帧</strong>，画面长边 768 → 512，压缩质量调低一档。传的数据量降到原来的 <strong>1/16</strong>（79MB → 4.8MB），<strong>手机不烫了</strong>，网费也省。</li>
-          <li><strong>对话额度主动换新</strong>：一个会话最多发 80 帧，<strong>到点就自己换个干净的会话</strong> —— 不再等它爆。剧情记忆不靠这个连续（靠每 5 分钟那个「进度锚」带着走），所以换会话不会丢剧情。</li>
-          <li><strong>写剧情更耐心</strong>：超时 45 秒 → <strong>90 秒</strong>；<strong>写不出来会在聊天框里明说</strong>（以前一声不吭），而且 <strong>60 秒后自动再试一次</strong>，不用干等 5 分钟。</li>
-          <li><strong>「此刻画面」少说话</strong>：从每 30 秒一次改成每 2 分钟一次。它只是陪聊的补充，主聊天才是主角；少发几次，模型就不会被前面的闲话堵住，剧情总结才排得上队。</li>
-          <li><strong>网络堵的时候不再白忙</strong>：以前是「先把画面转成图片，再发现发不出去」；现在先问一句再转。</li>
+          <li><strong>「此刻画面」这个通道整个取消</strong> —— 模型的对话位置<strong>全留给写剧情总结</strong>。陪聊照样能聊，只是它靠<strong>文字剧情</strong>说话，不再每 30 秒去打断模型。</li>
+          <li><strong>画面质量一点没降</strong> —— 还是<strong>每秒一帧、长边 768、压缩质量照旧</strong>。你看得清，模型也看得清。</li>
+          <li><strong>剧情总结从 5 分钟一段改成 2 分钟一段</strong> —— 更细，主 API 答得更准；单段字数下限从 80 字放宽到 50 字（2 分钟确实写不出 80 字）。</li>
+          <li><strong>每写完一段就换个干净对话</strong> —— 这样单个回合要读的永远只有这一段的量（2 分钟 = 120 帧 = 3 万 token，<strong>只用掉额度的 24%</strong>），<strong>永远不会再超</strong>。写失败也会换（不然会越失败越慢）。</li>
+          <li><strong>每次总结截一张图给主 API，看完就烧</strong> —— 只在内存里放这一张，请求发出去立刻销毁：<strong>不存库、不进备份、不进导出、不进草稿</strong>，最多就一张，绝不堆积。</li>
+          <li><strong>写不出来会明说</strong> —— 聊天框里会直接告诉你「这段没写进去」，而且 <strong>60 秒后自动再试一次</strong>（以前是完全一声不吭）。</li>
         </ul>
       </div>
       <div class="section">
-        <div class="section-title note">顺带说清楚</div>
+        <div class="section-title note">实测数字（同一份代码，只切换「此刻画面」开关）</div>
         <ul class="item-list">
-          <li><strong>画面变稀会不会看不懂剧情</strong> —— 5 分钟的剧情现在有 60 张画面（以前 300 张）。<strong>谁出场、发生了什么、停在哪里，60 张足够写清楚</strong>；多出来的 240 张对写剧情没有增量价值，只是在烧你的流量和电量。</li>
+          <li>15 分钟：画面帧数 <strong>902 → 902</strong>（一点没少）、上行 <strong>79.3MB → 79.3MB</strong>（<strong>证明「少传画面」本来就不是病根</strong>）。</li>
+          <li>模型的对话次数 <strong>28 次 → 7 次</strong>；剧情总结写进去的段数 <strong>0 段 → 7 段</strong>（修前一段都写不进去）。</li>
+          <li>单次对话要读的帧数 <strong>899 → 119</strong>；单次输入 token <strong>23 万 → 3 万</strong>（额度 13 万，再也不会爆）。</li>
           <li>如果还有异常，<strong>聊天框里会出现一行「诊断：连上几次 / 断了几次 / 摘要成几次败几次 / 已发多少帧」</strong> —— 你截图给我，我就能直接看到，不用再猜。</li>
         </ul>
       </div>

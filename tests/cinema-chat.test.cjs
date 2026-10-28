@@ -189,9 +189,20 @@ async function main() {
     check('含看到第几集', block.indexOf('第 3 集') >= 0);
     check('含跨场提要', block.indexOf('跨场提要正文') >= 0);
     check('含各集剧情', block.indexOf('第一集剧情') >= 0 && block.indexOf('第二集剧情') >= 0);
-    check('含此刻实况', block.indexOf('此刻镜头里是谁') >= 0);
-    check('实况标了「多少秒前」', /秒前你看到的/.test(block));
-    check('实况标题是「此刻画面」', block.indexOf('## 此刻画面') >= 0);
+    // 🔴 2026-10-29: 实况通道取消后, 上文里【不再有】Live 写的那句画面描述,
+    //   只剩「最近一段的画面」这个定位说明 + 随请求附上的那张图。
+    check('含「最近一段的画面」', block.indexOf('## 最近一段的画面') >= 0);
+    check('画面标了「多少秒前」', /秒前, 剧情走到这里的画面/.test(block));
+    check('没有 Live 写的那句画面描述 (实况通道已取消)',
+      block.indexOf('此刻镜头里是谁') < 0);
+    // 带图的时候要说明「图见下面」, 不然模型不知道图是哪来的
+    const blockWithImg = api.buildCinemaPlotBlock({
+      kind: 'series', title: '某部剧', lastEp: 3,
+      recap: '', recapText: '', anchor: '',
+      episodes: [], segments: [],
+      liveNow: { text: '第 1 段剧情结束时的画面', at: Date.now(), image: 'BASE64' }
+    });
+    check('有图的时候会说「图见下面」', blockWithImg.indexOf('图见下面') >= 0);
 
     // 长剧: 锚 + 提要 + 各段
     const filmBlock = api.buildCinemaPlotBlock({
@@ -227,7 +238,7 @@ async function main() {
     check('含长期记忆正文', sys.indexOf('长期记忆正文') >= 0);
     check('含影院场景块', sys.indexOf('你们在一起看剧') >= 0);
     check('含剧情记忆', sys.indexOf('第一集剧情') >= 0);
-    check('含实况', sys.indexOf('此刻是谁') >= 0);
+    check('含「最近一段的画面」', sys.indexOf('## 最近一段的画面') >= 0);
     check('没有残留 {{占位符}}', !/\{\{[^{}]*\}\}/.test(sys));
     check('没有「世界书」字样(带内容那节)', sys.indexOf('世界观法则') < 0);
   }
@@ -262,20 +273,23 @@ async function main() {
     check('导出 appendUserBubble', /appendUserBubble:\s*appendUserBubble/.test(live));
     check('导出 recordAssistant', /recordAssistant:\s*recordAssistantFinal/.test(live));
     check('watchSession 里有 liveNow 字段', /liveNow:\s*\{\s*text:\s*''/.test(live));
-    check('实况通道存在', /function requestLiveNow\(\)/.test(live) && /function tickLiveNow\(\)/.test(live));
-    // ⚠️ 2026-10-29: 实况从 30 秒改成 120 秒 (降频)。
-    //   原因: 实况每 30 秒发一个 Live turn, 队列一堵, 5 分钟的剧情总结就撞超时写不进去;
-    //   而且 AUDIO 是唯一 response modality, 每 turn 回来的音频我们是用完就丢的。
-    //   这里【不要】再写死具体秒数 —— 以后再调会误报一次。
-    //   判据: 间隔不能短于 120 秒。
-    (function () {
-      const m = /LIVE_NOW_INTERVAL_MS\s*=\s*([^;]+);/.exec(live);
-      let v = 0;
-      try { v = Function('return (' + (m ? m[1] : '0') + ')')(); } catch (e) { v = 0; }
-      check('实况间隔不少于 120 秒 (2026-10-29 从 30 秒降频)', v >= 120000, v + 'ms');
-    })();
-    check('实况是覆盖式单条 (不是数组)', /watchSession\.liveNow\s*=\s*\{\s*text:\s*t,\s*at:\s*Date\.now\(\)/.test(live));
-    check('实况跟帧循环同生命周期', /startLiveNowLoop\(\);/.test(live) && /stopLiveNowLoop\(\);/.test(live));
+    // 🔴 2026-10-29: 「此刻画面」实况通道【整个取消】。
+    //   原因: Live 的 turn 是串行队列, 实况每 30 秒占一个 turn → 剧情总结被挤到
+    //   后面排队 141~173 秒 → 撞 90 秒超时 → 一句剧情总结都没写;
+    //   同时累积帧涨到 899 帧 = 单 turn 输入 232K token, 早就超了 128,000 上限
+    //   → 重连还带着爆掉的上下文 → 重连风暴 → 发烫 + 闪退。
+    check('实况通道已取消 (没有 requestLiveNow/tickLiveNow)',
+      !/function requestLiveNow\(\)/.test(live) && !/function tickLiveNow\(\)/.test(live));
+    check('实况通道已取消 (没有 LIVE_NOW_INTERVAL_MS)', !/LIVE_NOW_INTERVAL_MS/.test(live));
+    check('实况通道已取消 (没有 startLiveNowLoop/stopLiveNowLoop)',
+      !/startLiveNowLoop|stopLiveNowLoop/.test(live));
+    check('liveNow 仍是覆盖式单条 (text/at/image)',
+      /liveNow:\s*\{\s*text:\s*'',\s*at:\s*0,\s*image:\s*''\s*\}/.test(live));
+    check('摘要后会截一张图放进 liveNow.image',
+      /liveNow\s*=\s*\{[\s\S]{0,200}?image:\s*shot/.test(live));
+    check('导出 burnLiveNowImage (阅后即焚)', /burnLiveNowImage:\s*function/.test(live));
+    check('换干净会话的机制还在 (每次摘要之后都换)',
+      /S\._needFreshSession\s*=\s*true/.test(live) && /resetSession\(\)/.test(live));
   }
 
   // ------------------------------------------------------------

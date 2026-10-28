@@ -45,41 +45,20 @@
   var PLOT_PANEL_ID = 'cinema-plot-panel';
   var STATUS_ID = 'cinema-live-status';
 
-  // 🔴 2026-10-29: 帧率 1 FPS → 0.2 FPS (每 5 秒一帧)。**这是这轮最重要的一个数**。
-  //
-  //   起因 (用户 2026-10-29 实测三连报): 「本地视频看的时候越看手机越烫,
-  //   看了十分钟动漫一句剧情总结都没写, 最后十五分钟左右浏览器崩溃闪退」。
-  //
-  //   探针实测 (_reports/pet-test/probe-cinema-heat.cjs, 15 分钟):
-  //     上行 79.3MB = 5.3MB/分钟 —— 手机射频持续满载, 这就是「越看越烫」的来源;
-  //     下行 9.1MB, 其中 9.1MB 全是【用完就丢】的模型音频。
-  //
-  //   为什么降到 0.2 FPS 不影响写剧情:
-  //     一段 5 分钟的剧情, 0.2 FPS = 60 张画面 —— 谁出场、发生了什么、停在哪里,
-  //     60 张足够了。原来 1 FPS 是 300 张, 多出来的 240 张对写剧情没有增量价值,
-  //     只是把手机带宽和 Live 会话的 token 预算烧掉。
-  var FRAME_INTERVAL_MS = 5000;
-  var JPEG_QUALITY = 0.5;
+  // 1 FPS —— 官方建议上限, 旧文件已验证 (用户 2026-10-29: 从一开始就是 1 FPS, 没变过)
+  var FRAME_INTERVAL_MS = 1000;
+  var JPEG_QUALITY = 0.6;
 
-  // 🔴 2026-10-29: 768 → 512。
-  //   token 只跟【帧数】走 (同样 16:9 切成同样几个 tile), 降分辨率省的是【字节】——
-  //   上行量直接砍一半以上。字节降了, 手机发热和电量都跟着降。
-  var FRAME_MAX_DIM = 512;
-
-  // 🔴 2026-10-29: 一个 Live 会话最多发多少帧, 超过就换干净会话。
-  //
-  //   为什么要设上限: 每一帧画面都要算 image token (官方文档: 258 tokens/tile,
-  //   裁剪单位 = min(边)/1.5 → 512x288 约 6 个 tile ≈ 1548 tokens/帧),
-  //   而 Live 会话的输入预算是 131,072。1 FPS 下 8~14 分钟就把预算撑爆,
-  //   服务端开始掐连接 → 重连 → 而重连又【带着 resume handle】,
-  //   继承那个已经爆掉的上下文 → 立刻再爆 → 重连风暴 → 手机狂热 + 闪退。
-  //
-  //   现在帧率降到 0.2 FPS, 80 帧 ≈ 6.7 分钟, 稳稳在预算内;
-  //   真到了上限就【主动换干净会话】(不继承旧上下文), 而不是等服务端来掐。
-  var SESSION_FRAME_BUDGET = 80;
+  // 🔴 新增: 抽帧降采样长边上限 (官方推荐 768)
+  var FRAME_MAX_DIM = 768;
 
   // ---- 阶段剧情摘要 (与旧文件一致) ----
-  var WATCH_SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
+  var WATCH_SUMMARY_INTERVAL_MS = 2 * 60 * 1000;
+  // 🔴 2026-10-29: 5 分钟 → 2 分钟一段 (用户定的)。
+  //   为什么: 主 API 靠【文字剧情总结】聊天, 段落越细它答得越准 ——
+  //   问「刚是怎么了」能定位到具体那两分钟, 而不是笼统的五分钟。
+  //   (取消「每 30 秒一句此刻画面」那条通道后, Live 的 turn 才排得过来 ——
+  //    探针实测: 有实况时摘要 turn 要等 191 秒, 没有时 35 秒。)
   // 🔴 2026-10-19 原来只有一个 PLOT_SUMMARY_MAX_CHARS=2000, 现在拆成两个,
   //   因为这两段东西的用途完全不同, 混在一条提示词里就会出现"要么写不细、
   //   要么越滚越长"这种两头不讨好的结果:
@@ -104,30 +83,10 @@
   //   就占一次这条通道 —— 短剧一集才 1~2 分钟, 播完那一刻正好撞上在途的实况,
   //   这一集的单集剧情就被扔了 (用户实测: 第一次不总结, 再放一遍才总结)。
   //
-  //   25 秒 = 实况通道自己的超时 (LIVE_NOW_TIMEOUT_MS 20s) + 阶段摘要超时的一部分,
-  //   够把正常的在途请求等完, 又不至于让用户干等太久。
+  //   25 秒 = 阶段摘要超时的一部分, 够把正常的在途请求等完, 又不至于让用户干等太久。
+  //   (2026-10-29: 「此刻画面」实况通道整个取消了 —— 不再占这条通道。)
   var EPISODE_SUMMARY_WAIT_MS = 25000;
 
-  // ---- 「此刻画面」实况 (2026-10-23) ----
-  // 陪聊改走主 API 之后, 主 API 看不见画面 —— 它只能靠"剧情记忆"知道演了什么。
-  // 剧情记忆的粒度是 5 分钟一段, 问"刚才是怎么了"会答得粗。
-  // 所以 Live 多开一条【高频短句】通道: 每隔一段时间写一句"此刻屏幕上是谁在干什么",
-  // 覆盖式存进 watchSession.liveNow, 只给主 API 当上文用。
-  //
-  // 🔴 2026-10-29: 30 秒 → 120 秒 (实况降频到 4 倍慢)。
-  //
-  //   起因: 探针实测「服务端 turn 一慢, 5 分钟的剧情总结就一段都写不进去」。
-  //   实况每 30 秒就往 Live 发一个 turn, 而 AUDIO 是 3.8-live 唯一的 response modality
-  //   → 每发一个 turn, 服务端就生成一段音频回来, 我们 JSON.parse 完直接扔掉
-  //   (15 分钟实测下行 9.1MB, 100% 是这种废音频)。
-  //   turn 越密 → 队列越长 → 5 分钟的摘要请求排到后面 → 撞 45 秒硬超时 → 静默作废。
-  //
-  //   降频后: 15 分钟只有 7~8 个实况 turn, 队列基本是空的, 摘要能排上,
-  //   废音频也少 3/4。实况只是陪聊的补充 (主 API 才是陪聊主力), 慢一点不心疼。
-  var LIVE_NOW_INTERVAL_MS = 120 * 1000;
-  var LIVE_NOW_TIMEOUT_MS = 20000;
-  // 摘要快到期时, 实况让路 (摘要优先 —— 摘要进的是剧情记忆, 实况只是陪聊的补充)
-  var LIVE_NOW_YIELD_BEFORE_SUMMARY_MS = 15000;
 
   // 🔴 2026-10-19 内容下限 —— 这次改造里最该单独拎出来的一条。
   //
@@ -138,7 +97,9 @@
   //   为什么"非空即成功"是错的: 截断过的内容比没有更糟。
   //   没有 → 用户知道没记下来, 会重试; 截断的三个字 → 用户以为记下来了, 不会再试。
   //   所以低于这个长度一律【当没生成出来】, 不落库、不算成功、保留上一次的好版本。
-  var MIN_SUMMARY_CHARS = 80;
+  // 🔴 2026-10-29: 80 → 50 字。2 分钟一段本来就演不了多少事,
+  //   硬卡 80 字会把一半的段扔掉 (那就等于没缩短间隔)。
+  var MIN_SUMMARY_CHARS = 50;
 
   // 🔴 2026-10-10 摘要收尾判据: 静默多少毫秒算"这次说完了"。
   //
@@ -243,7 +204,10 @@
     //   【单条覆盖式, 不是数组】—— 实况是"此刻"的快照, 攒多条只会互相矛盾
     //   ("张三站在门口" 和 "李四坐在床上" 堆一起, 主 API 只会更懵)。
     //   at = 写下来的时刻, 传给主 API 时算成"多少秒前看到的"。
-    liveNow: { text: '', at: 0 }
+    // 🔴 2026-10-29: 语义变了 —— 不再是「Live 写的此刻画面」,
+    //   而是【最近一段剧情结束时截的那张画面】(image) + 一句说明(text)。
+    //   image 是【阅后即焚】: 主 API 用完立刻烧掉, 不留在任何地方。
+    liveNow: { text: '', at: 0, image: '' }
   };
 
   /**
@@ -323,6 +287,8 @@
     watchSession.pendingSummary = null;
     watchSession.summaryBusy = false;
     watchSession.chatLog = [];
+    // 🔴 2026-10-29: 新一场 → 上一场的画面不许漏过来 (老 bug: 一直没清)
+    watchSession.liveNow = { text: '', at: 0, image: '' };
     watchSession.closed = false;
     watchSession.leavePromise = null;
     watchSession.playedMs = 0;
@@ -454,8 +420,6 @@
     enabled: false,
     client: null,
     frameTimer: null,
-    // 「此刻画面」实况的定时器 (2026-10-23) —— 跟 frameTimer 一样, Live 就绪才起
-    liveNowTimer: null,
     canvas: null,
     ctx: null,
     framesSent: 0,
@@ -762,12 +726,6 @@
             ' 帧画面（不影响你看片，只是模型那会儿看不见屏幕）。');
         }
       }
-      // 🔴 2026-10-29: 本会话发够预算了 → 记下来, 找个空档换干净会话。
-      //   (不能等服务端来掐 —— 掐了重连还会带着爆掉的上下文, 立刻再爆。)
-      if (S.sessionFrames >= SESSION_FRAME_BUDGET) {
-        S._needFreshSession = true;
-        log('本会话已发 ' + S.sessionFrames + ' 帧, 到达预算 —— 找个空档换干净会话');
-      }
 
       // 🔴 2026-10-29: 找空档换干净会话 (不继承爆掉的上下文)。
       //   必须等没有在途的摘要 —— 换会话会把在途请求打断。
@@ -791,8 +749,6 @@
     }, FRAME_INTERVAL_MS);
     log('开始 ' + (1000 / FRAME_INTERVAL_MS).toFixed(1) + ' FPS 视频帧发送 (长边降采样到 ' +
       FRAME_MAX_DIM + ', 保持宽高比)');
-    // 实况通道跟帧循环同生共死 (2026-10-23): 有帧才有"此刻画面"可言
-    startLiveNowLoop();
   }
 
   function stopFrameLoop() {
@@ -801,7 +757,6 @@
       S.frameTimer = null;
       log('已停止视频帧发送');
     }
-    stopLiveNowLoop();
   }
 
   // ============================================================
@@ -1630,6 +1585,7 @@
     lines.push('· 谁出场了、发生了什么、有什么冲突或转折、这一段停在哪里, 写清楚。');
     lines.push('· 不写你和用户的互动, 不写聊天, 不写评价。');
     lines.push('· 控制在 ' + SEGMENT_MAX_CHARS + ' 字以内。');
+    lines.push('· 这一段只有 2 分钟, 发生的事不多 —— 写清楚就行, 不用硬凑字数。');
     lines.push('');
     lines.push('# 输出格式（必须严格照做，不要解释）');
     lines.push('先写 ' + ANCHOR_MARK + ' 这几个字, 空一行, 写剧情进度正文。');
@@ -1739,6 +1695,25 @@
           renderPlotPanel();
           log('✅ 段落剧情已记录 (第 ' + watchSession.segCount + ' 段)');
           diagPush('summaryOk', { seg: watchSession.segCount });
+
+
+          // 🔴 2026-10-29 (二) 顺手截一张【这一段结束时的画面】给主 API。
+          //   【阅后即焚】: 只在内存里放这一张, 主 API 请求发完就烧掉 ——
+          //   不落库、不进备份、不进导出、不进草稿, 恒定最多一张, 绝不堆积。
+          try {
+            var shotVideo = getVideo();
+            if (shotVideo && !shotVideo.paused && !shotVideo.ended) {
+              var shot = grabFrameBase64(shotVideo);
+              if (shot) {
+                watchSession.liveNow = {
+                  text: '第 ' + watchSession.segCount + ' 段剧情结束时的画面',
+                  at: Date.now(),
+                  image: shot
+                };
+                diagPush('shot');
+              }
+            }
+          } catch (e) { /* noop */ }
         } else {
           // 🔴 2026-10-29: 之前失败是【完全静默】的 —— 用户只看到「十分钟一句总结都没写」,
           //   却不知道是模型慢、格式没认出来、还是连接断了。现在说出来, 顺便带上诊断。
@@ -1755,6 +1730,17 @@
         return false;
       })
       .then(function (ok) {
+        // 🔴 2026-10-29 (一) 换干净会话 —— 【每次摘要尝试之后】都换, 成功失败都换。
+        //   Live 的每个 turn 都要重读会话里累积的全部帧 (官方: 视频输入 258 token/帧),
+        //   而会话上下文窗口只有 128,000 token。
+        //   换了之后: 本会话累积帧归零 → 单个 turn 的输入永远只有这一段的量
+        //   (2 分钟 @ 1 FPS = 120 帧 = 30,960 token = 预算的 24%) → 永远不撞上限。
+        //   【为什么失败也要换】: 不换的话, 失败那几次的累积帧会一直留着 →
+        //   下一个 turn 的输入更大 → 更慢 → 更容易失败 → 恶性循环。
+        //   换会话丢 resume handle → 不继承撑爆的上下文 → 不会重连风暴。
+        //   剧情不靠会话连续 (每段当场落库 + 提示词里的滚动锚), 换会话不丢剧情。
+        //   副作用是好的: 新会话只看本段画面 → 写出来的【本段剧情】更准。
+        S._needFreshSession = true;
         finishSummary(watchSession.pendingSummary);
         flushQueuedUserText();
         return ok;
@@ -1820,76 +1806,6 @@
     }
   }
 
-  // ============================================================
-  // 「此刻画面」实况 (2026-10-23)
-  // ============================================================
-  // 陪聊改走主 API 之后, 主 API 看不见画面 —— 它对剧情的认知全靠剧情记忆,
-  // 而剧情记忆是 5 分钟一段, 问"刚才是怎么了"会答得粗。
-  // 这一条通道让 Live 额外写一句"此刻屏幕上是谁在干什么",
-  // 覆盖式存进 watchSession.liveNow, 只给主 API 当上文用。
-  //
-  // 【为什么覆盖式而不是数组】
-  //   实况是"此刻"的快照。攒 20 条只会互相矛盾
-  //   ("张三站在门口" 和 "李四坐在床上" 堆一起, 主 API 只会更懵)。
-  //
-  // 【优先级】摘要 > 实况。
-  //   实况在摘要在途时跳过; 摘要在实况在途时等 3 秒再试 (见 tickStageSummary)。
-  function buildLiveNowInstruction() {
-    return [
-      '【【后台任务】】用一句话说说此刻屏幕上是什么。',
-      '',
-      '· 只写此刻【正在发生】的事: 画面里有谁、在做什么、在什么场景。',
-      '· 不要评价、不要抒情、不要评论剧情、不要提你和用户的互动。',
-      '· 控制在 40 字以内, 就一句话。',
-      '· 直接输出那句话本身, 不要加称呼、不要加解释。'
-    ].join('\n');
-  }
-
-  function requestLiveNow() {
-    if (!S.client || !S.client.isReady()) return Promise.resolve('');
-    return requestSummary('live', buildLiveNowInstruction(), {
-      silent: true,
-      timeoutMs: LIVE_NOW_TIMEOUT_MS
-    })
-      .then(function (text) {
-        var t = String(text || '').trim();
-        if (!t) return '';
-        watchSession.liveNow = { text: t, at: Date.now() };
-        log('[实况] ' + t);
-        return t;
-      })
-      .catch(function (err) {
-        logWarn('[实况] 失败:', (err && err.message) || err);
-        return '';
-      });
-  }
-
-  function tickLiveNow() {
-    if (!S.enabled || S._leaving) return;
-    if (!S.client || !S.client.isReady()) return;
-    if (watchSession.pendingSummary) return;   // 摘要在途 → 让路
-    if (watchSession.summaryBusy) return;       // 正在写摘要 → 让路
-    var video = getVideo();
-    if (!video || video.paused || video.ended) return;   // 画面没动, 不用重写
-    // 摘要快到期 → 这一轮实况让路 (摘要进的是剧情记忆, 优先级更高)
-    var sinceAnchor = totalPlayedMs() - (watchSession.lastSummaryStartedAt || 0);
-    if (sinceAnchor > WATCH_SUMMARY_INTERVAL_MS - LIVE_NOW_YIELD_BEFORE_SUMMARY_MS) return;
-    requestLiveNow();
-  }
-
-  function startLiveNowLoop() {
-    stopLiveNowLoop();
-    S.liveNowTimer = setInterval(tickLiveNow, LIVE_NOW_INTERVAL_MS);
-    log('开始「此刻画面」实况 (' + Math.round(LIVE_NOW_INTERVAL_MS / 1000) + ' 秒一次)');
-  }
-
-  function stopLiveNowLoop() {
-    if (S.liveNowTimer) {
-      clearInterval(S.liveNowTimer);
-      S.liveNowTimer = null;
-      log('已停止「此刻画面」实况');
-    }
-  }
 
   // ============================================================
   // 短剧 (2026-07 起的设计, 2026-10-19 大改)
@@ -4205,6 +4121,8 @@
     watchSession.summaryCount = 0;
     watchSession.summaryUpdatedAt = 0;
     watchSession.chatLog = [];
+    // 🔴 2026-10-29: 换片 → 上一部的画面不许漏过来
+    watchSession.liveNow = { text: '', at: 0, image: '' };
     plotEditing = null;
     S.canvas = null;
     S.ctx = null;
@@ -4231,6 +4149,13 @@
       }
     },
     getChatId: function () { return S.chatId; },
+    // 🔴 2026-10-29: 【阅后即焚】—— 主 API 看完那张画面就调用它, 立刻烧掉。
+    //   为什么: 图只对"这一次请求"有用, 留着只会越堆越多
+    //   (内存 / 备份 / 导出 / 草稿都跟着涨)。
+    burnLiveNowImage: function () {
+      if (watchSession.liveNow) watchSession.liveNow.image = '';
+      return true;
+    },
 
     // 🔴 2026-10-23 陪聊改走主 API 之后, cinema-chat.js 需要三样东西:
     //   ① 影院这边攒下的剧情记忆 + 此刻实况 (给主 API 当上文)
@@ -4256,7 +4181,7 @@
           return { ep: x.ep, text: x.text || '' };
         }),
         // 此刻画面 (单条覆盖式)
-        liveNow: watchSession.liveNow || { text: '', at: 0 }
+        liveNow: watchSession.liveNow || { text: '', at: 0, image: '' }
       };
     },
     // ---- 陪聊气泡 UI (由 cinema-chat.js 驱动) ----
