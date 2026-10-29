@@ -914,7 +914,16 @@
     // ---- Gemini 3.8 Live 钩子 (cinema-live.js) ----
     // 视频开始播 → 自动连 (没 key 会静默跳过)
     els.video.addEventListener('play', function () {
-      if (global.CinemaLive) global.CinemaLive.autoConnect('video play');
+      if (!global.CinemaLive) return;
+      global.CinemaLive.autoConnect('video play');
+      // 🔴 2026-10-29 (用户实测「总结一段以后再过两分钟没有发起总结」):
+      //   必须补这一句 —— 'pause' 事件调 pauseFrames(), 它会
+      //     ① stopStageSummary()  销毁摘要定时器
+      //     ② markPaused()        把播放时间账冻结 (playingSince=0)
+      //   而 autoConnect() 在「已经连上」时只干 S.paused=false 就 return,
+      //   定时器和播放时间账双双失修, 之后全靠看门狗兜 ——
+      //   用户拖一下进度条 / 切一下 app 回来, 摘要就再也不发起了。
+      global.CinemaLive.resumeFrames('video play');
     });
     els.video.addEventListener('pause', function () {
       if (global.CinemaLive && global.CinemaLive.isEnabled()) global.CinemaLive.pauseFrames('video pause');

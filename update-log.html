@@ -166,11 +166,43 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.52 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.52</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（影院「总结一段以后，再过两分钟没有发起总结」）</div>
+        <ul class="item-list">
+          <li><strong>你报的</strong> —— 「<strong>live 就没有显示断过，跟重连没关系</strong>，就是总结一段以后再过两分钟没有发起总结」。</li>
+          <li><strong>这次没再靠猜</strong> —— 前两轮我修的是「怎么连上」，你这次说清了是<strong>另一件事</strong>：连接一直好好的，是<strong>第二段摘要压根没发起</strong>。这条我按你说的重查了。</li>
+          <li><strong>真因（这次是结构性的）</strong> —— 摘要的触发一直是<strong>靠一个计时器「自己接自己」</strong>：这次到点了写完，它顺带给下一次排上。链上<strong>任何一环被吃掉</strong>（切后台、拖进度条、换片、连接抖一下），<strong>后面就永远不再发起</strong>，而且现场一点线索都没有。</li>
+          <li><strong>还挖出一条断线</strong> —— 视频「暂停」事件会<strong>把摘要计时器和「已经看了多久」一起清掉</strong>，可视频「播放」事件<strong>只管连 live，从来不把它们恢复</strong>。所以拖一下进度条、切一下 app 回来，摘要就哑了。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">这次改了什么</div>
+        <ul class="item-list">
+          <li><strong>计时器不再说了算</strong> —— 现在每 30 秒核对一次：<strong>「你已经看了 X 分钟，剧情还没写进去」就直接补一次</strong>，管它那个计时器还在不在。<strong>「每 2 分钟必有一段」从靠运气变成硬保证</strong>。</li>
+          <li><strong>播放事件补上恢复动作</strong> —— 视频一恢复播放，就把「看了多久」和摘要计时器都接回去。</li>
+          <li><strong>诊断框加了摘要时间线</strong> —— 每次「发起 / 没发出去 / 强制补一次」都记一条，<strong>下次一张截图就能直接看出卡在哪</strong>，不用再猜。</li>
+          <li><strong>画面、画质、总结节奏都没动</strong>（还是一秒一帧、长边 768、每 2 分钟一段）。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">要看的</div>
+        <ul class="item-list">
+          <li>看本地长剧，<strong>过几分钟应该能连着总结好几次</strong>。</li>
+          <li>万一这次还是只写了一段，<strong>点 ⚙设置 → 底部「诊断」截个图给我</strong> —— 现在里面有摘要时间线（几点发起的、有没有发出去、有没有强制补过），<strong>一眼就能定位</strong>。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.51 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.51</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复（影院只总结了第一段，之后就再也没总结）</div>

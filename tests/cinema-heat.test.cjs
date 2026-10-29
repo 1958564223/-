@@ -246,8 +246,11 @@ function countOf(hay, needle) {
   // ⚠️ 必须只扫 tickStageSummary 的函数体 ——
   //   scheduleStageSummary 里也有 watchSession.summaryTimer = null;
   //   全局搜的话这条永远是绿的（假绿）。
-  const tickBody = LIVE.slice(LIVE.indexOf('function tickStageSummary()'),
-    LIVE.indexOf('function tickStageSummary()') + 500);
+  // ⚠️ 函数签名带参数了 (tickStageSummary(forced, sinceMs)) ——
+  //   这里必须找 'function tickStageSummary(' , 找带空括号的那个会返回 -1,
+  //   slice(-1, 499) 截到的是文件尾巴 → 断言永远绿 (假绿)。
+  const tickIdx = LIVE.indexOf('function tickStageSummary(');
+  const tickBody = LIVE.slice(tickIdx, tickIdx + 500);
   check('tick 会清掉已触发的定时器句柄（看门狗据此判断「定时器不见了」）',
     /watchSession\.summaryTimer = null;/.test(tickBody));
   check('放弃过一次之后要能一直重试下去（不是 return 掉）',
@@ -270,6 +273,57 @@ function countOf(hay, needle) {
   const warned = tooShort.chatLines.some(l => /没写进去|没总结出来/.test(l));
   check('聊天框里给出了提示 (修前是完全静默)', warned,
     warned ? '' : '聊天框内容: ' + JSON.stringify(tooShort.chatLines.slice(-3)));
+
+
+  // -------------------------------------------------------------------------
+  section('9. 摘要调度不能依赖【定时器链】（用户 2026-10-29 实测「总结一段以后再过两分钟没有发起总结」）');
+  // -------------------------------------------------------------------------
+  // 【复现手法】把摘要定时器改成「只放第一段, 之后永远不触发」。
+  //   这就是用户现场那台设备的状况 —— 定时器链在中途被吃掉, 之后再也不发起。
+  //   用户原话: 「又是只总结了第一个2分钟的剧情, 就是第一段, 之后的就再也没总结了」
+  const KILL_ANCHOR = 'watchSession.summaryTimer = setTimeout(tickStageSummary, delay);';
+  const KILL_REPL =
+    'watchSession.summaryTimer = setTimeout(function () {' +
+    ' if (!window.__chainDead) { window.__chainDead = true; tickStageSummary(); }' +
+    ' }, delay);';
+  const LIVE_KILLED = LIVE.indexOf(KILL_ANCHOR) >= 0 ? LIVE.replace(KILL_ANCHOR, KILL_REPL) : null;
+  check('测试前提: 摘要定时器那行找得到（找不到就没法模拟链断掉）', LIVE_KILLED !== null);
+
+  const chainDead = LIVE_KILLED ? await runScenario({
+    label: '定时器链中途死掉', minutes: 12, liveSrcOverride: LIVE_KILLED
+  }) : { segCount: -1, chatLines: [] };
+  check('★ 定时器链死掉后, 摘要仍按【已播放时长】继续写（旧版只写第一段就停）',
+    chainDead.segCount >= 3, chainDead.segCount + ' 段 (12 分钟, 期望 >= 3 段)');
+  // ⚠️ 这两条查的是【诊断事件】本身 —— 旧版压根没有 try/forced 这两个事件,
+  //    所以它们在 bug 版必定报红 (上一版写成「聊天框有字」, 那条在 bug 版也会过 = 假绿)。
+  const chainDiag = (function () {
+    try {
+      return JSON.parse((chainDead.ctx && chainDead.ctx.localStorage &&
+        chainDead.ctx.localStorage.getItem('cinema_live_diag_v1')) || '[]');
+    } catch (e) { return []; }
+  })();
+  const tryCount = chainDiag.filter(d => d && d.ev === 'try').length;
+  const forcedCount = chainDiag.filter(d => d && d.ev === 'forced').length;
+  check('每次摘要尝试都要写进诊断（诊断里有「发起剧情总结」）', tryCount >= 3,
+    'try 事件 ' + tryCount + ' 次 / 全部事件: ' + chainDiag.map(d => d && d.ev).join(','));
+  check('链断了以后看门狗要【强制补过】（诊断里有「强制补一次总结」）', forcedCount >= 1,
+    'forced 事件 ' + forcedCount + ' 次');
+
+  // ---- 其余三条: 同一个病根, 源码级钉住 ----
+  const ROOM = read('modules/cinema-room.js');
+  // ⚠️ 必须限定在 video 'play' 那个处理器里 —— 全局搜 resumeFrames 会搜到定义处, 永远绿。
+  const playIdx = ROOM.indexOf("addEventListener('play'");
+  const playBody = ROOM.slice(playIdx, playIdx + 1200);
+  check("video 'play' 事件要调 resumeFrames（'pause' 事件调 pauseFrames, 它销毁定时器并冻结播放时间账）",
+    /CinemaLive\.resumeFrames\(/.test(playBody),
+    playIdx < 0 ? '没找到 play 处理器' :
+      (/CinemaLive\.resumeFrames\(/.test(playBody) ? 'play 处理器里已调 resumeFrames' : 'play 处理器里没有 resumeFrames'));
+  check('看门狗是【权威调度器】: 已播放够久却没写进剧情 → 强制补一次（不等定时器）',
+    /since >= WATCH_SUMMARY_INTERVAL_MS/.test(LIVE) && /tickStageSummary\(true/.test(LIVE));
+  check('摘要成功时记下「成功写进剧情」的已播放时长（看门狗靠它判断该补下一次）',
+    /watchSession\.lastSummaryOkPlayedMs = totalPlayedMs\(\);/.test(LIVE));
+  check('每次摘要尝试 / 跳过 / 强制都写进诊断（下次一张截图就能定案）',
+    /diagPush\('try'/.test(LIVE) && /diagPush\('skip'/.test(LIVE) && /diagPush\('forced'/.test(LIVE));
 
   // -------------------------------------------------------------------------
   console.log('\n========================================');

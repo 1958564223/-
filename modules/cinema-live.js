@@ -156,6 +156,9 @@
     // 本轮摘要计时是什么时候起的 (按 playedMs 坐标系)。暂停不重置它,
     // 恢复后靠 scheduleStageSummary() 算还差多少。
     lastSummaryStartedAt: 0,
+    // 🔴 2026-10-29: 最后一次【成功写进剧情】时的已播放时长 (ms)。
+    //   看门狗靠它判断「已经看了很久却没写进剧情」→ 强制补一次。
+    lastSummaryOkPlayedMs: 0,
     // ---- 短剧专用 (2026-10-07) ----
     kind: 'film',              // 'film' = 长剧 | 'series' = 短剧
     seriesKey: null,           // 短剧: 剧名
@@ -294,6 +297,7 @@
     watchSession.playedMs = 0;
     watchSession.playingSince = 0;
     watchSession.lastSummaryStartedAt = 0;
+    watchSession.lastSummaryOkPlayedMs = 0;
     watchSession.kind = 'film';
     watchSession.seriesKey = null;
     watchSession.seriesTitle = '';
@@ -449,7 +453,7 @@
   // 用户截个图我就能看到「断了几次 / 丢了几帧 / 发了多少帧 / 摘要成几次败几次」。
   // ============================================================
   var DIAG_KEY = 'cinema_live_diag_v1';
-  var DIAG_MAX = 40;
+  var DIAG_MAX = 80;
 
   // 事件名 → 人话 (进诊断框给用户看的)
   var DIAG_TEXT = {
@@ -458,7 +462,10 @@
     goAway: '服务端说它要断了',
     summaryOk: '剧情写进去了',
     summaryFail: '剧情没写成',
-    fresh: '换了干净会话（帧预算用完）'
+    fresh: '换了干净会话（帧预算用完）',
+    try: '发起剧情总结',
+    skip: '这次没发出去',
+    forced: '强制补一次总结'
   };
 
   function diagPush(ev, data) {
@@ -1700,6 +1707,9 @@
         var ok = applyStageSummary(text);
         if (ok) {
           watchSession.summaryCount++;
+          // 🔴 2026-10-29: 记下「成功写进剧情」这一刻的已播放时长 ——
+          //   看门狗靠它判断「该补下一次了」。
+          watchSession.lastSummaryOkPlayedMs = totalPlayedMs();
           // ⚠️ 这行必须加 (2026-10-07 用户实测: 摘要出来了, 计数一直 0)。
           //
           // 原因: summaryCount++ 跑在【微任务】里 —— onTurnCompleteInternal
@@ -1774,7 +1784,7 @@
     persistSeriesRecapSafely(anchor);
   }
 
-  function tickStageSummary() {
+  function tickStageSummary(forced, sinceMs) {
     // ⚠️ 已触发的定时器句柄要清掉 —— 否则看门狗会以为「定时器还在」,
     //   就算它真的丢了也不会补排。
     watchSession.summaryTimer = null;
@@ -1790,11 +1800,13 @@
     // 🔴 2026-10-23: retryInMs —— 「此刻画面」实况在途时, 摘要等它一下再跑。
     //   实况只要几秒, 不该让这一轮摘要白等 5 分钟。
     var retryInMs = 0;
+    // 🔴 2026-10-29: why = 这次为什么没发出去 —— 写进诊断, 用户截图我就能定案。
+    var why = '';
     try {
-      if (!S.enabled || watchSession.summaryBusy) return;
+      if (!S.enabled || watchSession.summaryBusy) { why = '没启用或正在总结'; return; }
       if (S._leaving) return;              // 要退出了, 不必再排
       var video = getVideo();
-      if (!video || video.paused || video.ended) return; // 暂停中, finally 会重排
+      if (!video || video.paused || video.ended) { why = '视频暂停/结束'; return; } // 暂停中, finally 会重排
       if (!S.client || !S.client.isReady()) {
         // 🔴 2026-10-29 (用户实测「重新进去接着看, 看再久都不总结剧情」):
         //   以前这里静默 return —— 用户只看到「一句剧情总结都没写」,
@@ -1805,6 +1817,7 @@
           S._noLiveWarnedAt = now;
           appendSystemLine('⚠️ Gemini Live 还没连上 —— 剧情要靠它整理, 所以现在还没写。' + diagOneLine());
         }
+        why = 'live 没连上';
         return;      // 还没 ready, finally 会重排
       }
       S._noLiveWarnedAt = 0;
@@ -1816,10 +1829,20 @@
         return;
       }
 
-      runStageSummary({ reason: '5 分钟到' }).then(function (ok) {
+      diagPush('try', { seg: (watchSession.segCount || 0) + 1, forced: !!forced });
+      runStageSummary({ reason: forced ? '看门狗强制补一次' : '2 分钟到' }).then(function (ok) {
         // 🔴 2026-10-29: 失败了就【60 秒后再试一次】, 别让用户干等 5 分钟。
         //   (这会把 finally 里排好的那个 5 分钟后的定时器顶掉 —— 那是对的: 就是要早一点再试。)
         if (ok) return;
+        // 这次也没写进去 —— 如果已经看了很久, 明确告诉用户「看了多久」
+        if (sinceMs && sinceMs >= WATCH_SUMMARY_INTERVAL_MS) {
+          var stnow = Date.now();
+          if (!S._staleWarnedAt || stnow - S._staleWarnedAt > 120000) {
+            S._staleWarnedAt = stnow;
+            appendSystemLine('⚠️ 已经看了 ' + Math.round(sinceMs / 60000) +
+              ' 分钟, 剧情还是没写进去 —— 我在重试, 你也可以稍等一下再看。' + diagOneLine());
+          }
+        }
         if (!S.enabled || S._leaving) return;
         watchSession.lastSummaryStartedAt = totalPlayedMs();
         scheduleStageSummary(SUMMARY_RETRY_DELAY_MS);
@@ -1833,6 +1856,7 @@
         watchSession.lastSummaryStartedAt = totalPlayedMs();
         scheduleStageSummary(retryInMs || undefined);
       }
+      if (why) diagPush('skip', { why: why, forced: !!forced });
     }
   }
 
@@ -3071,10 +3095,37 @@
     if (summaryWatchdogTimer) return;
     summaryWatchdogTimer = setInterval(function () {
       if (!S.enabled || S._leaving) return;
+      // 🔴 2026-10-29: 视频在不在播 —— 暂停时不该补排定时器
+      //   (pauseFrames 是【故意】停掉定时器的, 补排会白吃一轮)。
+      var vdog = getVideo();
+      var playing = !!(vdog && !vdog.paused && !vdog.ended);
       // ① 摘要定时器不见了 → 补排一个
-      if (!watchSession.summaryTimer) {
+      if (!watchSession.summaryTimer && playing) {
         log('看门狗: 摘要定时器不见了, 补排一个');
         scheduleStageSummary();
+      }
+      // ② ★★★ 权威调度 (2026-10-29 用户实测「两分钟后没有发起总结」):
+      //   不管定时器还在不在 —— 只要【已播放时长】够长、却还没写进剧情,
+      //   现在就强制发起一次。
+      //   以前完全依赖「定时器链」(tick → finally 里重排), 链上任何一环
+      //   被吃掉, 后面就永远不再发起, 而且现场一点线索都没有。
+      //   这里用【已播放时长】而不是墙钟 —— 暂停时不误触发。
+      if (playing && !watchSession.summaryBusy && !watchSession.pendingSummary &&
+          S.client && S.client.isReady()) {
+        var since = totalPlayedMs() - Math.max(
+          watchSession.lastSummaryOkPlayedMs || 0,
+          watchSession.lastSummaryStartedAt || 0);
+        if (since >= WATCH_SUMMARY_INTERVAL_MS) {
+          log('看门狗: 已播放 ' + Math.round(since / 1000) + 's 还没写进剧情, 强制补一次');
+          diagPush('forced', { sinceSec: Math.round(since / 1000) });
+          // 先把还挂着的那个定时器收掉, 免得强制这次跟它撞车
+          if (watchSession.summaryTimer) {
+            clearTimeout(watchSession.summaryTimer);
+            watchSession.summaryTimer = null;
+          }
+          // since 传进去 → 这次真的失败了才提示用户 (在 tick 的失败分支里推)
+          tickStageSummary(true, since);
+        }
       }
       // ② live 停在坏状态, 而且没在重连 → 安排重连
       //    ⚠️ 只在 closed/error/idle 时管 —— connecting/connected 是正在建, 别插手
@@ -4003,6 +4054,7 @@
     markPaused();
     watchSession.playedMs = 0;
     watchSession.lastSummaryStartedAt = 0;
+    watchSession.lastSummaryOkPlayedMs = 0;
     S._leaving = true;
     disable('离开 Cinema Room');
     _autoTried = false;
@@ -4424,6 +4476,12 @@
         summaryUpdatedAt: watchSession.summaryUpdatedAt,
         summaryCount: watchSession.summaryCount,
         summaryBusy: watchSession.summaryBusy,
+        // 🔴 2026-10-29: 播放时间账 + 上次成功写进剧情的时刻 ——
+        //   「已播放多久却没写进剧情」是判断摘要链断没断的唯一硬指标。
+        playedMs: watchSession.playedMs,
+        playingSince: watchSession.playingSince,
+        lastSummaryOkPlayedMs: watchSession.lastSummaryOkPlayedMs,
+        lastSummaryStartedAt: watchSession.lastSummaryStartedAt,
         chatCount: watchSession.chatLog.length
       };
     },
