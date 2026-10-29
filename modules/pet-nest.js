@@ -2308,9 +2308,11 @@
       // 3 只并排时左右各摆 28% → 精灵左右边缘落在 1% / 99%，【不裁边】
       //   （28 → 精灵 42% 宽；33 会让边缘变成 -4% / 104%，猫的爪子尾巴被切掉）
       rowSpread: 28,
-      // 没孵化的蛋: 藤篮里 (篮子开口在 x 72%~86%, y 30%~42%)
+      // 没孵化的蛋: 藤篮里
+      // ⚠️ 篮子的绒面实测 x 71.8%~90.9%, y 32%~35%；第 2 颗放篮子前沿，小一号
       eggSpots: [
-        { x: 79, y: 34 }, { x: 76, y: 39 }
+        { x: 79, y: 34, w: 14 },
+        { x: 76, y: 39, w: 11 }
       ]
     },
     {
@@ -2323,9 +2325,14 @@
       maxPets: 3,
       rowY: 80,          // 脚在 91.8%，落在底部蓝白圆毯上
       rowSpread: 28,     // 跟老背景一致：3 只并排不裁边
-      // 蛋放树洞那张床上 (蓝枕头 + 白绒面的巢, x 54%~80%, y 45%~56%)
+      // 蛋放树洞那张床上（蓝枕头 + 白绒面的巢）
+      // ⚠️ 巢里能躺东西的【白绒面实测 x 51.5%~85%】——
+      //   蛋原来在 57%（占 47%~67%）→ 左边缘凸出巢外（用户 2026-10-29 截图指出
+      //   「星夜的蛋还是太靠外了」）→ 挪到 63%（占 53%~73%，整个躺在巢里）
+      //   第 2 颗蛋只能小一号挤在右边 —— 巢就这么宽，两个 20% 的蛋放不下
       eggSpots: [
-        { x: 57, y: 51 }, { x: 71, y: 51 }
+        { x: 63, y: 51, w: 20 },
+        { x: 77, y: 51, w: 16 }
       ]
     }
   ];
@@ -2436,7 +2443,7 @@
     });
     eggPets.slice(0, room.eggSpots.length).forEach(function (pet, i) {
       const egg = room.eggSpots[i];
-      placed.push({ pet: pet, x: egg.x, y: egg.y, egg: true });
+      placed.push({ pet: pet, x: egg.x, y: egg.y, egg: true, eggW: egg.w || room.eggW });
     });
 
     placed.forEach(function (item) {
@@ -2449,7 +2456,11 @@
       btn.setAttribute('aria-label', '照顾' + pet.name);
       btn.style.left = item.x + '%';
       btn.style.top = item.y + '%';
-      if (item.egg) btn.classList.add('pn-pet-egg');
+      if (item.egg) {
+        btn.classList.add('pn-pet-egg');
+        // 每个蛋位可以带自己的宽度（第 2 颗蛋要小一号才挤得进巢里）
+        try { btn.style.setProperty('--pn-egg-w', (item.eggW || 11) + '%'); } catch (e) { /* noop */ }
+      }
       if (divine) btn.classList.add('pn-pet-divine');
       else if (hatched) btn.classList.add('pn-pet-hatched');
 

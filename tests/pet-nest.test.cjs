@@ -2038,7 +2038,7 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
   //    改成「不低于 0.0.31 / 0.0.16」逐段比大小。
   const petJsV = (html2.match(/pet-nest\.js\?v=([0-9.]+)/) || [])[1] || '';
   const petCssV = (html2.match(/pet-nest\.css\?v=([0-9.]+)/) || [])[1] || '';
-  check('index.html 的 pet-nest.js ?v= 已 bump', verGE(petJsV, '0.0.32'), petJsV);
+  check('index.html 的 pet-nest.js ?v= 已 bump', verGE(petJsV, '0.0.33'), petJsV);
   check('index.html 的 pet-nest.css ?v= 已 bump', verGE(petCssV, '0.0.17'), petCssV);
   // ⚠️ 这里原来写死 `/v0\.2\.8[2-9]\.\d+/` —— 每 bump 一次就会误报一次
   //   (2026-10-28 实测: sw.js 已经是 v0.2.84.0, 这条断言一直在报红;
@@ -2309,6 +2309,32 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
         ? ('阳光小屋 ' + eL.left.toFixed(1) + '%~' + eL.right.toFixed(1) + '%  ' +
            '星夜树屋 ' + eS.left.toFixed(1) + '%~' + eS.right.toFixed(1) + '%')
         : '没有这两间房');
+
+    // ---- 蛋要整个落在容器里，不能凸出去 ----
+    // 实测（探针 probe-measure-nest.cjs / probe-measure-basket.cjs 裁图量出来的）：
+    //   阳光小屋的藤篮（绒面 + 前沿）x 70%~91%, y 30%~42%
+    //   星夜树屋的巢里白绒面           x 51.5%~85%, y 47%~56%
+    const EGG_BOX = {
+      light: { left: 70, right: 91 },
+      star: { left: 51.5, right: 85 }
+    };
+    const eggEdges = [];
+    rooms.forEach(function (r) {
+      const box = EGG_BOX[r.id];
+      if (!box) return;
+      (r.eggSpots || []).forEach(function (s) {
+        const w = s.w || r.eggW;
+        eggEdges.push({ id: r.id, left: s.x - w / 2, right: s.x + w / 2, box: box });
+      });
+    });
+    check('★ 蛋要整个落在篮子里 / 巢里（不能凸出去）',
+      eggEdges.length > 0 && eggEdges.every(function (e) {
+        return e.left >= e.box.left - 0.01 && e.right <= e.box.right + 0.01;
+      }),
+      eggEdges.map(function (e) {
+        return e.id + ' ' + e.left.toFixed(1) + '%~' + e.right.toFixed(1) + '% (要 ' +
+          e.box.left + '%~' + e.box.right + '%)';
+      }).join(' | '));
 
     const light = rooms.find(r => r.id === 'light');
     const star = rooms.find(r => r.id === 'star');
