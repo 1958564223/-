@@ -973,7 +973,9 @@
   const STORAGE_KEYS = {
     desktopPetVisible: 'petNestDesktopPetVisible',
     desktopPetPos: 'petNestDesktopPetPos',
-    petNestEnabled: 'petNestEnabled'
+    petNestEnabled: 'petNestEnabled',
+    // 🔴 2026-10-29: 选了哪套房间背景 (存 id, 图片是内置的不用存)
+    roomBackground: 'petNestRoomBackground'
   };
 
   // ============================================================
@@ -2279,6 +2281,124 @@
     }
   }
 
+  // ============================================================
+  // 房间背景 (2026-10-29: 加了第二套「星夜树屋」, 两套都能选)
+  // ============================================================
+  // ⚠️ 每套背景自带【站位】和【精灵大小】——
+  //   以前那 4 列 × 3 排是照着「阳光小屋」的构图调的
+  //   (地毯在 42%~68%, 下面是木地板)。换一张图, 宠物就会浮空或埋进家具。
+  //
+  // 🔴 2026-10-29 用户第二次改口：「精灵不要弄小了, 我们基本上只养一只,
+  //   不需要12个槽位, 给我把屋里的宠物弄大点, 现在大一倍都可以, 不然看都看不清」
+  //   → 精灵 21% → 42%（大一倍）；12 个槽位 → 一排最多 3 只；
+  //     只有 1 只时它站在【正中间】当主角（以前第 1 只固定在左上角）。
+  const ROOM_BACKGROUNDS = [
+    {
+      id: 'light',
+      name: '阳光小屋',
+      img: 'assets/pet-nest/room-light.webp',
+      alt: '阳光下的绘本小屋，窗边有藤篮和柔软地毯',
+      petW: 42,          // 精灵占场景宽度的百分比（21 → 42，大一倍）
+      eggW: 11,          // 没孵化的蛋单独小一号：跟着精灵翻倍会糊住藤篮
+      maxPets: 3,        // 屋里最多同时站 3 只，其余在下面「小窝名册」里
+      rowY: 60,          // 一排站位的高度（%）：脚落在地毯上（脚在 74%）
+      rowSpread: 33,     // 3 只并排时左右各摆 33%（17 / 50 / 83）
+      // 没孵化的蛋: 藤篮里 (篮子开口在 x 72%~86%, y 30%~42%)
+      eggSpots: [
+        { x: 79, y: 34 }, { x: 76, y: 39 }
+      ]
+    },
+    {
+      id: 'star',
+      name: '星夜树屋',
+      img: 'assets/pet-nest/room-star.webp',
+      alt: '开满白花的树洞小屋，挂着星星灯和水晶，窗外是远处的城堡',
+      petW: 42,          // 两套背景一样大（用户：精灵不要弄小）
+      eggW: 11,
+      maxPets: 3,
+      rowY: 80,          // 地毯在 84%~98%，精灵 42% 站上去脚正好落在 94%
+      rowSpread: 33,
+      // 蛋放树洞里那张床上 (有蓝枕头 + 黄星星垫子的那张)
+      eggSpots: [
+        { x: 58, y: 53 }, { x: 66, y: 53 }, { x: 74, y: 53 }
+      ]
+    }
+  ];
+
+  /**
+   * 第 i 只精灵在屋里的站位（中心点坐标，CSS 用 translate(-50%,-50%)）。
+   * 用户「基本上只养一只」→ 只有 1 只时它站正中间当主角，
+   * 2 只 / 3 只才往两边散开。
+   * @param {object} room  房间配置
+   * @param {number} i     第几只（从 0 开始）
+   * @param {number} n     一共几只
+   */
+  function roomSpotFor(room, i, n) {
+    const count = Math.max(1, Math.min(n || 1, room.maxPets || 3));
+    if (count <= 1) return { x: 50, y: room.rowY };
+    const step = Math.min(room.rowSpread || 33, 66 / (count - 1));
+    const idx = Math.min(i, count - 1);
+    return { x: 50 + (idx - (count - 1) / 2) * step, y: room.rowY };
+  }
+
+  /**
+   * 把宠物分成「站在地上的」和「还是蛋的」。
+   * ⚠️ 蛋【不占】地面的站位 —— 否则「屋里有 1 颗蛋 + 1 只猫」时，
+   *    猫会被挤到一边去，而用户就养一只 —— 那只猫必须是正中间的主角。
+   * @param {Array} pets
+   * @returns {{floorPets: Array, eggPets: Array}}
+   */
+  function splitPetsForRoom(pets) {
+    const eggPets = [];
+    const floorPets = [];
+    (pets || []).forEach(function (pet) {
+      if (isHatchKind(pet.kind) && Number(pet.stage || 0) === 0) eggPets.push(pet);
+      else floorPets.push(pet);
+    });
+    return { floorPets: floorPets, eggPets: eggPets };
+  }
+
+  /** 当前选中的房间背景 (认不出来就回默认那套) */
+  function currentRoomBackground() {
+    let id = '';
+    try { id = localStorage.getItem(STORAGE_KEYS.roomBackground) || ''; } catch (e) { id = ''; }
+    for (var i = 0; i < ROOM_BACKGROUNDS.length; i++) {
+      if (ROOM_BACKGROUNDS[i].id === id) return ROOM_BACKGROUNDS[i];
+    }
+    return ROOM_BACKGROUNDS[0];
+  }
+
+  /** 打开「换房间背景」选择器 (2026-10-29) */
+  function openRoomPicker() {
+    const dlg = el('pn-room-dialog');
+    const list = el('pn-room-list');
+    if (!dlg || !list) return;
+    const cur = currentRoomBackground();
+    list.innerHTML = '';
+    ROOM_BACKGROUNDS.forEach(function (bg) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'pn-room-card' + (bg.id === cur.id ? ' is-current' : '');
+      btn.setAttribute('aria-label', '换成' + bg.name);
+      const img = document.createElement('img');
+      img.src = bg.img;
+      img.alt = bg.name;
+      img.loading = 'lazy';
+      const nm = document.createElement('span');
+      nm.className = 'pn-room-card-name';
+      nm.textContent = bg.name;
+      btn.append(img, nm);
+      btn.onclick = function () {
+        try { localStorage.setItem(STORAGE_KEYS.roomBackground, bg.id); } catch (e) { /* noop */ }
+        try { if (dlg.close) dlg.close(); } catch (e2) { /* noop */ }
+        renderAll();
+        showToastSafe('房间换成「' + bg.name + '」', 'success');
+      };
+      list.appendChild(btn);
+    });
+    if (!dlg.open && typeof dlg.showModal === 'function') dlg.showModal();
+  }
+
   function renderScene(state) {
     const host = el('pn-pets');
     if (!host) return;
@@ -2286,19 +2406,45 @@
     const empty = el('pn-empty');
     if (empty) empty.hidden = state.total > 0;
 
-    state.pets.slice(0, 12).forEach((pet, i) => {
+    // 🔴 2026-10-29: 背景图 / 精灵大小 / 站位 —— 全部跟着当前房间走
+    const room = currentRoomBackground();
+    const roomImg = el('pn-room-image');
+    if (roomImg) {
+      if (roomImg.getAttribute('src') !== room.img) roomImg.setAttribute('src', room.img);
+      roomImg.setAttribute('alt', room.alt || '');
+    }
+    try { host.style.setProperty('--pn-pet-w', room.petW + '%'); } catch (e) { /* noop */ }
+    try { host.style.setProperty('--pn-egg-w', (room.eggW || 11) + '%'); } catch (e) { /* noop */ }
+
+    // 🔴 蛋（还没孵出来）单独算：蛋不占地面的站位。
+    //    否则「屋里有 1 颗蛋 + 1 只猫」时，猫会被挤到一边去，
+    //    而用户就养一只 —— 那只猫必须是正中间的主角。
+    const split = splitPetsForRoom(state.pets);
+    const eggPets = split.eggPets;
+    const floorPets = split.floorPets;
+    const maxPets = room.maxPets || 3;
+    // 站位按【真的显示出来的只数】算 → 只有 1 只时它站正中间
+    const placed = [];
+    floorPets.slice(0, maxPets).forEach(function (pet, i, arr) {
+      const spot = roomSpotFor(room, i, arr.length);
+      placed.push({ pet: pet, x: spot.x, y: spot.y, egg: false });
+    });
+    eggPets.slice(0, room.eggSpots.length).forEach(function (pet, i) {
+      const egg = room.eggSpots[i];
+      placed.push({ pet: pet, x: egg.x, y: egg.y, egg: true });
+    });
+
+    placed.forEach(function (item) {
+      const pet = item.pet;
       const divine = !!(pet.appearance && pet.appearance.kind === 'divine');
       const hatched = !divine && isHatchKind(pet.kind) && pet.stage > 0;
       const btn = document.createElement('button');
       btn.className = 'pn-pet';
       btn.type = 'button';
       btn.setAttribute('aria-label', '照顾' + pet.name);
-      btn.style.left = (22 + (i % 4) * 19) + '%';
-      btn.style.top = (51 + Math.floor(i / 4) * 12) + '%';
-      if (isHatchKind(pet.kind) && pet.stage === 0) {
-        btn.style.left = (82 - (i % 3) * 5) + '%';
-        btn.style.top = (32 + Math.floor(i / 3) * 2) + '%';
-      }
+      btn.style.left = item.x + '%';
+      btn.style.top = item.y + '%';
+      if (item.egg) btn.classList.add('pn-pet-egg');
       if (divine) btn.classList.add('pn-pet-divine');
       else if (hatched) btn.classList.add('pn-pet-hatched');
 
@@ -3542,6 +3688,11 @@ function careActionForButton(btnId) {
     if (manageBtn) {
       manageBtn.onclick = () => openManageDialog();
     }
+    // 🎨 → 换房间背景 (2026-10-29)
+    const roomBtn = el('pn-room-switch');
+    if (roomBtn) {
+      roomBtn.onclick = () => openRoomPicker();
+    }
     document.querySelectorAll('[data-pn-action]').forEach(b => {
       b.onclick = () => doCare(b.getAttribute('data-pn-action'));
     });
@@ -4165,6 +4316,9 @@ function careActionForButton(btnId) {
 
   window.PetNest = {
     open: openPetNest,
+    // 🔴 2026-10-29: 房间背景 (多套可选)
+    getRoomBackground: currentRoomBackground,
+    roomBackgrounds: ROOM_BACKGROUNDS,
     // 备份 / 恢复（主库备份带不走独立库 PetNestDB，得走这两个口子）
     exportBackupData,
     importBackupData,

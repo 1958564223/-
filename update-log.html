@@ -166,11 +166,52 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.53 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.53</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title feat">新功能（宠物屋可以换房间背景了）</div>
+        <ul class="item-list">
+          <li><strong>你给的</strong> —— 「我想换成这张插画，可以把这个加进去备选吗，<strong>原来那个也留着，想选哪个选哪个</strong>」。</li>
+          <li><strong>新房间：星夜树屋</strong> —— 开满白花的树洞，挂着星星灯和水晶，窗外是远处的城堡。你那张图原比例是 940×1672，我裁到 <strong>1024×1536（跟原来那张一样是 2:3）</strong>，所以<strong>场景容器不用改</strong>，两张背景共用同一个比例。</li>
+          <li><strong>怎么换</strong> —— 小窝场景<strong>右上角多了一个 🎨 按钮</strong>，点一下弹出两间房的缩略图，选哪间就搬哪间；<strong>选中哪间会记住</strong>，下次进来还是你选的那间。</li>
+          <li><strong>原来那张「阳光小屋」还留着</strong> —— 老用户进来默认还是那间，随时能切回去。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title feat">精灵大一倍，槽位减到 3 个</div>
+        <ul class="item-list">
+          <li><strong>你又改了一次口</strong> —— 「<strong>精灵不要弄小了，我们基本上只养一只，不需要 12 个槽位，给我把屋里的宠物弄大点，现在大一倍都可以，不然看都看不清</strong>」。</li>
+          <li><strong>精灵大一倍</strong> —— 原来占场景宽度的 21%，现在 <strong>42%</strong>（手机上从 82px 变成 164px）。<strong>两间房一样大</strong>，不再是一套大一套小。</li>
+          <li><strong>12 个槽位 → 一排最多 3 只</strong>，而且<strong>只有 1 只的时候它站在正中间</strong>当主角（以前第 1 只固定在左上角）。2 只一左一右，3 只均匀铺开。</li>
+          <li><strong>没孵出来的蛋单独小一号</strong> —— 蛋待在阳光小屋的<strong>藤篮</strong>里、星夜树屋<strong>树洞那张床</strong>上，跟着精灵一起翻倍会糊住它们。</li>
+          <li><strong>蛋不占地面名额</strong> —— 所以「1 颗蛋 + 1 只猫」的时候，那只猫<strong>还是在正中间</strong>。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">为什么换背景要连带改站位</div>
+        <ul class="item-list">
+          <li>宠物是<strong>站在背景图上</strong>的，位置以前是写死的百分比 —— 照着「阳光小屋」那张图调的（地毯在 42%~68%，下面是木地板）。</li>
+          <li>换一张图，宠物就会<strong>浮空或者埋进家具里</strong>。所以现在<strong>每套背景自带自己的站位和精灵大小</strong>：阳光小屋站在地毯上（y=60%），星夜树屋站在蓝白圆毯上（y=80%）。</li>
+          <li>站位是<strong>拿真实精灵图一张张模拟出来的</strong>，不是拍脑袋填的 —— 名字标签被裁掉 0.4% 这种事都量过、改过。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">要看的</div>
+        <ul class="item-list">
+          <li>进小窝，点<strong>右上角的 🎨</strong>，看看两间房对不对。</li>
+          <li>星夜树屋那张要是哪里不对（比如宠物该站的位置、蛋该放哪），<strong>跟我说就行</strong>，站位是改数字的事。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.52 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.52</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复（影院「总结一段以后，再过两分钟没有发起总结」）</div>

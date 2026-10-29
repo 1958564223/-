@@ -48,6 +48,21 @@ function section(title) {
   console.log('\n== ' + title + ' ==');
 }
 
+// 版本号比较：actual >= floor ?
+// ⚠️ 别再写死确切版本号（`/v=0\.0\.2[2-9]/` 这种）——
+//    每 bump 一次就会误报一次（2026-10-29 又撞上一次）。
+//    一律用「不低于 x.y.z」逐段比大小。
+function verGE(actual, floor) {
+  const a = String(actual || '').replace(/^v/, '').split('.').map(Number);
+  const b = String(floor || '').replace(/^v/, '').split('.').map(Number);
+  if (a.length !== b.length || a.some(n => !Number.isFinite(n))) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] > b[i]) return true;
+    if (a[i] < b[i]) return false;
+  }
+  return true;
+}
+
 
 // ============================================================
 // 把 pet-nest.js 塞进 vm 沙箱, 取出纯规则
@@ -2019,10 +2034,12 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
   check('照顾项跟功能项之间有分隔线', /\.pn-menu-sep\s*\{/.test(css2));
 
   // ⑤ 版本号（SW 对 index.html 是 cache-first，不 bump 等于没改）
-  check('index.html 的 pet-nest.js ?v= 已 bump', /pet-nest\.js\?v=0\.0\.2[2-9]/.test(html2),
-    (html2.match(/pet-nest\.js\?v=([0-9.]+)/) || [])[1]);
-  check('index.html 的 pet-nest.css ?v= 已 bump', /pet-nest\.css\?v=0\.0\.1[3-9]/.test(html2),
-    (html2.match(/pet-nest\.css\?v=([0-9.]+)/) || [])[1]);
+  // ⚠️ 这两条原来写死 `0\.0\.2[2-9]` / `0\.0\.1[3-9]` —— bump 一次就误报一次，
+  //    改成「不低于 0.0.31 / 0.0.16」逐段比大小。
+  const petJsV = (html2.match(/pet-nest\.js\?v=([0-9.]+)/) || [])[1] || '';
+  const petCssV = (html2.match(/pet-nest\.css\?v=([0-9.]+)/) || [])[1] || '';
+  check('index.html 的 pet-nest.js ?v= 已 bump', verGE(petJsV, '0.0.31'), petJsV);
+  check('index.html 的 pet-nest.css ?v= 已 bump', verGE(petCssV, '0.0.16'), petCssV);
   // ⚠️ 这里原来写死 `/v0\.2\.8[2-9]\.\d+/` —— 每 bump 一次就会误报一次
   //   (2026-10-28 实测: sw.js 已经是 v0.2.84.0, 这条断言一直在报红;
   //    2026-10-29 又撞上 v0.2.90.0)。改成【逐段比大小, 只要不低于就过】。
@@ -2184,6 +2201,215 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
           '矩形无效时保守放行',
           fn(150, 190, { left: 0, top: 0, width: 0, height: 0 }, 0, boxes) === true);
       }
+    }
+  }
+
+
+  // ------------------------------------------------------------
+  section('多套房间背景: 两套都能选（2026-10-29 用户要的）');
+  {
+    const nestSrc3 = read('modules/pet-nest.js');
+    const cssSrc3 = read('css/pet-nest.css');
+    const htmlSrc3 = read('index.html');
+    const swSrc3 = read('sw.js');
+
+    // 从源码里抠出一个函数的完整函数体（用于在 vm 里跑真代码）
+    function extractFn2(src, name) {
+      const start = src.indexOf('function ' + name + '(');
+      if (start < 0) return '';
+      const rest = src.slice(start + 1);
+      const m = rest.match(/\n  (?:function |const |let |var |\/\/ )/);
+      if (!m) return src.slice(start);
+      return src.slice(start, start + 1 + m.index);
+    }
+
+    check('有 ROOM_BACKGROUNDS 配置表',
+      /const ROOM_BACKGROUNDS = \[/.test(nestSrc3));
+    check('配置表里有两套背景（阳光小屋 + 星夜树屋）',
+      /id:\s*'light'/.test(nestSrc3) && /id:\s*'star'/.test(nestSrc3));
+    check('每套背景都带自己的站位和精灵大小',
+      (nestSrc3.match(/petW:\s*\d+/g) || []).length >= 2 &&
+      (nestSrc3.match(/maxPets:\s*\d+/g) || []).length >= 2);
+
+    // ---- 行为级: 把配置表抠出来在 vm 里跑 (不解析字符串, 直接跑真代码) ----
+    const cfgStart = nestSrc3.indexOf('const ROOM_BACKGROUNDS = [');
+    const cfgEnd = nestSrc3.indexOf('\n  ];', cfgStart);
+    const cfgBlock = cfgStart >= 0 && cfgEnd > cfgStart
+      ? nestSrc3.slice(cfgStart, cfgEnd + 4) : '';
+    check('能抠出 ROOM_BACKGROUNDS 配置表', cfgBlock !== '');
+    let rooms = [];
+    if (cfgBlock) {
+      const sb = {};
+      vm.createContext(sb);
+      // ⚠️ const 是词法绑定, 不会挂到 sandbox global 上 → 显式导出来
+      vm.runInContext(cfgBlock + '\n; globalThis.__ROOMS = ROOM_BACKGROUNDS;', sb,
+        { filename: 'roomBg.js' });
+      rooms = sb.__ROOMS || [];
+    }
+    check('配置表里有 2 套背景', rooms.length === 2, rooms.length + ' 套');
+    check('★ 每套最多站 3 只（用户：基本上只养一只，不需要 12 个槽位）',
+      rooms.length === 2 && rooms.every(r => r.maxPets >= 1 && r.maxPets <= 3),
+      rooms.map(r => r.id + ':' + r.maxPets).join(' '));
+    check('每套都有蛋的位置（没孵化的蛋要单独摆）',
+      rooms.length === 2 && rooms.every(r => (r.eggSpots || []).length >= 1),
+      rooms.map(r => r.id + ':' + ((r.eggSpots || []).length)).join(' '));
+
+    // ★ 精灵大一倍（用户原话：「给我把屋里的宠物弄大点，现在大一倍都可以，不然看都看不清」）
+    check('★ 精灵宽度 ≥ 40%（原来 21%，正好大一倍）',
+      rooms.length === 2 && rooms.every(r => r.petW >= 40 && r.petW <= 60),
+      rooms.map(r => r.id + ':' + r.petW + '%').join(' '));
+    check('★ 两套背景的精灵一样大（不能一套大一套小）',
+      rooms.length === 2 && rooms[0].petW === rooms[1].petW,
+      rooms.map(r => r.id + ':' + r.petW + '%').join(' '));
+    check('★ 蛋单独小一号（跟着精灵翻倍会糊住藤篮 / 床）',
+      rooms.length === 2 && rooms.every(r => r.eggW > 0 && r.eggW < r.petW),
+      rooms.map(r => r.id + ':' + r.eggW + '/' + r.petW).join(' '));
+
+    const light = rooms.find(r => r.id === 'light');
+    const star = rooms.find(r => r.id === 'star');
+
+    // ---- 行为级: roomSpotFor（站位必须跟着「真的有几只」走） ----
+    // ⚠️ 下面的断言必须【无条件求值】—— 不能整块塞进 if(前置条件) 里。
+    //    以前塞进 if 之后: 线上版(根本没这个函数)整块被跳过,
+    //    断言一条都没报红 → 变成「假绿」(2026-10-29 反向验证当场抓到)。
+    const spotFnSrc = extractFn2(nestSrc3, 'roomSpotFor');
+    check('能抠出 roomSpotFor 的源码', spotFnSrc !== '');
+    let spot = null;
+    if (spotFnSrc && light) {
+      const sb3 = {};
+      vm.createContext(sb3);
+      vm.runInContext(cfgBlock + '\n' + spotFnSrc + '\n; globalThis.__spot = roomSpotFor;',
+        sb3, { filename: 'roomSpot.js' });
+      spot = sb3.__spot;
+    }
+    const s1 = (spot && light) ? spot(light, 0, 1) : null;
+    check('★ 只有 1 只 → 站正中间（x=50，不能歪在左上角）',
+      !!s1 && Math.abs(s1.x - 50) < 0.01, s1 ? 'x=' + s1.x : '没跑起来');
+
+    const a2 = (spot && light) ? spot(light, 0, 2) : null;
+    const b2 = (spot && light) ? spot(light, 1, 2) : null;
+    check('2 只 → 左右对称、都不贴边',
+      !!a2 && !!b2 && Math.abs((a2.x + b2.x) - 100) < 0.01 && a2.x > 10 && b2.x < 90,
+      a2 && b2 ? (a2.x + ' / ' + b2.x) : '没跑起来');
+
+    const x3 = (spot && light) ? [0, 1, 2].map(i => spot(light, i, 3).x) : null;
+    check('3 只 → 均匀铺开且左右对称',
+      !!x3 && Math.abs((x3[0] + x3[2]) - 100) < 0.01 && Math.abs(x3[1] - 50) < 0.01 &&
+      x3[0] > 5 && x3[2] < 95,
+      x3 ? x3.join(' / ') : '没跑起来');
+
+    const over = (spot && light) ? spot(light, 9, 9) : null;
+    check('★ 超过 maxPets 的也不会掉出画面',
+      !!over && over.x >= 5 && over.x <= 95, over ? 'x=' + over.x : '没跑起来');
+
+    check('★ 两套背景的站位互不相同（换背景 = 换房间，不是换贴图）',
+      !!light && !!star && light.rowY !== star.rowY,
+      light && star ? (light.rowY + ' vs ' + star.rowY) : '没跑起来');
+
+    // ---- 行为级: splitPetsForRoom（蛋不占地面的名额） ----
+    // ⚠️ 这条以前是源码级断言（只查「源码里有没有 eggPets 这个词」）→
+    //    拆函数以后那两个字样还在 → 断言照样绿 → 假绿。
+    //    改成【在 vm 里跑真函数】，看它到底分没分对。
+    const splitFnSrc = extractFn2(nestSrc3, 'splitPetsForRoom');
+    const hatchFnSrc = extractFn2(nestSrc3, 'isHatchKind');
+    check('能抠出 splitPetsForRoom 的源码', splitFnSrc !== '');
+    let split = null;
+    if (splitFnSrc && hatchFnSrc) {
+      const sb4 = { HATCH_KINDS: ['egg', 'parrot'] };
+      vm.createContext(sb4);
+      vm.runInContext(hatchFnSrc + '\n' + splitFnSrc + '\n; globalThis.__split = splitPetsForRoom;',
+        sb4, { filename: 'petSplit.js' });
+      split = sb4.__split;
+    }
+    const sp = split ? split([
+      { kind: 'cat', stage: 1 }, { kind: 'egg', stage: 0 },
+      { kind: 'parrot', stage: 0 }, { kind: 'dog', stage: 2 }
+    ]) : null;
+    check('★ 蛋单独分一堆（不占地面的名额）',
+      !!sp && sp.eggPets.length === 2 && sp.floorPets.length === 2,
+      sp ? ('蛋 ' + sp.eggPets.length + ' 只 / 地上 ' + sp.floorPets.length + ' 只') : '没跑起来');
+    check('★ 分对了：只有 stage=0 的蛋类进蛋堆',
+      !!sp && sp.eggPets.every(p => p.stage === 0) &&
+      sp.floorPets.every(p => !(p.stage === 0 && (p.kind === 'egg' || p.kind === 'parrot'))),
+      sp ? sp.eggPets.map(p => p.kind).join(',') + ' | ' + sp.floorPets.map(p => p.kind).join(',') : '');
+    check('★ renderScene 真的调用了 splitPetsForRoom（不是自己又写一遍）',
+      /splitPetsForRoom\(state\.pets\)/.test(nestSrc3));
+
+    // 所有站位坐标都得在画面内
+    const allSpots = rooms.flatMap(r => (r.eggSpots || []).concat([{ x: r.rowY, y: r.rowY }]));
+    check('所有站位坐标都在 0~100 之间（不会跑出画面）',
+      allSpots.length > 0 && allSpots.every(s =>
+        s.x >= 0 && s.x <= 100 && s.y >= 0 && s.y <= 100),
+      allSpots.length + ' 个坐标');
+
+    // ---- renderScene 必须查表 ----
+    check('renderScene 不再写死坐标（22 + (i % 4) * 19 这种必须没了）',
+      !/22 \+ \(i % 4\) \* 19/.test(nestSrc3));
+    check('★ 不再一次性渲染 12 只（槽位减到 3）',
+      !/state\.pets\.slice\(0,\s*12\)/.test(nestSrc3));
+    check('renderScene 从当前背景取站位（走 roomSpotFor）',
+      /roomSpotFor\(/.test(nestSrc3));
+    check('renderScene 从当前背景取精灵大小',
+      /--pn-pet-w/.test(nestSrc3));
+    check('renderScene 会换掉背景图本身',
+      /pn-room-image/.test(nestSrc3) && /roomImg\.setAttribute\('src'/.test(nestSrc3));
+
+    // ---- CSS: 精灵宽度走变量 ----
+    check('CSS 里 .pn-pet 的宽度走 var(--pn-pet-w, 42%)',
+      /width:\s*var\(--pn-pet-w,\s*42%\)/.test(cssSrc3));
+    check('★ CSS 里 max-width 不能还卡在 128px（会把放大的精灵掐回原大小）',
+      !/\.pn-pet\s*\{[^}]*max-width:\s*128px/.test(cssSrc3) &&
+      /\.pn-pet\s*\{[^}]*max-width:\s*300px/.test(cssSrc3));
+    check('CSS 里蛋单独小一号 (.pn-pet-egg)',
+      /\.pn-pet\.pn-pet-egg/.test(cssSrc3));
+
+    // ---- HTML: 按钮 + 对话框 ----
+    check('index.html 里有 🎨 换背景按钮',
+      /id="pn-room-switch"/.test(htmlSrc3));
+    check('index.html 里有换背景对话框',
+      /id="pn-room-dialog"/.test(htmlSrc3) && /id="pn-room-list"/.test(htmlSrc3));
+    check('背景图有 id（JS 要换它的 src）',
+      /id="pn-room-image"/.test(htmlSrc3));
+
+    // ---- 素材 + 预缓存 ----
+    const starImg = P('assets/pet-nest/room-star.webp');
+    check('新背景素材在（assets/pet-nest/room-star.webp）',
+      fs.existsSync(starImg),
+      fs.existsSync(starImg) ? Math.round(fs.statSync(starImg).size / 1024) + ' KB' : '没有');
+    check('sw.js 预缓存里有新背景（断网时也要能开）',
+      /\.\/assets\/pet-nest\/room-star\.webp/.test(swSrc3));
+
+    // ---- 行为级: currentRoomBackground ----
+    const fnSrc2 = extractFn2(nestSrc3, 'currentRoomBackground');
+    check('能抠出 currentRoomBackground 的源码', fnSrc2 !== '');
+    if (fnSrc2 && cfgBlock) {
+      function runWith(storage) {
+        const sb2 = {
+          ROOM_BACKGROUNDS: rooms,
+          STORAGE_KEYS: { roomBackground: 'petNestRoomBackground' },
+          localStorage: {
+            getItem: function (k) { return (k in storage) ? storage[k] : null; },
+            setItem: function (k, v) { storage[k] = String(v); }
+          }
+        };
+        vm.createContext(sb2);
+        vm.runInContext(cfgBlock + '\n' + fnSrc2, sb2, { filename: 'roomBgFn.js' });
+        return sb2.currentRoomBackground;
+      }
+      const get1 = runWith({});
+      const g1 = get1 ? get1() : null;
+      check('没选过时回默认那套（老用户看到的还是原来那张）',
+        !!g1 && g1.id === 'light', g1 ? g1.id : '没跑起来');
+
+      const get2 = runWith({ petNestRoomBackground: 'star' });
+      const g2 = get2 ? get2() : null;
+      check('★ 选了星夜树屋就返回星夜树屋',
+        !!g2 && g2.id === 'star', g2 ? g2.id : '没跑起来');
+
+      const get3 = runWith({ petNestRoomBackground: '不存在的' });
+      const g3 = get3 ? get3() : null;
+      check('存了乱七八糟的 id → 照样回默认那套（不能白屏）',
+        !!g3 && g3.id === 'light', g3 ? g3.id : '没跑起来');
     }
   }
 

@@ -309,14 +309,14 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
              没有参考图(首次生成) → 照旧写盲盒配色。羽化(终形态)例外，本就该换配色。
        index.html 的 ?v=：modules/pet-nest.js 0.0.25 → 0.0.26。
        ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。 -->
-  <script src="modules/pet-nest.js?v=0.0.29" defer></script>
+  <script src="modules/pet-nest.js?v=0.0.31" defer></script>
   <!-- 宠物屋的生图模块 (可选, 没有生图通道时宠物照样长大, 只是不换模样)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.getDb() 往同一个库存资产。 -->
   <script src="modules/pet-image.js?v=0.0.7" defer></script>
   <!-- 宠物说话系统 (宠物自己开口)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.listPets() 和 rules.dimensionScores()。 -->
   <script src="modules/pet-speech.js?v=0.0.3" defer></script>
-  <link rel="stylesheet" href="css/pet-nest.css?v=0.0.14">
+  <link rel="stylesheet" href="css/pet-nest.css?v=0.0.16">
   <!-- 主入口（最后加载，调用 init） -->
   <script src="modules/init-and-state.js?v=0.0.84" defer></script>
   <!-- 第九层：DOMContentLoaded 外部的独立模块 -->
@@ -8945,7 +8945,8 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
     <button type="button" class="pn-hint-go" id="pn-hint-go">去看看</button>  </div>
 
   <div class="pn-scene">
-    <img class="pn-room-image" src="assets/pet-nest/room-light.webp" alt="阳光下的绘本小屋，窗边有藤篮和柔软地毯">
+    <img id="pn-room-image" class="pn-room-image" src="assets/pet-nest/room-light.webp" alt="阳光下的绘本小屋，窗边有藤篮和柔软地毯">
+    <button id="pn-room-switch" class="pn-room-switch" type="button" title="换房间背景" aria-label="换房间背景">🎨</button>
     <div id="pn-pets"></div>
     <p id="pn-empty" class="pn-empty">小窝已经准备好了，<br>等一位宝宝来到你们身边。</p>
   </div>
@@ -9028,6 +9029,16 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
       <button class="pn-btn" type="button" data-pn-close>关上</button>
     </div>
     <div id="pn-album-list"></div>
+  </dialog>
+
+  <!-- 换房间背景 (2026-10-29) -->
+  <dialog id="pn-room-dialog">
+    <div class="pn-row">
+      <h2>换个房间</h2>
+      <button class="pn-btn" type="button" data-pn-close>关上</button>
+    </div>
+    <p class="pn-quiet">选一间，屋里的小家伙就搬到那儿去。</p>
+    <div id="pn-room-list" class="pn-room-list"></div>
   </dialog>
 </div>
 

@@ -699,7 +699,7 @@
 //
 //   index.html 的 ?v=：modules/cinema-live.js 2.2.0 → 2.3.0。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.96.0';
+const CACHE_VERSION = 'v0.2.97.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
@@ -771,6 +771,7 @@ const URLS_TO_CACHE = [
   './modules/pet-speech.js',
   './css/pet-nest.css',
   './assets/pet-nest/room-light.webp',
+  './assets/pet-nest/room-star.webp',
   './assets/pet-nest/cat-sprites-light.webp',
   './assets/pet-nest/dog-sprites-light.webp',
   './assets/pet-nest/egg-sprites-light.webp'

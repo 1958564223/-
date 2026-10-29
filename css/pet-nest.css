@@ -230,11 +230,13 @@
 #pet-nest-screen .pn-hint-go:hover { background: #b5772e; }
 
 /* 还没画像的宠物，头上挂个小金点 */
+/* ⚠️ 精灵大一倍以后，这个点原来的固定 4px / 16px 会飘到猫耳朵外面去
+   —— 改成按精灵大小走的百分比，点的位置不变。 */
 #pet-nest-screen .pn-pet-dot {
   position: absolute;
-  top: 4px;
+  top: 6%;
   left: 50%;
-  margin-left: 16px;
+  margin-left: 20%;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -275,10 +277,19 @@
   border: 0;
   background: transparent;
   padding: 0;
-  width: 21%;
-  max-width: 128px;
+  /* 🔴 2026-10-29: 每套房间的精灵大小不一样 (JS 按当前背景写这个变量) */
+  width: var(--pn-pet-w, 42%);
+  /* ⚠️ 原来是 128px —— 精灵放大到 42% 以后会被这个上限又掐回原大小
+     (手机上 42% ≈ 164px)，「大一倍」根本看不出来。跟着一起放到 300px。 */
+  max-width: 300px;
   text-align: center;
   cursor: pointer;
+}
+
+/* 还没孵出来的蛋：单独小一号，不跟着精灵一起翻倍（否则会糊住藤篮 / 床） */
+#pet-nest-screen .pn-pet.pn-pet-egg {
+  width: var(--pn-egg-w, 11%);
+  max-width: 120px;
 }
 
 #pet-nest-screen .pn-pet:hover {
@@ -797,6 +808,67 @@ dialog.pn-dialog {
   #pet-nest-screen .pn-scene { border-radius: 0; }
   /* 同样 +25% (原来 66px) */
   #pn-desktop-pet { --pn-desktop-pet-size: 83px; bottom: 110px; }
+}
+
+/* ============================================================
+   换房间背景 (2026-10-29)
+   · 场景右上角一个小按钮
+   · 选择器里每套背景一张缩略图
+   ============================================================ */
+
+#pet-nest-screen .pn-room-switch {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(122, 98, 62, .28);
+  background: rgba(250, 244, 230, .82);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+#pet-nest-screen .pn-room-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+#pet-nest-screen .pn-room-card {
+  width: 96px;
+  padding: 0;
+  border: 2px solid rgba(122, 98, 62, .2);
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+#pet-nest-screen .pn-room-card.is-current {
+  border-color: #c98a3c;
+  box-shadow: 0 0 0 2px rgba(201, 138, 60, .25);
+}
+
+#pet-nest-screen .pn-room-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+}
+
+#pet-nest-screen .pn-room-card-name {
+  display: block;
+  padding: 5px 4px;
+  font-size: 12px;
+  color: #6b5638;
+  background: rgba(250, 244, 230, .9);
 }
 
 /* ============================================================
