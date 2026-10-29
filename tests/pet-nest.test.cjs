@@ -2038,8 +2038,8 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
   //    改成「不低于 0.0.31 / 0.0.16」逐段比大小。
   const petJsV = (html2.match(/pet-nest\.js\?v=([0-9.]+)/) || [])[1] || '';
   const petCssV = (html2.match(/pet-nest\.css\?v=([0-9.]+)/) || [])[1] || '';
-  check('index.html 的 pet-nest.js ?v= 已 bump', verGE(petJsV, '0.0.31'), petJsV);
-  check('index.html 的 pet-nest.css ?v= 已 bump', verGE(petCssV, '0.0.16'), petCssV);
+  check('index.html 的 pet-nest.js ?v= 已 bump', verGE(petJsV, '0.0.32'), petJsV);
+  check('index.html 的 pet-nest.css ?v= 已 bump', verGE(petCssV, '0.0.17'), petCssV);
   // ⚠️ 这里原来写死 `/v0\.2\.8[2-9]\.\d+/` —— 每 bump 一次就会误报一次
   //   (2026-10-28 实测: sw.js 已经是 v0.2.84.0, 这条断言一直在报红;
   //    2026-10-29 又撞上 v0.2.90.0)。改成【逐段比大小, 只要不低于就过】。
@@ -2264,6 +2264,51 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
     check('★ 蛋单独小一号（跟着精灵翻倍会糊住藤篮 / 床）',
       rooms.length === 2 && rooms.every(r => r.eggW > 0 && r.eggW < r.petW),
       rooms.map(r => r.id + ':' + r.eggW + '/' + r.petW).join(' '));
+    // ⚠️ 用户 2026-10-29 看完图后说「星夜图的蛋太小了差点没看见」→ 蛋必须有下限
+    check('★ 蛋够大，看得见（≥14%，不然用户说差点没看见）',
+      rooms.length === 2 && rooms.every(r => r.eggW >= 14),
+      rooms.map(r => r.id + ':' + r.eggW + '%').join(' '));
+
+    // ---- 脚到底落在哪儿（用户 2026-10-29：「老背景的宠物全部站在地毯外面去了」）----
+    // 公式（跟 CSS 一致）：
+    //   精灵是正方形 → 高 = 宽 = petW% * 场景宽；场景 aspect-ratio 2/3 → 高占场景高的 petW*2/3%
+    //   .pn-pet 整个按钮(sprite + 名字标签) 用 translate(-50%,-50%) 居中在 (left,top) 上
+    //   → 脚(精灵底) = rowY + (sprite高% - 标签高%) / 2，标签高 ≈ 4.4% 场景高
+    const SCENE_ASPECT = 2 / 3;
+    const LABEL_H_PCT = 4.4;
+    function feetPct(room) {
+      const spriteH = room.petW * SCENE_ASPECT;
+      return room.rowY + (spriteH - LABEL_H_PCT) / 2;
+    }
+    const lightRoom = rooms.find(r => r.id === 'light');
+    const starRoom = rooms.find(r => r.id === 'star');
+    // 阳光小屋的地毯 = 38%~62%（实测：浅色低饱和像素占比在 38%~62% 一段是高的）
+    // ⚠️ 断言必须【无条件求值】—— 不能用 if(lightRoom) 包着,
+    //    线上版没这间房时整条会被跳过 → 又变成假绿。
+    const lightFeet = lightRoom ? feetPct(lightRoom) : null;
+    check('★ 阳光小屋的宠物脚落在地毯上（地毯 38%~62%）',
+      lightFeet !== null && lightFeet >= 38 && lightFeet <= 62,
+      lightFeet !== null ? '脚在 ' + lightFeet.toFixed(1) + '%' : '没有这间房');
+    // 星夜树屋底部的蓝白圆毯 ≈ 84%~98%
+    const starFeet = starRoom ? feetPct(starRoom) : null;
+    check('★ 星夜树屋的宠物脚落在底部圆毯上（84%~98%）',
+      starFeet !== null && starFeet >= 84 && starFeet <= 98,
+      starFeet !== null ? '脚在 ' + starFeet.toFixed(1) + '%' : '没有这间房');
+    // ---- 3 只并排时左右不能裁边（精灵 42% 宽，间距不够就会切掉爪子尾巴）----
+    function edgeOf(room) {
+      const step = Math.min(room.rowSpread || 33, 66 / ((room.maxPets || 3) - 1));
+      const leftX = 50 - step * ((room.maxPets || 3) - 1) / 2;
+      const rightX = 50 + step * ((room.maxPets || 3) - 1) / 2;
+      return { left: leftX - room.petW / 2, right: rightX + room.petW / 2 };
+    }
+    const eL = lightRoom ? edgeOf(lightRoom) : null;
+    const eS = starRoom ? edgeOf(starRoom) : null;
+    check('★ 3 只并排左右不裁边（边缘在 0%~100% 之间）',
+      !!eL && !!eS && eL.left >= 0 && eL.right <= 100 && eS.left >= 0 && eS.right <= 100,
+      (eL && eS)
+        ? ('阳光小屋 ' + eL.left.toFixed(1) + '%~' + eL.right.toFixed(1) + '%  ' +
+           '星夜树屋 ' + eS.left.toFixed(1) + '%~' + eS.right.toFixed(1) + '%')
+        : '没有这两间房');
 
     const light = rooms.find(r => r.id === 'light');
     const star = rooms.find(r => r.id === 'star');

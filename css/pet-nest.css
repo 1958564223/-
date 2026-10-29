@@ -287,8 +287,9 @@
 }
 
 /* 还没孵出来的蛋：单独小一号，不跟着精灵一起翻倍（否则会糊住藤篮 / 床） */
+/* fallback 14%：JS 会按房间写准（阳光小屋 14% / 星夜树屋 20%） */
 #pet-nest-screen .pn-pet.pn-pet-egg {
-  width: var(--pn-egg-w, 11%);
+  width: var(--pn-egg-w, 14%);
   max-width: 120px;
 }
 
