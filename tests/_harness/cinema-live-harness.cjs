@@ -122,6 +122,11 @@ async function runScenario(cfg) {
     transcriptChunks: 4,
     audioBase64Len: 80 * 1024,     // 每条消息带 80KB base64 音频
     label: 'scenario',
+    // 🔴 2026-10-29: 每秒钩子(探针用) —— 模拟用户切后台/暂停/换片
+    onSecond: null,
+    // 🔴 2026-10-29: 模拟真机「live 掉线 + 重连迟迟不 ready」
+    dropLiveAtMs: null,
+    stallSetupUntilMs: null,
     // 🔴 2026-10-29: 实况通道的三种模式。
     //   off      = 完全关掉 (d0f41e1 之前的样子: Live 只看画面 + 每 5 分钟一段总结)
     //   live     = 旧做法: 实况发 Live turn (要配旧版 cinema-live.js)
@@ -146,6 +151,8 @@ async function runScenario(cfg) {
   opts.frameBase64Len = cfg && cfg.frameBase64Len ? cfg.frameBase64Len : frameBytesForSource(liveSrc);
 
   const clock = makeClock();
+  // 🔴 2026-10-29: 场景起点 —— dropLiveAtMs / stallSetupUntilMs 都按【相对】毫秒算
+  const baseNow = clock.now();
   const stats = {
     bytesOut: 0, bytesIn: 0, audioBytesIn: 0, messagesIn: 0,
     frameCount: 0, frameBytes: 0, turnCount: 0, turnDone: 0,
@@ -155,6 +162,8 @@ async function runScenario(cfg) {
     serialQueue: [],      // 真串行队列 (Live 的 turn 就是串行的)
     serialPumping: false,
     providerCalls: 0,        // 实况 provider 被叫了几次 (走主 API 的次数)
+    sockets: [],             // 所有假 socket (用来做「中途断线」)
+    liveDropped: false
   };
   const chatLines = [];
 
@@ -165,6 +174,7 @@ async function runScenario(cfg) {
       this.url = url;
       this.readyState = 0;
       this.bufferedAmount = 0;
+      stats.sockets.push(this);
       later(() => {
         this.readyState = 1;
         if (this.onopen) this.onopen();
@@ -179,7 +189,17 @@ async function runScenario(cfg) {
       if (msg.setup) {
         stats.setupCount++;
         if (stats.setupCount > 1) stats.fresh++;   // 第二次 setup = 换了一次干净会话
-        later(() => this.deliver({ setupComplete: {} }), 30);
+        // 🔴 2026-10-29: stall 窗口内不发 setupComplete → live 一直不 ready
+        const relMs = clock.now() - baseNow;
+        const stalling = opts.dropLiveAtMs !== null && opts.dropLiveAtMs !== undefined &&
+          relMs >= opts.dropLiveAtMs &&
+          (opts.stallSetupUntilMs === null || opts.stallSetupUntilMs === undefined ||
+            relMs < opts.stallSetupUntilMs);
+        if (stalling) {
+          stats.setupStalled = (stats.setupStalled || 0) + 1;
+        } else {
+          later(() => this.deliver({ setupComplete: {} }), 30);
+        }
         return;
       }
       if (msg.realtimeInput && msg.realtimeInput.video) {
@@ -398,6 +418,23 @@ async function runScenario(cfg) {
     video.currentTime = t / 1000;
     clock.advance(1000);
     for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    // 每秒钩子
+    if (typeof opts.onSecond === 'function') {
+      try { await opts.onSecond(t, ctx, stats); } catch (e) { /* noop */ }
+    }
+
+    // 🔴 2026-10-29: 到点主动断线 (模拟 iOS 切后台必断 WebSocket)
+    if (opts.dropLiveAtMs !== null && opts.dropLiveAtMs !== undefined &&
+        (clock.now() - baseNow) >= opts.dropLiveAtMs && !stats.liveDropped) {
+      stats.liveDropped = true;
+      const last = stats.sockets[stats.sockets.length - 1];
+      if (last && !last.closed && last.readyState === 1) {
+        last.closed = true;
+        last.readyState = 3;
+        if (last.onclose) last.onclose({ code: 1006, reason: '切后台断了' });
+      }
+    }
   }
 
   const c = ctx.CinemaLive.getCinemaContext();

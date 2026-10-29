@@ -47,12 +47,15 @@ const read = (rel) => fs.readFileSync(P(...rel.split('/')), 'utf8');
 
 let passed = 0;
 let failed = 0;
+// 机器可读失败清单（反向验证脚本靠它做集合比对，别删）
+const failedNames = [];
 function ok(name, detail) {
   passed++;
   console.log('  [PASS] ' + name + (detail ? '  ' + detail : ''));
 }
 function fail(name, detail) {
   failed++;
+  failedNames.push(name);
   console.log('  [FAIL] ' + name + (detail ? '  ' + detail : ''));
 }
 function check(name, cond, detail) {
@@ -219,6 +222,51 @@ function countOf(hay, needle) {
     label: '模型写太短', turnLatencyMs: 3000, summaryText: '就写了一句。'
   });
   check('写太短时确实没写进去 (前提成立)', tooShort.segCount === 0, tooShort.segCount + ' 段');
+
+  // -------------------------------------------------------------------------
+  section('8. live 掉线后必须能自己爬起来（用户 2026-10-29 实测「只总结了第一段」）');
+  // -------------------------------------------------------------------------
+  check('重试用完 MAX_RETRY 不能彻底放弃（放弃 = live 永远回不来 = 剧情一句都不写）',
+    /不会放弃, 改成每 60 秒再试一次/.test(LIVE));
+
+  // ---- 其余几条「停了定时器却没人重排」的路径 ----
+  check('有摘要看门狗（定时器丢了就补排 / live 掉线就重连）',
+    /function startSummaryWatchdog/.test(LIVE) && /看门狗: 摘要定时器不见了/.test(LIVE) &&
+    /startSummaryWatchdog\(\);/.test(LIVE));
+  check('resumeFrames 时 live 还没 ready, 也要把摘要定时器排上（iOS 切后台必断 WebSocket）',
+    /恢复发帧时 live 还没就绪, 摘要定时器照排/.test(LIVE));
+  check('enable 失败时要安排重连（不能把关掉 enabled 当成处理办法）',
+    /scheduleReconnect\('连接失败: /.test(LIVE));
+  // ⚠️ 必须限定在 onClientState 函数体内 —— 全局搜 state === 'error'
+  //   会扫到别处, 断言就永远是绿的 (假绿)。
+  const onStateBody = LIVE.slice(LIVE.indexOf('function onClientState'),
+    LIVE.indexOf('function onClientState') + 3000);
+  check('onClientState 处理 error 状态（连失败一次就永不重连的老毛病）',
+    /state === 'error'/.test(onStateBody));
+  // ⚠️ 必须只扫 tickStageSummary 的函数体 ——
+  //   scheduleStageSummary 里也有 watchSession.summaryTimer = null;
+  //   全局搜的话这条永远是绿的（假绿）。
+  const tickBody = LIVE.slice(LIVE.indexOf('function tickStageSummary()'),
+    LIVE.indexOf('function tickStageSummary()') + 500);
+  check('tick 会清掉已触发的定时器句柄（看门狗据此判断「定时器不见了」）',
+    /watchSession\.summaryTimer = null;/.test(tickBody));
+  check('放弃过一次之后要能一直重试下去（不是 return 掉）',
+    /改用 60 秒间隔继续重试/.test(LIVE));
+
+  // 场景: 12 分钟, 第 4 分钟断线, 第 4~8 分钟重连一直不 ready。
+  //   第 4~10 分钟写不了是【场景本身】(live 那段不可用), 不是 bug。
+  //   → 期望 >= 2 段 (第 2 分钟 + 第 10 分钟); 旧版只有 1 段。
+  const stalled = await runScenario({
+    label: '中途断线 + 重连迟迟不 ready',
+    minutes: 12,
+    dropLiveAtMs: 4 * 60 * 1000,
+    stallSetupUntilMs: 8 * 60 * 1000
+  });
+  check('★ live 掉线又恢复后, 摘要还能继续写 (旧版彻底放弃 → 只写第一段)',
+    stalled.segCount >= 2, stalled.segCount + ' 段 (12 分钟, 其中 4 分钟 live 不可用)');
+  check('掉线期间有明确提示, 不是闷声不响',
+    stalled.chatLines.some(l => /还没连上|重连|连接断开/.test(l)),
+    stalled.chatLines.slice(-3).join(' / '));
   const warned = tooShort.chatLines.some(l => /没写进去|没总结出来/.test(l));
   check('聊天框里给出了提示 (修前是完全静默)', warned,
     warned ? '' : '聊天框内容: ' + JSON.stringify(tooShort.chatLines.slice(-3)));
@@ -226,6 +274,7 @@ function countOf(hay, needle) {
   // -------------------------------------------------------------------------
   console.log('\n========================================');
   console.log('  通过: ' + passed + '   失败: ' + failed);
+  console.log('__FAILURES__' + failedNames.join('\u0001'));
   console.log('========================================');
   if (failed > 0) process.exit(1);
 })().catch(function (e) {

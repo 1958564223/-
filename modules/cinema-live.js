@@ -1775,6 +1775,9 @@
   }
 
   function tickStageSummary() {
+    // ⚠️ 已触发的定时器句柄要清掉 —— 否则看门狗会以为「定时器还在」,
+    //   就算它真的丢了也不会补排。
+    watchSession.summaryTimer = null;
     // ⚠️⚠️ 每一条提前 return 的分支都必须重新排下一次定时器!
     //
     // 2026-10-04 用户实测: 视频断续放了十几分钟, 一份剧情摘要都没有, 退出也没写记忆。
@@ -3052,6 +3055,46 @@
     });
   }
 
+  // ============================================================
+  // 摘要看门狗 (2026-10-29 用户实测「只总结了第一段, 之后就再也没总结」)
+  // ============================================================
+  // 历史上有多条路径会 stopStageSummary() 却【没人重排】——
+  //   ① resumeFrames() 里 live 还没 ready 就 return (iOS 切后台必断 WebSocket)
+  //   ② enable() 失败时 S.enabled = false
+  //   ③ onVideoSourceChanged() → disable() (换片)
+  // 只要撞上其中一条, 摘要定时器就没了, 之后每一轮 tick 都早退 → 一句都不写。
+  // 看门狗每 30 秒兜一次: 定时器不见了就补排, live 掉线就安排重连。
+  var SUMMARY_WATCHDOG_MS = 30000;
+  var summaryWatchdogTimer = null;
+
+  function startSummaryWatchdog() {
+    if (summaryWatchdogTimer) return;
+    summaryWatchdogTimer = setInterval(function () {
+      if (!S.enabled || S._leaving) return;
+      // ① 摘要定时器不见了 → 补排一个
+      if (!watchSession.summaryTimer) {
+        log('看门狗: 摘要定时器不见了, 补排一个');
+        scheduleStageSummary();
+      }
+      // ② live 停在坏状态, 而且没在重连 → 安排重连
+      //    ⚠️ 只在 closed/error/idle 时管 —— connecting/connected 是正在建, 别插手
+      if (S.client && !_retryTimer && !watchSession.summaryBusy) {
+        var st = S.client.state;
+        if (st === 'closed' || st === 'error' || st === 'idle') {
+          logWarn('看门狗: live 停在 ' + st + ', 安排重连');
+          scheduleReconnect('live 长时间不可用');
+        }
+      }
+    }, SUMMARY_WATCHDOG_MS);
+  }
+
+  function stopSummaryWatchdog() {
+    if (summaryWatchdogTimer) {
+      clearInterval(summaryWatchdogTimer);
+      summaryWatchdogTimer = null;
+    }
+  }
+
   function stopStageSummary() {
     if (watchSession.summaryTimer) {
       clearTimeout(watchSession.summaryTimer);
@@ -3267,6 +3310,7 @@
   }
   function clearRetry() {
     _retryCount = 0;
+    S._reconnectGaveUp = false;      // 真的连上了 → 那个「已放弃」的提示可以撤
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
   }
 
@@ -3323,10 +3367,25 @@
     }
 
     if (_retryCount >= MAX_RETRY) {
-      logWarn('重连次数用完 (' + MAX_RETRY + '), 放弃自动重连');
-      appendSystemLine('⚠️ 连续重连 ' + MAX_RETRY + ' 次仍失败，已停止自动重连。原因：' + reason +
-        '　可以在房间右上角 ⚙「设置」里确认 key 是否填对。');
-      renderStatus('closed', '重连失败');
+      // 🔴 2026-10-29 (用户实测「只总结了第一段, 之后就再也没总结」):
+      //   原来这里直接 return —— 【彻底放弃】→ live 永远回不来
+      //   → isReady() 永远为假 → 剧情摘要一句都不写 (只留下第一段)。
+      //   现在: 不放弃, 改成【每 60 秒继续重试】, 计数清零重来;
+      //   提示只说一次, 不刷屏。
+      if (!S._reconnectGaveUp) {
+        S._reconnectGaveUp = true;
+        appendSystemLine('⚠️ 连续重连 ' + MAX_RETRY + ' 次仍失败 —— 不会放弃, 改成每 60 秒再试一次。原因：' + reason +
+          '　可以在房间右上角 ⚙「设置」里确认 key 是否填对。');
+      }
+      logWarn('重连 ' + MAX_RETRY + ' 次仍失败, 改用 60 秒间隔继续重试');
+      renderStatus('connecting', '重连中 (60 秒一次)');
+      _retryCount = 0;
+      if (_retryTimer) clearTimeout(_retryTimer);
+      _retryTimer = setTimeout(function () {
+        _retryTimer = null;
+        if (!S.enabled || S._userDisabled || S._leaving) return;
+        attemptReconnect(flapped);
+      }, 60000);
       return;
     }
     var delay = RETRY_BASE_MS * Math.pow(2, _retryCount);
@@ -3339,6 +3398,19 @@
       _retryTimer = null;
       if (!S.enabled || S._userDisabled || S._leaving) return;
       if (!S.client) { enable(); return; }
+      attemptReconnect(flapped);
+    }, delay);
+  }
+
+  /**
+   * 真正去重连一次 (退避定时器到点了就调它)。
+   *
+   * 🔴 2026-10-29 抽出来: 退避到头 (MAX_RETRY 用完) 之后, 改成【每 60 秒重试一次】
+   *   也要走同一条重连逻辑, 不能另写一份 (不然两边的修复会走岔)。
+   */
+  function attemptReconnect(flapped) {
+    if (!S.enabled || S._userDisabled || S._leaving) return;
+    if (!S.client) { enable(); return; }
 
       // 🔴 2026-10-16 用户实测「连了断了连, 最后彻底连不上」的根因。
       //
@@ -3377,7 +3449,6 @@
           try { if (S.client) S.client.setResumeHandle(null); } catch (e) { /* noop */ }
           scheduleReconnect(err.message);
         });
-    }, delay);
   }
 
   // ============================================================
@@ -3414,6 +3485,13 @@
       if (v0 && !v0.paused && !v0.ended && !S.paused) markPlaying();
       scheduleStageSummary();
       renderPlotPanel();
+    } else if (state === 'error') {
+      // 🔴 2026-10-29: 之前 'error' 状态【完全没处理】——
+      //   live-client 连失败时会进 error, 于是连一次失败就永远不重连。
+      if (S.autoMode && !S._userDisabled && !S._leaving) {
+        diagPush('error', { why: String(detail || '') });
+        scheduleReconnect('连接出错: ' + (detail || '未知原因'));
+      }
     } else if (state === 'closed' && S.autoMode && !S._userDisabled) {
       // 🔴 2026-10-16: 断线这一刻先把在途的摘要请求作废 (理由见 abortPendingSummary)。
       //   少了这一句, 那个请求会赖到 45s 超时, 期间新一集一集都不再总结,
@@ -3441,6 +3519,7 @@
     }
 
     S.enabled = true;
+    startSummaryWatchdog();
     S.framesSent = 0;
     S.paused = false;
     S._userDisabled = false;
@@ -3539,9 +3618,16 @@
       })
       .catch(function (err) {
         log('连接失败:', err.message);
-        S.enabled = false;
+        // 🔴 2026-10-29 (用户实测「live 断了就再也不总结」):
+        //   原来这里 S.enabled = false —— 于是摘要那条路每次都早退,
+        //   而且再也没人安排重连 → live 永远回不来 → 剧情一句都不写。
+        //   现在: 保持 enabled, 把重连交给 scheduleReconnect (指数退避);
+        //   实在重连不上 (MAX_RETRY 用完) 才由它自己停。
         renderStatus('error', err.message);
-        appendSystemLine('❌ Gemini Live 连接失败: ' + err.message);
+        appendSystemLine('❌ Gemini Live 连接失败: ' + err.message + ' —— 正在重试…');
+        if (S.autoMode && !S._userDisabled && !S._leaving) {
+          scheduleReconnect('连接失败: ' + err.message);
+        }
         return false;
       });
   }
@@ -3549,6 +3635,7 @@
   function disable(reason) {
     log('停用 Gemini Live' + (reason ? ' (' + reason + ')' : ''));
     clearRetry();
+    stopSummaryWatchdog();
     stopStageSummary();      // 连 Live 都断了, 摘要定时器必须跟着停
     stopFrameLoop();
     if (S.client) {
@@ -3941,7 +4028,17 @@
   }
 
   function resumeFrames(reason) {
-    if (!S.enabled || !S.client || !S.client.isReady()) return;
+    if (!S.enabled) return;
+    // 🔴 2026-10-29 (用户实测「切后台回来后再也不总结」):
+    //   iOS PWA 切后台必断 WebSocket, 回来时 live 还没 ready。
+    //   原来这里直接 return → 摘要定时器永远不排 → 此后再也不总结。
+    //   现在: 就算 live 还没 ready, 也要把摘要定时器排上;
+    //   live 什么时候回来, 由看门狗负责盯。
+    if (!S.client || !S.client.isReady()) {
+      if (!S._leaving) scheduleStageSummary();
+      log('恢复发帧时 live 还没就绪, 摘要定时器照排' + (reason ? ' (' + reason + ')' : ''));
+      return;
+    }
     S.paused = false;
     // 计时恢复: 从头起算播放时长, 再按"这一轮还差多少"重新排定时器。
     markPlaying();

@@ -166,11 +166,44 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.51 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.51</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title fix">修复（影院只总结了第一段，之后就再也没总结）</div>
+        <ul class="item-list">
+          <li><strong>你报的</strong> —— 「又是只总结了第一个 2 分钟的剧情，就是第一段，<strong>之后就再也没总结了，换了一集看也没总结</strong>」。</li>
+          <li><strong>这次是真复现出来了</strong> —— 上次没抓到的原因：那条测试只要求「<strong>至少写了 1 段</strong>」，而你的症状正好是「只有第一段」→ 1 段也算通过，所以一直没人发现。这次把测试改严，并且<strong>在同一个场景下把旧版跑了一遍</strong>：旧版写的段数和你看到的一模一样。</li>
+          <li><strong>真因</strong> —— 连接断了以后，程序会重连 5 次；<strong>5 次都失败它就彻底放弃了</strong>（提示写着「已停止自动重连」）。live 永远回不来 → 它就没法看画面 → <strong>剧情就再也写不出来了</strong>，只留下断之前的那一段。</li>
+          <li><strong>还有几条同路的坑</strong>：切后台回来时如果 live 还没接上，摘要的计时器<strong>直接就不排了</strong>；连接失败一次就把整个功能<strong>关掉</strong>；连接进「出错」状态时<strong>没人管</strong>，一次失败就永远不重连。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">这次改了什么</div>
+        <ul class="item-list">
+          <li><strong>不再彻底放弃</strong> —— 重连 5 次失败后改成<strong>每 60 秒继续试一次</strong>，永远不会自己放弃（提示只说一次，不会刷屏）。</li>
+          <li><strong>加了看门狗</strong> —— 每 30 秒看一眼：<strong>摘要的计时器丢了就补上</strong>；<strong>live 掉线了就安排重连</strong>。上面那几条坑不管从哪条路踩进来，都会被它兜住。</li>
+          <li><strong>切后台回来也能接着写</strong> —— 以前这时如果 live 还没接上就直接放弃了，现在会照常排上计时器。</li>
+          <li><strong>连接失败不再把功能整个关掉</strong>，改成交给重连；<strong>「出错」状态也会安排重连</strong>（以前一次失败就永远不重连）。</li>
+          <li><strong>画面、画质、总结节奏都没动</strong>（还是一秒一帧、长边 768、每 2 分钟一段）。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">要看的</div>
+        <ul class="item-list">
+          <li>看本地长剧，<strong>过几分钟应该能连着总结好几次</strong>。</li>
+          <li>万一这次还是只写了一段，<strong>把影院的聊天框截个图给我</strong> —— 里面现在会明说卡在哪一步（「还没连上」「重连中」「连续重连失败」），一眼就能看出来，比再猜一轮快得多。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.50 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.50</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title fix">修复（影院 live 断了重连不上 / 再进去看再久都不总结剧情）</div>

@@ -672,7 +672,34 @@
 //   modules/cinema-live.js 2.1.0 → 2.2.0、
 //   modules/pet-nest.js 0.0.28 → 0.0.29。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.94.0';
+//
+// ── v0.2.95.0 ─────────────────────────────────────────────────
+//   【本轮】影院「只总结了第一段, 之后就再也没总结」(用户 2026-10-29 实测)
+//
+//   【为什么之前一直没抓住】tests/cinema-heat.test.cjs 第 6 节只断言
+//     `segCount >= 1` —— 而用户的症状正好是「只有第一段」, >= 1 照样通过!
+//   探针 _reports/pet-test/probe-cinema-stall-ab.cjs 在同一场景下:
+//     线上版(origin/main) = 1 段  ← 用户的症状原样重现
+//     修好后             = 2 段  ← live 能自己爬起来
+//
+//   【真因】重连 5 次失败后【彻底放弃】→ live 永远回不来
+//     → isReady() 永远为假 → 剧情摘要一句都不写 (只留下第一段)。
+//     诊断原文: 「连续重连 5 次仍失败，已停止自动重连。」
+//
+//   cinema-live.js 改了这些:
+//     · scheduleReconnect: MAX_RETRY 用完不再 return 死掉, 改成每 60 秒继续重试
+//       (提示只说一次, 不刷屏); 重连执行体抽成 attemptReconnect()
+//     · 新增【摘要看门狗】: 每 30 秒检查 —— 摘要定时器丢了就补排,
+//       live 停在 closed/error/idle 就安排重连
+//     · resumeFrames: live 还没 ready 也要把摘要定时器排上
+//       (iOS PWA 切后台必断 WebSocket, 原来这里直接 return → 定时器永远没了)
+//     · enable() 失败不再 S.enabled = false (关掉 = 摘要每次早退 + 再也没人重连)
+//     · onClientState: 补 error 状态分支 (连失败一次就永不重连的老毛病)
+//     · tickStageSummary: 清掉已触发的定时器句柄 (看门狗据此判断定时器不见了)
+//
+//   index.html 的 ?v=：modules/cinema-live.js 2.2.0 → 2.3.0。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.95.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
