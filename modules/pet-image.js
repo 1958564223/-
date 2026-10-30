@@ -144,6 +144,36 @@
     return d > 0 ? d : 0;
   }
 
+  /**
+   * ⚠️【2026-10-30 用户定】「以后用用户指定的形象垫图」
+   *   以前每天换装是拿【上一张图（六格图集）】当参考图 → 每天在昨天那张上改 →
+   *   脸会一天比一天偏（用户原话「越画越不像了，时间久了肯定更严重」）。
+   *   → 改成拿用户上传的【一张图】当垫图，每次都从同一个锚点出发。
+   *
+   * 参考图从「六格图集」换成「一张单图」后，提示词必须跟着换：
+   *   原来那句兜底是 "The reference image shows the same character in six poses."
+   *   —— 对着单张图说这话就是在骗模型（模型会以为参考图里有六只/六个姿势）。
+   */
+  const PORTRAIT_REFERENCE_NOTE =
+    'The reference image is a SINGLE PICTURE of this character - one character, one pose, one picture. '
+    + 'Take ONLY its species, face shape, body proportions, fur or skin colours, eye colour and markings from it. '
+    + 'IGNORE everything else in the reference image: ignore its clothes, its accessories, '
+    + 'its background, its scenery and its lighting. '
+    + 'Where the description above and the reference image disagree about the species or the colours, '
+    + 'follow the reference image. '
+    // ⚠️【2026-10-30 用户当面纠正】「不许抄参考图里那个姿势」是错的 ——
+    //   参考图里那个姿势【本来就是 6 个标准姿势之一】（用户给的是一张满意的破壳图，
+    //   画的是它坐着的样子）→ 禁掉它 = 六格里有一格画不出来。
+    //   → 只保留「六格必须是六个不同姿势、不许重复」这一条。
+    + 'Draw that same character in the SIX poses described above - '
+    + 'all six cells must show six clearly different poses, never the same pose repeated. '
+    + 'In every one of the six cells the character is drawn small and centered in its own cell, '
+    + 'filling only about 75% of that cell with a clear empty margin all around it, '
+    + 'and never touching or crossing the cell edges.';
+
+  /** 用户上传的初始形象：处理完的最长边（像素） */
+  const SPECIES_IMAGE_MAX = 640;
+
   function loadImage(blobOrUrl) {
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -162,6 +192,40 @@
         resolve(null);
       }
     });
+  }
+
+  /**
+   * 用户上传的「初始物种形象」→ 处理成能直接当参考图的方形 PNG
+   *
+   *   ① 居中裁成正方形 —— 参考图是单只，长宽比不对模型会自己发挥构图
+   *   ② 缩到最长边 SPECIES_IMAGE_MAX —— 太大 → 请求慢，还容易被接口拒
+   *   ③ 转 PNG —— /images/edits 的 multipart 里文件名写死 reference.png
+   *
+   * ⚠️ 不做本地抠图：真实照片的背景很难在本地抠干净，
+   *   背景/衣服一律靠提示词让模型忽略（见 PORTRAIT_REFERENCE_NOTE）。
+   *
+   * 用法: 用户的破壳图通常是【单张坐着的样子】→ 居中裁方正好把这只圈出来。
+   */
+  async function prepareSpeciesImage(file) {
+    if (!file) throw new Error('没有选到图片');
+    const img = await loadImage(file);
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    if (!w || !h) throw new Error('这张图解码失败（换个文件试试）');
+    const side = Math.min(w, h);
+    const sx = Math.floor((w - side) / 2);
+    const sy = Math.floor((h - side) / 2);
+    const size = Math.max(1, Math.min(SPECIES_IMAGE_MAX, side));
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+    const blob = await canvasToBlob(canvas, 'image/png');
+    if (!blob) throw new Error('这张图转不出来（换个格式试试）');
+    return blob;
   }
 
   // ============================================================
@@ -1129,7 +1193,12 @@
       throw new Error('今天生图次数用完了（上限 ' + limit + ' 次），明天再说');
     }
     if (!referenceBlob) throw new Error('没有参考图，不能蜕变');
-    const prompt = buildEvolvePrompt(subject, change, undefined, o);
+    // ⚠️【2026-10-30】参考图有两种，提示词写法不一样：
+    //   'atlas'（默认）= 上一张六格图集 → 兜底那句「参考图里是同一个角色的六个姿势」是对的
+    //   'portrait'     = 用户上传的初始形象（一张单图）→ 必须换成「这是单张图，只取长相」
+    const refNote = o.referenceNote
+      || (o.referenceKind === 'portrait' ? PORTRAIT_REFERENCE_NOTE : undefined);
+    const prompt = buildEvolvePrompt(subject, change, refNote, o);
     const { blob } = await callEdits(prompt, referenceBlob);
     bumpTodayCount(counter);
     const processed = await postprocess(blob, { cutout: true });
@@ -1192,6 +1261,8 @@
     probe,
     generateAtlas,
     evolveAtlas,
+    // ⚠️【2026-10-30】用户上传的「初始物种形象」→ 方形 PNG（可直接当参考图）
+    prepareSpeciesImage,
     postprocess,
     cutout,
     feather,

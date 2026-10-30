@@ -279,7 +279,7 @@ section('接线 + 版本号');
     }
     return true;
   };
-  check('sw.js 的 CACHE_VERSION 已 bump（不低于 v0.2.83.0）',
+  check('sw.js 的 CACHE_VERSION 已 bump（不低于 v0.2.98.0）',
     atLeast(cvParts, [0, 2, 83, 0]), String(cv));
   check('showToast 默认时长是 5 秒', /function showToast\(message, type = 'info', duration = 5000\)/.test(js));
   check('正文走 textContent（不是 innerHTML）',

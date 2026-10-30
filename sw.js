@@ -699,7 +699,31 @@
 //
 //   index.html 的 ?v=：modules/cinema-live.js 2.2.0 → 2.3.0。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.97.0';
+// ── v0.2.98.0 ─────────────────────────────────────────────────
+//   【本轮】宠物屋「初始物种形象」（垫图）—— 2026-10-30 用户定的
+//
+//   【用户原话】
+//     「我之前宠物系统的设计是每天换装的时候，拿头一天的图去垫图画新衣服新形象，
+//       结果因为每次垫的图都有之前的衣服和形象，导致宠物的长相越画越不像了，
+//       时间久了肯定更严重，我想改成以后用用户指定的形象去垫」
+//
+//   【真因】generateNewLook() 的参考图一直是【上一张生成的图】→
+//     /images/edits 让模型在昨天那张上改 → 脸/花纹/衣服一层层叠上去 →
+//     越画越不像，时间越久越严重。
+//
+//   【改法】新增「用户指定的初始形象」当【固定锚点】：
+//     · pet-nest.js: DB 升到 v4, 新增 speciesImages 表(主键 petId)；
+//       generateNewLook 优先拿它当参考图(拿不到才回退到上一张)；
+//       设置页新增「宠物初始形象」那栏, 一只宠物一张, 可上传/更换/清除。
+//     · pet-image.js: 新增 prepareSpeciesImage()（上传图居中裁方 + 缩到 640 + 转 PNG）；
+//       参考图是【单人像】时提示词必须换（不能再说「参考图里有六个姿势」），
+//       并加一句「只取物种/长相/配色, 忽略参考图里的衣服和背景」。
+//     · ⚠️ 蛋还没孵出来时不用这张图（那时画的是蛋）。
+//
+//   index.html 的 ?v=：modules/pet-nest.js 0.0.33 → 0.0.34、
+//   modules/pet-image.js 0.0.7 → 0.0.8、css/pet-nest.css 0.0.17 → 0.0.18。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.98.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [

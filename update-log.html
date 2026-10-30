@@ -166,11 +166,44 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.54 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.54</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title feat">宠物屋「初始形象」—— 换装不再越画越不像</div>
+        <ul class="item-list">
+          <li><strong>你原话</strong> —— 「<strong>我之前宠物系统的设计是每天换装的时候，拿头一天的图去垫图画新衣服新形象，结果因为每次垫的图都有之前的衣服和形象，导致宠物的长相越画越不像了，时间久了肯定更严重，我想改成以后用用户指定的形象去垫</strong>」。</li>
+          <li><strong>确实是这么设计的，改了</strong> —— 以前每天换装，是拿<strong>昨天那张画好的图</strong>当垫图，让模型在那张图上改出新衣服。这样每天都在昨天那张的基础上再改一次，<strong>脸和花纹会一层层叠上去</strong>，越画越不像。</li>
+          <li><strong>现在改成：拿你指定的图垫</strong> —— 每次换装都从<strong>同一张固定的形象图</strong>重新画。衣服和道具照常天天换，但<strong>长相每次都从你那张图出发</strong>，不会越跑越偏。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title feat">怎么用</div>
+        <ul class="item-list">
+          <li><strong>在小窝里点右上角的 ⚙（小屋管理）</strong> —— 那里多了一块<strong>「初始形象」</strong>，每只宠物一行，点<strong>「上传」</strong>选一张图（一张正脸照就行，会自动裁成方的）。</li>
+          <li><strong>一只宠物一张</strong> —— 不同宠物可以指定不同的形象（猫和鹦鹉当然不该用同一张）。</li>
+          <li><strong>换完不会自动重画</strong>（生图次数你自己掌握）—— 想马上看效果，回小窝点一下<strong>「换个模样」</strong>，那一次就会照着新形象画。</li>
+          <li><strong>不想要了</strong> —— 点「清除」就回到原来的样子。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">几个说明</div>
+        <ul class="item-list">
+          <li><strong>没设初始形象的宠物，行为一个字都没变</strong> —— 还是拿上一张当垫（老样子），你可以一只一只慢慢设。</li>
+          <li><strong>蛋还没孵出来的时候不用这张图</strong> —— 那时候画的是蛋，拿一张动物肖像当参考反而会把蛋画歪。孵出来以后才开始用。</li>
+          <li><strong>上传的图只裁方+缩小，不会自动抠背景</strong> —— 真实照片的背景很难在本地抠干净，所以改成在提示词里明确告诉模型「<strong>只取这张图的长相和配色，忽略它里面的衣服和背景</strong>」。</li>
+          <li><strong>以前画歪的那些不会自动变回来</strong> —— 从下一次换装开始按新形象画。老图我还留着（成长相册里能翻到）。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.53 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.53</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-29</span>
       </div>
       <div class="section">
         <div class="section-title feat">新功能（宠物屋可以换房间背景了）</div>

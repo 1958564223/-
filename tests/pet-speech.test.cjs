@@ -684,7 +684,7 @@ section('接线：index.html / sw.js / 聊天渲染 / AI 上下文');
     }
     return true;
   };
-  check('sw.js 的 CACHE_VERSION 已经 bump（不低于 v0.2.83.0）',
+  check('sw.js 的 CACHE_VERSION 已经 bump（不低于 v0.2.98.0）',
     cvAtLeast(cvParts, [0, 2, 83, 0]), String(cv));
 
   // ③ 聊天框渲染

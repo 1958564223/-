@@ -688,7 +688,10 @@ section('鹦鹉换装: 鸟的姿态 + 鸟穿得上的衣服 (2026-10-29)');
     /kind: row\.kind/.test(nestSrc));
   check('图集提示词按种类取姿态', /poseSetFor\(opts\.kind\)/.test(imgSrc));
   check('蜕变提示词也按种类取姿态（日常换装走的是蜕变那条路）',
-    /buildEvolvePrompt\(subject, change, undefined, o\)/.test(imgSrc));
+    // ⚠️【2026-10-30】第三个参数以前写死是 undefined（参考图永远是上一张六格图集）。
+    //   现在参考图可能是【用户指定的一张单人像】→ 第三个参数变成一个变量（referenceNote）。
+    //   这里守住的是「options（o）必须传进去」—— kind 就在 o 里，姿态才换得掉。
+    /buildEvolvePrompt\(subject, change, [A-Za-z_$][\w$]*, o\)/.test(imgSrc));
   check('鹦鹉用鸟的姿态（站着/展翅，不是抬起前爪）',
     /perched/.test(imgSrc) && /one wing raised/.test(imgSrc) &&
     /parrot:/.test(imgSrc));
@@ -1032,7 +1035,7 @@ section('接线: sw.js 预缓存');
   //   SW 一直吐缓存里的旧 index.html, 返回键根本不出现, 只 bump 模块版本号完全没用。
   //   所以这里锁一个下限: 任何再改 index.html 的活, CACHE_VERSION 必须 >= 这个值。
   const ver = m ? m[1].replace(/^v/, '').split('.').map(Number) : null;
-  const MIN = [0, 2, 78, 0];
+  const MIN = [0, 2, 98, 0];
   function verGte(a, b) {
     if (!a || a.length !== 4 || a.some((n) => !Number.isFinite(n))) return false;
     for (let i = 0; i < 4; i++) {
@@ -2038,15 +2041,15 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
   //    改成「不低于 0.0.31 / 0.0.16」逐段比大小。
   const petJsV = (html2.match(/pet-nest\.js\?v=([0-9.]+)/) || [])[1] || '';
   const petCssV = (html2.match(/pet-nest\.css\?v=([0-9.]+)/) || [])[1] || '';
-  check('index.html 的 pet-nest.js ?v= 已 bump', verGE(petJsV, '0.0.33'), petJsV);
-  check('index.html 的 pet-nest.css ?v= 已 bump', verGE(petCssV, '0.0.17'), petCssV);
+  check('index.html 的 pet-nest.js ?v= 已 bump', verGE(petJsV, '0.0.34'), petJsV);
+  check('index.html 的 pet-nest.css ?v= 已 bump', verGE(petCssV, '0.0.18'), petCssV);
   // ⚠️ 这里原来写死 `/v0\.2\.8[2-9]\.\d+/` —— 每 bump 一次就会误报一次
   //   (2026-10-28 实测: sw.js 已经是 v0.2.84.0, 这条断言一直在报红;
   //    2026-10-29 又撞上 v0.2.90.0)。改成【逐段比大小, 只要不低于就过】。
   {
     const cv = (sw2.match(/const CACHE_VERSION = '([^']+)'/) || [])[1] || '';
     const parts = cv.replace(/^v/, '').split('.').map(Number);
-    const floor = [0, 2, 82, 0];   // 不低于 v0.2.82.0
+    const floor = [0, 2, 98, 0];   // 不低于 v0.2.98.0
     let okCv = parts.length === 4;
     if (okCv) {
       for (let i = 0; i < 4; i++) {
@@ -2054,7 +2057,7 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
         if (parts[i] < floor[i]) { okCv = false; break; }
       }
     }
-    check('sw.js 的 CACHE_VERSION 已 bump (不低于 v0.2.82.0)', okCv, cv);
+    check('sw.js 的 CACHE_VERSION 已 bump (不低于 v0.2.98.0)', okCv, cv);
   }
 
   // ⑥ 行为：喂食走同一份 care()（扣粮食 + 涨饱腹 + 涨成长）
@@ -2482,6 +2485,226 @@ section('桌宠菜单快捷照顾（喂食 / 摸摸 / 陪玩）');
       check('存了乱七八糟的 id → 照样回默认那套（不能白屏）',
         !!g3 && g3.id === 'light', g3 ? g3.id : '没跑起来');
     }
+  }
+
+  // ============================================================
+  // 「用户指定的初始形象（垫图）」· 2026-10-30
+  //   用户原话：
+  //   「我之前宠物系统的设计是每天换装的时候，拿头一天的图去垫图画新衣服新形象，
+  //     结果因为每次垫的图都有之前的衣服和形象，导致宠物的长相越画越不像了，
+  //     时间久了肯定更严重，我想改成以后用用户指定的形象去垫」
+  //
+  //   → 每天换装的【参考图】必须换成用户指定的那张固定图，不是上一张。
+  // ============================================================
+  section('用户指定的初始形象（垫图）：不再拿上一张图当垫');
+  {
+    const nestSrc4 = read('modules/pet-nest.js');
+    const imgSrc4 = read('modules/pet-image.js');
+    const htmlSrc4 = read('index.html');
+    const cssSrc4 = read('css/pet-nest.css');
+
+    /**
+     * 起一个能真跑 generateNewLook 的沙盒，记录 evolveAtlas 收到的【参考图】和 options。
+     * cfg.baseBlob = 用户指定的初始形象；不给就没有（→ 走老行为）。
+     */
+    function makeSpeciesSandbox(cfg) {
+      cfg = cfg || {};
+      const day = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+      const calls = { evolve: [], generate: 0 };
+      const rows = {
+        pets: {
+          'pet-1': {
+            id: 'pet-1', kind: cfg.kind || 'cat', stage: cfg.stage === undefined ? 0 : cfg.stage,
+            seed: 'seed-A', createdAt: 1, name: '糖糖',
+            satiety: 60, settledAt: Date.now(),
+            assetRef: 'asset-prev'
+          }
+        },
+        events: {}, stages: {}, days: {}, turns: {},
+        assets: {
+          'asset-prev': { id: 'asset-prev', petId: 'pet-1', stage: 0, blob: 'BLOB_PREV' }
+        },
+        speciesImages: {},
+        dailyNotes: [],
+        dailySignals: [{ day: day, type: 'listening', at: Date.now() }]
+      };
+      if (cfg.baseBlob) {
+        rows.speciesImages['pet-1'] = { petId: 'pet-1', blob: cfg.baseBlob, name: 'base.png' };
+      }
+      const meta = { 'petNestAutoLookDay::pet-1': '' };
+      const OBJ = ['pets', 'events', 'stages', 'days', 'turns', 'meta', 'assets', 'speciesImages'];
+      const ARR = ['dailySignals', 'dailyNotes'];
+      let autoId = 0;
+      const d = {};
+      for (const n of OBJ.concat(ARR)) {
+        const isArr = ARR.indexOf(n) >= 0;
+        const listOf = () => (isArr ? rows[n] : Object.keys(rows[n]).map(k => rows[n][k]));
+        d[n] = {
+          async get(k) {
+            if (n === 'meta') return meta[k] === undefined ? undefined : { key: k, value: meta[k] };
+            if (isArr) return rows[n].find(r => r.id === k);
+            return rows[n][k];
+          },
+          async put(v) {
+            if (n === 'meta') { meta[v.key] = v.value; return v.key; }
+            if (isArr) { rows[n].push(v); return v.id; }
+            // ⚠️ speciesImages 的主键是 petId（不是 id）→ 假 Dexie 也要认
+            const k = (v.id || v.key || v.petId || ('auto' + (++autoId)));
+            rows[n][k] = v; return k;
+          },
+          async delete(k) {
+            if (n === 'meta') { delete meta[k]; return; }
+            if (isArr) {
+              const i = rows[n].findIndex(r => r.id === k);
+              if (i >= 0) rows[n].splice(i, 1);
+              return;
+            }
+            delete rows[n][k];
+          },
+          async update(k, patch) {
+            if (rows[n] && rows[n][k]) Object.assign(rows[n][k], patch);
+            return 1;
+          },
+          where(field) {
+            return {
+              equals(v) {
+                return { async toArray() { return listOf().filter(r => r[field] === v); } };
+              }
+            };
+          },
+          orderBy(field) {
+            const api = {
+              async first() {
+                return listOf().slice().sort((a, b) => Number(a[field] || 0) - Number(b[field] || 0))[0];
+              },
+              async toArray() {
+                return listOf().slice().sort((a, b) => Number(a[field] || 0) - Number(b[field] || 0));
+              },
+              reverse() { return api; },
+              limit() { return api; }
+            };
+            return api;
+          },
+          async toArray() { return listOf(); }
+        };
+      }
+      d.version = () => d;
+      d.stores = () => d;
+      d.open = async () => d;
+
+      const quiet = { log() {}, warn() {}, error() {}, info() {} };
+      const sandbox = {
+        console: quiet,
+        setTimeout: (fn, ms) => ({ fn: fn, ms: ms }),
+        clearTimeout: () => {},
+        setInterval: (fn, ms) => ({ fn: fn, ms: ms }),
+        clearInterval: () => {},
+        TextEncoder,
+        crypto: { randomUUID: () => 'test-uuid-0000' },
+        localStorage: { getItem: () => null, setItem() {} },
+        document: {
+          readyState: 'loading',       // 不进 init()
+          addEventListener() {},
+          getElementById: () => null,
+          createElement: () => ({
+            className: '', textContent: '', src: '', alt: '', type: '',
+            children: [], dataset: {}, style: {},
+            classList: { add() {}, remove() {}, contains() { return false; } },
+            setAttribute() {}, removeAttribute() {},
+            appendChild(c) { this.children.push(c); return c; },
+            append() { this.children.push(...arguments); }
+          }),
+          createTextNode: (t) => ({ nodeType: 3, textContent: String(t) }),
+          querySelectorAll: () => []
+        },
+        Dexie: function () { return d; },
+        state: { chats: {} },
+        showToast: () => {},
+        PetImage: {
+          CFG: { dailyLimit: 0, autoLookBudget: 0 },
+          todayCount: () => 0,
+          async generateAtlas() { calls.generate++; throw new Error('探针：到这一步就停'); },
+          async evolveAtlas(subject, change, refBlob, opts) {
+            calls.evolve.push({ subject: subject, change: change, refBlob: refBlob, opts: opts });
+            throw new Error('探针：到这一步就停');
+          },
+          async saveAsset() { return { id: 'asset-new' }; }
+        }
+      };
+      sandbox.window = sandbox;
+      sandbox.globalThis = sandbox;
+      vm.createContext(sandbox);
+      vm.runInContext(read('modules/pet-nest.js'), sandbox, { filename: 'pet-nest.js' });
+      return { sandbox: sandbox, calls: calls, rows: rows };
+    }
+
+    // ===== 行为级：参考图到底传了谁 =====
+    const sbBase = makeSpeciesSandbox({ baseBlob: 'BLOB_BASE' });
+    await sbBase.sandbox.window.PetNest.refreshDailyLook('pet-1');
+    const evBase = sbBase.calls.evolve[0];
+    check('★ 设了初始形象 → 垫图用的是【用户指定的那张】，不是上一张',
+      !!evBase && evBase.refBlob === 'BLOB_BASE',
+      '垫图 = ' + (evBase ? String(evBase.refBlob) : '根本没调蜕变'));
+    check('★ 参考图类型标成 portrait（提示词必须换成单人像那套）',
+      !!evBase && !!evBase.opts && evBase.opts.referenceKind === 'portrait',
+      String(evBase && evBase.opts ? evBase.opts.referenceKind : '没有'));
+    check('★ 有参考图时颜色跟参考图走（keepColors 那条路没被改坏）',
+      !!evBase && /same colours as the reference image/i.test(String(evBase.subject)),
+      evBase ? String(evBase.subject).slice(0, 120) : '没跑起来');
+
+    const sbNoBase = makeSpeciesSandbox({});
+    await sbNoBase.sandbox.window.PetNest.refreshDailyLook('pet-1');
+    const evNo = sbNoBase.calls.evolve[0];
+    check('没设初始形象 → 还是拿上一张图当垫（老行为没被改坏）',
+      !!evNo && evNo.refBlob === 'BLOB_PREV',
+      '垫图 = ' + (evNo ? String(evNo.refBlob) : '根本没调蜕变'));
+    check('没设初始形象 → 参考图类型还是 atlas',
+      !!evNo && !!evNo.opts && evNo.opts.referenceKind === 'atlas',
+      String(evNo && evNo.opts ? evNo.opts.referenceKind : '没有'));
+
+    // ===== 存储层 =====
+    check('Dexie 升到 v4 并加了 speciesImages 表（一只宠物一张，主键 petId）',
+      /version\(4\)\.stores\([\s\S]{0,600}?speciesImages:\s*'&petId'/.test(nestSrc4));
+    check('有 getSpeciesImage / setSpeciesImage / clearSpeciesImage 三个口子',
+      /function getSpeciesImage/.test(nestSrc4) &&
+      /function setSpeciesImage/.test(nestSrc4) &&
+      /function clearSpeciesImage/.test(nestSrc4));
+    check('取不到初始形象时返回 null（不能抛，老数据还没升表）',
+      /function getSpeciesImage[\s\S]{0,400}?return null/.test(nestSrc4));
+
+    // ===== 小屋管理面板里那一栏（用户 2026-10-30：「怎么把 UI 做到总设置里去了？
+    //   宠物屋不是有单独的设置按钮吗？给我拆了换到宠物屋里」）=====
+    check('初始形象那一栏在小屋管理面板（⚙）里，不是总设置页',
+      /id="pn-manage-dialog"[\s\S]{0,3000}?id="pn-species-list"/.test(htmlSrc4));
+    check('小屋管理面板里有传图入口',
+      /id="pn-manage-dialog"[\s\S]{0,3000}?id="pn-species-input"/.test(htmlSrc4) &&
+      /accept="image\/\*"/.test(htmlSrc4));
+    check('★ 总设置页里不许再有这一栏（用户明确要求拆走）',
+      !/sec-pet-species/.test(htmlSrc4) &&
+      !/settings-header">宠物初始形象/.test(htmlSrc4));
+    check('CSS 有初始形象那几行样式（行/缩略图/按钮）',
+      // ⚠️ 后面要跟「{」—— 光搜 .pn-species-row 的话, 把它改名成 .pn-species-rowX 也能过（假绿）
+      /\.pn-species-row\s*\{/.test(cssSrc4) && /\.pn-species-thumb\s*\{/.test(cssSrc4) &&
+      /\.pn-species-btn\s*\{/.test(cssSrc4));
+    check('小屋管理面板里的那一块有专门的样式（标题/说明/列表）',
+      /\.pn-species-block\s*\{/.test(cssSrc4) &&
+      /\.pn-species-title\s*\{/.test(cssSrc4) &&
+      /\.pn-species-hint\s*\{/.test(cssSrc4));
+    check('开小屋管理面板时会重画那一栏（领养了新宠物列表不能是旧的）',
+      /renderManageList/.test(nestSrc4) && /renderSpeciesList/.test(nestSrc4) &&
+      /renderSpeciesList\(\);/.test(nestSrc4));
+
+    // ===== 提示词 =====
+    check('pet-image.js 里有「单张图参考图」那段提示词常量',
+      /PORTRAIT_REFERENCE_NOTE/.test(imgSrc4) && /SINGLE PICTURE/.test(imgSrc4));
+    check('单人像参考图时明确说「忽略参考图里的衣服和背景」',
+      /IGNORE everything else in the reference image/.test(imgSrc4));
+    check('参考图类型会一路传进提示词（referenceKind → referenceNote）',
+      /referenceKind/.test(imgSrc4) && /referenceKind/.test(nestSrc4));
+    check('上传的图会先处理成方形 PNG（裁方 + 缩到上限）',
+      /function prepareSpeciesImage/.test(imgSrc4) &&
+      /SPECIES_IMAGE_MAX/.test(imgSrc4) &&
+      /image\/png/.test(imgSrc4));
   }
 
   printSummary();

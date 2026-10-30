@@ -873,6 +873,124 @@ dialog.pn-dialog {
 }
 
 /* ============================================================
+   小屋管理面板里的「初始形象」（垫图）· 2026-10-30
+   · 用户给每只宠物指定一张固定形象图，以后每天换装都拿它当垫图
+   · 长相不会因为「拿上一张当垫」而一天比一天偏
+   ⚠️ 这块住在【小屋管理弹窗】里（不是总设置页）—— 用户 2026-10-30 定的
+   ============================================================ */
+
+.pn-species-block {
+  margin: 14px 0 10px;
+  padding: 12px 12px 6px;
+  border: 1px solid rgba(122, 98, 62, .22);
+  border-radius: 12px;
+  background: rgba(255, 253, 248, .55);
+}
+
+.pn-species-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #5a4f3d;
+}
+
+.pn-species-hint {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: #8a7660;
+}
+
+.pn-species-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.pn-species-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(122, 98, 62, .12);
+}
+
+.pn-species-row:last-child {
+  border-bottom: none;
+}
+
+.pn-species-thumb {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(122, 98, 62, .08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #a1907a;
+}
+
+.pn-species-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pn-species-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pn-species-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #4c3828;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pn-species-state {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #8a7660;
+  margin-top: 2px;
+}
+
+.pn-species-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+.pn-species-btn {
+  border: 1px solid rgba(122, 98, 62, .3);
+  border-radius: 999px;
+  background: #fffdf8;
+  color: #5a4f3d;
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.pn-species-btn:active {
+  background: rgba(122, 98, 62, .12);
+}
+
+.pn-species-btn-ghost {
+  color: #a1907a;
+  border-color: rgba(122, 98, 62, .18);
+}
+
+.pn-species-empty {
+  font-size: 12px;
+  color: #a1907a;
+  padding: 6px 0;
+}
+/* ============================================================
    宠物说话系统（2026-10-26）
    · 小窝照顾弹窗里的两个开关
    · 聊天框里的「啾啾：……」气泡

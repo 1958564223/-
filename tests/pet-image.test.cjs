@@ -577,6 +577,107 @@ section('图集: 按格处理');
 }
 
 // ============================================================
+// 「用户指定的初始形象」当垫图时，发出去的提示词长什么样 · 2026-10-30
+//
+//   用户原话：「每天换装的时候拿头一天的图去垫图……导致宠物的长相越画越不像了」
+//   → 参考图从「上一张六格图集」换成「用户指定的一张单人像」时，
+//     提示词必须跟着换 —— 否则那句兜底「参考图里有同一个角色的六个姿势」
+//     就是对着单人像骗模型。
+// ============================================================
+section('初始形象当垫图 → 真正发出去的提示词');
+{
+  // 带假 fetch 的沙箱：把 /images/edits 真正发出去的那份 prompt 抓出来
+  function makeEditSandbox() {
+    const src = read('modules/pet-image.js');
+    const sent = [];
+    const store = {
+      openaiCompatImageBaseUrl: 'https://example.test/v1',
+      openaiCompatImageApiKey: 'sk-test',
+      openaiCompatImageModel: 'gpt-image-1'
+    };
+    const sandbox = {
+      console: { log() {}, warn() {}, error() {}, info() {} },
+      setTimeout, clearTimeout, setInterval, clearInterval,
+      atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+      Blob: typeof Blob !== 'undefined' ? Blob : function () {},
+      FormData: typeof FormData !== 'undefined' ? FormData : function () {},
+      URL: { createObjectURL: () => 'blob:fake', revokeObjectURL: () => {} },
+      localStorage: {
+        getItem: (k) => (k in store ? store[k] : null),
+        setItem: (k, v) => { store[k] = String(v); },
+        removeItem: (k) => { delete store[k]; }
+      },
+      document: {
+        readyState: 'loading',
+        addEventListener() {},
+        getElementById: () => null,
+        querySelectorAll: () => [],
+        createElement: () => ({ width: 0, height: 0, getContext: () => null })
+      },
+      fetch: async (url, opt) => {
+        let prompt = '';
+        try { prompt = opt && opt.body && opt.body.get ? String(opt.body.get('prompt')) : ''; } catch (e) { prompt = ''; }
+        sent.push({ url: String(url), prompt: prompt });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }),
+          text: async () => ''
+        };
+      },
+      window: null
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    vm.runInContext(src, sandbox, { filename: 'pet-image.js' });
+    return { api: sandbox.window.PetImage, sent: sent };
+  }
+
+  const fakeRef = typeof Blob !== 'undefined' ? new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }) : null;
+
+  // --- 参考图 = 用户指定的一张单人像 ---
+  const p = makeEditSandbox();
+  try {
+    await p.api.evolveAtlas('a fluffy cat, wearing a red hat', '', fakeRef, { referenceKind: 'portrait' });
+  } catch (e) { /* 抠图那步在沙箱里跑不动没关系 —— prompt 已经抓到了 */ }
+  const portraitPrompt = p.sent[0] ? p.sent[0].prompt : '';
+  check('★ 真的发出去的是 /images/edits（带参考图那条路）',
+    p.sent[0] && /\/images\/edits/.test(p.sent[0].url), p.sent[0] ? p.sent[0].url : '没发出去');
+  check('★ 参考图是单张图时，提示词要说明白「这是一张单张图」',
+    /SINGLE PICTURE/.test(portraitPrompt), portraitPrompt.slice(0, 160));
+  check('★ 单人像参考图要明确说「忽略参考图里的衣服/背景」',
+    /IGNORE everything else in the reference image/.test(portraitPrompt));
+  check('★ 单人像参考图时不能再出现「参考图里有同一个角色的六个姿势」那句',
+    !/The reference image shows the same character in six poses\./.test(portraitPrompt));
+  check('★ 物种/配色跟参考图冲突时，以参考图为准',
+    /follow the reference image/.test(portraitPrompt));
+  check('★ ★ 六格必须是六个【明显不同】的姿势（不许六个格子画成同一个姿势）',
+    /SIX poses described above/.test(portraitPrompt) &&
+    /never the same pose repeated/.test(portraitPrompt));
+  check('★ 单人像那套也写明了「画小一点、四周留白、不碰格边」（用户要的 70-80% 留白）',
+    // ⚠️ 必须认【单人像那段】里的措辞 —— 光认 "filling only about 75%" 的话,
+    //   老代码的 layout 那句本来就这么说 → 线上版也绿 → 假绿
+    /In every one of the six cells/.test(portraitPrompt) &&
+    /filling only about 75% of that cell/.test(portraitPrompt) &&
+    /never touching or crossing the cell edges/.test(portraitPrompt));
+  check('★ 今天这身穿搭照样写进提示词（换衣服不能被参考图压掉）',
+    /Redraw it exactly as described here/.test(portraitPrompt) &&
+    /wearing a red hat/.test(portraitPrompt));
+
+  // --- 参考图 = 上一张六格图集（老行为，不能被改坏）---
+  const q = makeEditSandbox();
+  try {
+    await q.api.evolveAtlas('a fluffy cat, wearing a red hat', '', fakeRef, { referenceKind: 'atlas' });
+  } catch (e) { /* 同上 */ }
+  const atlasPrompt = q.sent[0] ? q.sent[0].prompt : '';
+  check('★ 参考图还是六格图集时，老那句兜底还在（老行为没被改坏）',
+    /The reference image shows the same character in six poses\./.test(atlasPrompt));
+  check('六格图集那条路不该出现单人像的话',
+    !/SINGLE PORTRAIT/.test(atlasPrompt));
+}
+
+// ============================================================
 // 汇总
 // ============================================================
 console.log('\n通过 ' + passed + ' / 失败 ' + failed);

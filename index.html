@@ -309,14 +309,14 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
              没有参考图(首次生成) → 照旧写盲盒配色。羽化(终形态)例外，本就该换配色。
        index.html 的 ?v=：modules/pet-nest.js 0.0.25 → 0.0.26。
        ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。 -->
-  <script src="modules/pet-nest.js?v=0.0.33" defer></script>
+  <script src="modules/pet-nest.js?v=0.0.34" defer></script>
   <!-- 宠物屋的生图模块 (可选, 没有生图通道时宠物照样长大, 只是不换模样)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.getDb() 往同一个库存资产。 -->
-  <script src="modules/pet-image.js?v=0.0.7" defer></script>
+  <script src="modules/pet-image.js?v=0.0.8" defer></script>
   <!-- 宠物说话系统 (宠物自己开口)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.listPets() 和 rules.dimensionScores()。 -->
   <script src="modules/pet-speech.js?v=0.0.3" defer></script>
-  <link rel="stylesheet" href="css/pet-nest.css?v=0.0.17">
+  <link rel="stylesheet" href="css/pet-nest.css?v=0.0.18">
   <!-- 主入口（最后加载，调用 init） -->
   <script src="modules/init-and-state.js?v=0.0.84" defer></script>
   <!-- 第九层：DOMContentLoaded 外部的独立模块 -->
@@ -8995,6 +8995,22 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <dialog id="pn-manage-dialog">
     <h2>小屋管理</h2>
     <p class="pn-quiet" id="pn-manage-rules"></p>
+    <!-- 初始形象（垫图）· 2026-10-30
+         用户原话：「每天换装的时候拿头一天的图去垫图画新衣服新形象，结果因为每次垫的图
+         都有之前的衣服和形象，导致宠物的长相越画越不像了，时间久了肯定更严重，
+         我想改成以后用用户指定的形象去垫」
+         → 这里让用户给每只宠物上传一张【固定】的形象图，以后每天换装都拿它当垫图。
+         内容由 modules/pet-nest.js 动态渲染到 #pn-species-list 容器。 -->
+    <div class="pn-species-block">
+      <h3 class="pn-species-title">初始形象</h3>
+      <p class="pn-quiet pn-species-hint">
+        每天换装时拿<strong>这张图</strong>当垫图 —— 以前是拿昨天那张当垫，
+        宠物会<strong>越画越不像</strong>。现在衣服和道具照常天天换，
+        <strong>长相每次都从这张图重新出发</strong>。
+      </p>
+      <div id="pn-species-list" class="pn-species-list"></div>
+      <input type="file" id="pn-species-input" accept="image/*" style="display:none;">
+    </div>
     <div id="pn-manage-list" class="pn-manage-list"></div>
     <div class="pn-actions">
       <button class="pn-btn" type="button" data-pn-close>关上</button>

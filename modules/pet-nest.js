@@ -1084,6 +1084,23 @@
         dailySignals: '++id, day, type, at',
         dailyNotes: '++id, day, at'
       });
+      // v4: 用户指定的「初始物种形象」（垫图）
+      //   ⚠️【2026-10-30 用户定】以前每天换装是拿【上一张图】当垫 → 每天在昨天那张上改，
+      //     宠物长相会一天比一天偏（用户原话「越画越不像了」）。
+      //   → 改成拿这张【固定的】用户图当垫 → 每次都从同一个锚点出发，不会越跑越偏。
+      //   一只宠物一张（主键就是 petId）→ 换宠物不会串图。
+      d.version(4).stores({
+        pets: '&id, createdAt',
+        events: '++id, createdAt, petId',
+        stages: '&key, petId, stage',
+        days: '&day',
+        turns: '&key',
+        meta: '&key',
+        assets: '&id, petId, stage',
+        dailySignals: '++id, day, type, at',
+        dailyNotes: '++id, day, at',
+        speciesImages: '&petId'
+      });
       await d.open();
       return d;
     })();
@@ -1099,6 +1116,59 @@
   async function setMeta(key, value) {
     const d = await openDb();
     await d.meta.put({ key, value });
+  }
+
+  // ============================================================
+  // 2·五、用户指定的「初始物种形象」（垫图）
+  //   ⚠️【2026-10-30 用户定】
+  //   「我之前宠物系统的设计是每天换装的时候，拿头一天的图去垫图画新衣服新形象，
+  //    结果因为每次垫的图都有之前的衣服和形象，导致宠物的长相越画越不像了，
+  //    时间久了肯定更严重，我想改成以后用用户指定的形象去垫」
+  //   → 每天换装的参考图 = 用户上传的那张【固定图】，不是上一张。
+  //   → 每天都在同一个锚点上重新画 → 衣服/道具天天换，长相不漂。
+  // ============================================================
+
+  /**
+   * 取这只宠物的「初始物种形象」（没有就返回 null）
+   * ⚠️ 拿不到一定要返回 null，不能抛 —— 旧数据/老设备可能还没升到 v4 表。
+   */
+  async function getSpeciesImage(petId) {
+    if (!petId) return null;
+    try {
+      const d = await openDb();
+      if (!d.speciesImages) return null;
+      const row = await d.speciesImages.get(petId);
+      return (row && row.blob) ? row : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 存这张「初始物种形象」（Blob 本体，不存 base64） */
+  async function setSpeciesImage(petId, blob, name) {
+    if (!petId) throw new Error('不知道是哪只宠物');
+    if (!blob) throw new Error('没有图片');
+    const d = await openDb();
+    await d.speciesImages.put({
+      petId: petId,
+      blob: blob,
+      name: name || '',
+      updatedAt: Date.now()
+    });
+    return true;
+  }
+
+  /** 清除 → 回到「拿上一张图当垫」的旧行为 */
+  async function clearSpeciesImage(petId) {
+    if (!petId) return false;
+    try {
+      const d = await openDb();
+      if (!d.speciesImages) return false;
+      await d.speciesImages.delete(petId);
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   async function getGrains() {
@@ -2411,6 +2481,142 @@
     if (!dlg.open && typeof dlg.showModal === 'function') dlg.showModal();
   }
 
+  // ============================================================
+  // 8·一、设置页「宠物初始形象」（垫图）· 2026-10-30
+  //
+  //   用户原话：
+  //   「我之前宠物系统的设计是每天换装的时候，拿头一天的图去垫图画新衣服新形象，
+  //     结果因为每次垫的图都有之前的衣服和形象，导致宠物的长相越画越不像了，
+  //     时间久了肯定更严重，我想改成以后用用户指定的形象去垫」
+  //
+  //   → 这里让用户给每只宠物上传一张【固定的】形象图；
+  //     以后每天换装都拿它当垫图（见 generateNewLook）→ 衣服道具天天换，长相不漂。
+  // ============================================================
+
+  /** 点了「上传」之后，记下是给哪只宠物选文件 */
+  let speciesUploadPetId = '';
+  /** createObjectURL 过的缩略图 → 重画之前先 revoke，不然内存一直涨 */
+  let speciesThumbUrls = [];
+
+  function revokeSpeciesThumbs() {
+    speciesThumbUrls.forEach(function (u) {
+      try { URL.revokeObjectURL(u); } catch (e) { /* noop */ }
+    });
+    speciesThumbUrls = [];
+  }
+
+  /** 小屋管理面板里的「初始形象」那一栏 */
+  async function renderSpeciesList() {
+    const list = el('pn-species-list');
+    if (!list) return;
+    let pets = [];
+    try { pets = await listPets(); } catch (e) { pets = []; }
+    revokeSpeciesThumbs();
+    list.innerHTML = '';
+    if (!pets.length) {
+      const empty = document.createElement('div');
+      empty.className = 'pn-species-empty';
+      empty.textContent = '还没有宠物 —— 去小窝领养一只，再回来设它的初始形象。';
+      list.appendChild(empty);
+      return;
+    }
+    for (const pet of pets) {
+      const base = await getSpeciesImage(pet.id);
+      const hasBase = !!(base && base.blob);
+
+      const row = document.createElement('div');
+      row.className = 'pn-species-row';
+
+      const thumb = document.createElement('div');
+      thumb.className = 'pn-species-thumb';
+      if (hasBase) {
+        try {
+          const url = URL.createObjectURL(base.blob);
+          speciesThumbUrls.push(url);
+          const im = document.createElement('img');
+          im.src = url;
+          im.alt = pet.name + ' 的初始形象';
+          thumb.appendChild(im);
+        } catch (e) { /* noop */ }
+      } else {
+        thumb.classList.add('is-empty');
+        thumb.textContent = '未设';
+      }
+
+      const info = document.createElement('div');
+      info.className = 'pn-species-info';
+      const nm = document.createElement('div');
+      nm.className = 'pn-species-name';
+      nm.textContent = pet.name + ' · ' + ((KINDS[pet.kind] && KINDS[pet.kind].label) || pet.kind);
+      const st = document.createElement('div');
+      st.className = 'pn-species-state';
+      st.textContent = hasBase
+        ? '已设定 → 以后换装都从这张图出发，长相不会越跑越偏'
+        : '没设 → 现在还是拿上一张图当垫（会越画越不像）';
+      info.append(nm, st);
+
+      const actions = document.createElement('div');
+      actions.className = 'pn-species-actions';
+      const up = document.createElement('button');
+      up.type = 'button';
+      up.className = 'pn-species-btn';
+      up.textContent = hasBase ? '更换' : '上传';
+      up.onclick = function () {
+        speciesUploadPetId = pet.id;
+        const input = el('pn-species-input');
+        if (input) {
+          input.value = '';       // 选同一个文件也能触发 change
+          input.click();
+        }
+      };
+      actions.appendChild(up);
+      if (hasBase) {
+        const cl = document.createElement('button');
+        cl.type = 'button';
+        cl.className = 'pn-species-btn pn-species-btn-ghost';
+        cl.textContent = '清除';
+        cl.onclick = async function () {
+          await clearSpeciesImage(pet.id);
+          showToastSafe('已清除「' + pet.name + '」的初始形象（回到拿上一张当垫）', 'success');
+          await renderSpeciesList();
+        };
+        actions.appendChild(cl);
+      }
+
+      row.append(thumb, info, actions);
+      list.appendChild(row);
+    }
+  }
+
+  /** 选完文件 → 裁方缩图 → 存起来 */
+  async function handleSpeciesFilePicked(file) {
+    const petId = speciesUploadPetId;
+    speciesUploadPetId = '';
+    if (!petId || !file) return;
+    try {
+      if (!window.PetImage || typeof window.PetImage.prepareSpeciesImage !== 'function') {
+        throw new Error('生图模块还没加载好，等一下再试');
+      }
+      const blob = await window.PetImage.prepareSpeciesImage(file);
+      await setSpeciesImage(petId, blob, file.name || '');
+      showToastSafe('初始形象已设定 —— 以后换装都从这张图出发。想马上看效果，回小窝点「换个模样」。', 'success');
+      await renderSpeciesList();
+    } catch (e) {
+      showToastSafe('设定失败：' + (e && e.message ? e.message : e), 'error');
+    }
+  }
+
+  /** 绑一次就够（设置页里那个 input 是静态 HTML，不会被替换掉） */
+  function bindSpeciesUi() {
+    const input = el('pn-species-input');
+    if (!input || input.__pnSpeciesBound) return;
+    input.__pnSpeciesBound = true;
+    input.addEventListener('change', function () {
+      const f = input.files && input.files[0];
+      if (f) handleSpeciesFilePicked(f);
+    });
+  }
+
   function renderScene(state) {
     const host = el('pn-pets');
     if (!host) return;
@@ -2966,6 +3172,8 @@
         + SATIETY_DECAY_PER_HOUR + ' 点 —— 满值大概撑半天，所以一天得喂两次。'
         + '连续 ' + STARVE_DAYS + ' 天没吃上饭的宝宝会离开（不可恢复）。';
     }
+    // ⚠️【2026-10-30】初始形象（垫图）那一栏也在这儿 → 开面板就重画
+    try { renderSpeciesList(); } catch (e) { /* 忽略 */ }
     const host = el('pn-manage-list');
     if (!host) return;
     host.replaceChildren();
@@ -3630,6 +3838,14 @@ function careActionForButton(btnId) {
         // 桌宠只在聊天界面常驻，其他界面收起；有弹窗/遮罩时也要让位
         syncDesktopPetVisibility();
       } catch (e) { /* 忽略 */ }
+      // ⚠️【2026-10-30】进小屋管理面板（⚙）时重画「初始形象」那一栏
+      //   （领养了新宠物、刚上传完图，列表都得是最新的）
+      try {
+        if (screenId === 'pet-nest-screen') {
+          bindSpeciesUi();
+          renderSpeciesList();
+        }
+      } catch (e) { /* 忽略 */ }
       return out;
     };
     patched.__pnPatched = true;
@@ -3927,18 +4143,23 @@ function careActionForButton(btnId) {
     const stageKey = pet.id + '::' + row.stage;
     const stageRow = await d.stages.get(stageKey);
     const change = (stageRow && stageRow.marking) ? stageRow.marking : '';
-    const imgOpts = {
-      quality: 'medium',
-      // ⚠️【2026-10-29】鹦鹉要用【鸟的姿态】画六格 → 得知道这是哪种宠物
-      kind: row.kind,
-      // 自动换装和手动生图【分开算次数】→ 自动换装不会把手动「换个模样」的名额吃掉
-      counter: o.auto ? 'auto' : 'manual',
-      budget: o.auto ? o.budget : undefined
-    };
 
     let processed;
     let refBlob = null;
-    if (row.assetRef) {
+    // 参考图是「六格图集」还是「一张单人像」→ 提示词必须跟着换
+    // （对着单人像还说「参考图里有同一个角色的六个姿势」就是在骗模型）
+    let refKind = 'atlas';
+    // ⚠️【2026-10-30 用户定】优先用用户指定的「初始物种形象」当垫图
+    //   以前是拿【上一张图】当垫 → 每天都在昨天那张上改 → 脸一天比一天偏
+    //   （用户原话「每次垫的图都有之前的衣服和形象，导致宠物的长相越画越不像了」）
+    //   → 现在每天从【同一个锚点】重新画 → 衣服道具天天换，长相不漂。
+    //   ⚠️ 蛋还没孵出来时不用（那时画的是蛋，拿一张动物肖像当参考会把蛋画歪）
+    const canUseBaseImage = !(isHatchKind(row.kind) && Number(row.stage || 0) === 0);
+    const baseImageRow = canUseBaseImage ? await getSpeciesImage(row.id) : null;
+    if (baseImageRow && baseImageRow.blob) {
+      refBlob = baseImageRow.blob;
+      refKind = 'portrait';
+    } else if (row.assetRef) {
       // 已经有样貌了 → 带参考图蜕变, 保持是同一只
       const refRow = await d.assets.get(row.assetRef);
       refBlob = refRow ? refRow.blob : null;
@@ -3947,6 +4168,18 @@ function careActionForButton(btnId) {
       // 猫狗：没有生图资产，但有 starter 图集 → 拿它当参考图（保证还是那只猫）
       refBlob = await starterSpriteBlob(row);
     }
+
+    const imgOpts = {
+      quality: 'medium',
+      // ⚠️【2026-10-29】鹦鹉要用【鸟的姿态】画六格 → 得知道这是哪种宠物
+      kind: row.kind,
+      // 自动换装和手动生图【分开算次数】→ 自动换装不会把手动「换个模样」的名额吃掉
+      counter: o.auto ? 'auto' : 'manual',
+      budget: o.auto ? o.budget : undefined,
+      // ⚠️【2026-10-30】参考图类型 → 提示词写法不一样
+      referenceKind: refKind
+    };
+
     // ⚠️【2026-10-28】提示词要在【知道有没有参考图】之后再拼 ——
     //   有参考图 → 颜色跟参考图走（用户要保留"画到第三次那个玫红色"）；
     //   没有参考图（首次生成）→ 照旧写盲盒配色。
@@ -4112,6 +4345,10 @@ function careActionForButton(btnId) {
     bindUi();
     initDesktopPet();
     startDesktopPetWatchdog();
+
+    // ⚠️【2026-10-30】小屋管理面板里的「初始形象」那栏
+    bindSpeciesUi();
+    try { await renderSpeciesList(); } catch (e) { /* 忽略 */ }
 
     // 先把库打开、把界面画出来 —— 桌宠的图要马上有，不能等 messageStore
     try {
@@ -4341,6 +4578,11 @@ function careActionForButton(btnId) {
     close: closePetNest,
     getState,
     getDb: openDb,
+    // ⚠️【2026-10-30】用户指定的「初始物种形象」（垫图）
+    getSpeciesImage,
+    setSpeciesImage,
+    clearSpeciesImage,
+    renderSpeciesList,
     adopt,
     care,
     recordConversation,
