@@ -305,4 +305,30 @@ db.version(71).stores({
   emails: null
 });
 
+// 「读书屋」分页存储 (db v72, 2026-11-01)
+//
+// 【为什么必须拆两张表】
+//   旧版「一起读书」把整本书塞进 readingLibrary 的一条记录的 content 字段。
+//   实测 (真 IndexedDB + 真 Dexie, 2000 万字 / UTF-16 38.2MB):
+//     db.books.update(id,{currentPage}) = 96~126 ms   ← 每翻一页搬一遍整本书
+//     db.books.orderBy().toArray()       =  39 ms     ← 开一次书库搬一遍全库
+//     同样一张表, 记录里【没有 content】时: update = 2 ms, toArray = 0 ms
+//     split 切行 31.4 万行 → 常驻 ≈44.8 MB, 整页 JS heap 307 MB
+//   → 手机上必然卡 + 发烫 (GC 风暴 + IndexedDB 大事务)。
+//
+// 【拆完之后】
+//   readingBooks —— 只有元数据, 永远不含正文。开书库只读这张表, 几毫秒。
+//   readingPages —— 一页一条。翻一页只读【一条】几 KB, 存进度只改元数据行。
+//
+// 【复合索引 [bookId+pageNo】是必须的】
+//   只按 bookId 查的话, 翻一页要把这本书的全部页 (可能上万页) 读一遍再筛,
+//   一样慢。复合索引让"取第 N 页"是 O(log n)。
+//
+// ⚠️ 加这个版本必须同时 bump index.html 里 init-db-schema.js 的 ?v=,
+//    忘了手机上 Dexie 压根不升版 (v66 cinemaChars / v69 cinemaEpMemories 踩过)。
+db.version(72).stores({
+  readingBooks: '++id, title, lastOpened, linkedStoryId',   // { id, title, lastOpened, linkedStoryId, charCount, pageCount, currentPage }
+  readingPages: '++id, [bookId+pageNo], bookId'             // { id, bookId, pageNo, text, chapterTitle }
+});
+
 window.db = db;

@@ -166,11 +166,78 @@
       <p>之前有人建议我把330的更新日志做个日志放上去，问题是我的更新日志文件因为换电脑不慎丢失了，所以更新日志从本次（明天）更新后开始记录。</p>
     </div>
 
+    <!-- 4.55 版本 -->
+    <div class="version-card">
+      <div class="version-header">
+        <span class="version-number">v4.55</span>
+        <span class="version-date">最新版本</span>
+      </div>
+      <div class="section">
+        <div class="section-title feat">「一起读书」改成独立的读书屋了（不是小浮窗）</div>
+        <ul class="item-list">
+          <li><strong>以前的样子</strong> —— 点 📖 出来的是聊天页里一个 <strong>340px 的小浮窗</strong>，整本书塞在一条记录里。实测一本 2000 万字的书：翻一页 <strong>96~126 毫秒</strong>、开书库 39 毫秒、页面常驻内存 <strong>307MB</strong> → 手机上就是卡、发烫。</li>
+          <li><strong>现在的样子</strong> —— 点 📖 直接进<strong>全屏读书屋</strong>：先是<strong>书架大厅</strong>（你给的那张背景），点书就进<strong>全屏阅读室</strong>（另一张背景，宋体正文、宣纸色卡片、章节标题居中）。</li>
+          <li><strong>为什么能快</strong> —— 数据改成<strong>一页存一条</strong>，翻页只取当前这一页。实测连翻 50 页 <strong>64 毫秒</strong>（旧版要 5.1 秒左右，快了 80 倍）。</li>
+          <li><strong>再大的书也不怕</strong> —— 导入是<strong>流式</strong>的：文件边读边切页，内存里一次只放一页，不会把整本书塞进去。</li>
+          <li><strong>旧的小浮窗彻底下线了</strong> —— 入口只剩这一个 📖，不会再有两个地方能开书。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title feat">页面下半部固定一个 AI 聊天窗</div>
+        <ul class="item-list">
+          <li><strong>读着读着想聊</strong> —— 不用切页面，读书屋<strong>下半屏</strong>就是聊天窗，边读边讨论。</li>
+          <li><strong>长出来一句想问</strong> —— 正文里选中一句话，旁边冒出「<strong>💬 问 AI</strong>」，点一下就把这句带进对话。</li>
+          <li><strong>AI 知道的上下文</strong> —— <strong>当前这一页的全文 + 你选中的那句话</strong>，问什么它都能对上你正在读的地方。</li>
+          <li><strong>可以调大小</strong> —— 中间的分隔条能拖，右上角也能整个收起（收起来只占一条，读书的地方就大了）。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title feat">你昨天在手机上试过之后提的七个问题，全改了</div>
+        <ul class="item-list">
+          <li><strong>书架大厅没有「返回聊天」的键</strong> —— 原来右上角只有一个小小的 ✕，谁也不知道那是回聊天。现在左上角是明明白白的<strong>「‹ 返回聊天」</strong>。</li>
+          <li><strong>返回键顶到状态栏了</strong> —— 手机 PWA 上状态栏（时间/信号）是盖在内容上面的，所以返回键得往下让一块。现在顶栏会自动避开状态栏的高度。</li>
+          <li><strong>导入的小说全是乱码</strong> —— 以前只试了一种中文编码，浏览器不认那种写法时就悄悄按 UTF-8 解，整本报废。现在会<strong>先试 UTF-8、再试 GB18030/GBK</strong>，而且<strong>文件头尾各看一段</strong>（只看开头的话，小说前面的版权页全是英文，会误判）。章节也认得更多了：<strong>「第一章：」「第一章」「序章」「楔子」「Chapter 1」</strong>都认。</li>
+          <li><strong>书架上的书删不掉</strong> —— 那个删除按钮其实<strong>从来没显示出来</strong>（样式写成了隐藏，而代码没去点亮它）。现在每本书右上角都常驻一个 🗑，点一下就移除。</li>
+          <li><strong>提示语写着"史书里看不懂的，尽管问"</strong> —— 你说得对，不是所有人都看史书。已经改成<strong>「问点什么…」</strong>。</li>
+          <li><strong>MiniMax 的 think 思维链全露出来了</strong> —— 现在流式输出会把 <strong><think> 思考过程整段吞掉</strong>（流式下这个标签还可能被切断，所以做了专门的过滤），收尾再按主聊天那套清一次。提示词里也写死了"不要输出思考过程"。</li>
+          <li><strong>API 线路要跟主聊天一样</strong> —— 现在<strong>OpenAI 兼容</strong>和<strong>谷歌原生直连</strong>都支持（谷歌原生由主界面代打，沙盒自己拼地址会 404），另外还补上了<strong>角色独立 API</strong>（你在角色设置里换过线路的话，读书屋也跟着用），并且改成<strong>实时读取</strong>当前预设（以前缓存了一份，你中途切预设读书屋不跟着变）。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">桌宠底下那条看不见的长条，挡住了聊天框（已修）</div>
+        <ul class="item-list">
+          <li><strong>你原话</strong> —— 「聊天框的那个宠物桌宠虽然图片下方看不见东西，但是好像有很长一片区域在隐形遮挡聊天框的其他功能，如果桌宠放右上，我甚至点不到右下弹出来的匹配表情包，就是桌宠下方很长的遮挡区域在遮挡，挪开就能点了」。</li>
+          <li><strong>真因不是层级，是盒子被撑长了</strong> —— 桌宠平时靠样式摆在右下角，一旦你<strong>拖动过</strong>，代码就改用「左上角坐标」来定位，但<strong>右边和下边的定位没撤掉</strong>。两套一起生效时，那个容器的<strong>高度会被撑满从顶到底的一整段</strong> —— 实测 430×900 的屏上：没拖过时是 98×106 像素，拖过一次就变成 98×<strong>673</strong> 像素。一整条透明的长柱就那么横在屏幕右边。</li>
+          <li><strong>所以你点不到右下角的表情包</strong> —— 那条长柱虽然一个像素都看不见，但它实实在在吃掉了鼠标事件，下面的按钮根本收不到点击。</li>
+          <li><strong>顺带还修了两个连带毛病</strong> —— ① 桌宠一旦被拉长就<strong>再也拖不到下面</strong>（拖动范围被那条长柱算成了 0）；② 弹出来的<strong>菜单会被顶到屏幕外</strong>，根本点不着。</li>
+          <li><strong>现在长条没了，挡路的只剩桌宠自己</strong> —— 定位切换时会明确把「右/下」撤掉；容器的高度也写死了只跟内容走；而且容器<strong>本身不再接管鼠标</strong>，只有<strong>宠物图片、名字和菜单</strong>能点。所以哪怕真挡住了，也就挡住桌宠自己那一小块。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title fix">浅色宠物（淡蓝色那种）抠完自己那块变透明了</div>
+        <ul class="item-list">
+          <li><strong>你原话</strong> —— 「如果宠物画出来是比较浅的颜色，比如淡蓝色，就很容易在抠图处理以后出来的是透明的，就是宠物自身的浅色区域也被扣掉了」。</li>
+          <li><strong>原因</strong> —— 抠图是从画面四边往里"漫水"过去的，遇到<strong>颜色慢慢变的地方</strong>它会顺着一起走进去。宠物头顶那条由浅到深的过渡带在像素上<strong>宽达 40 像素</strong>，一格一格只差一点点 → 漫水就钻进宠物肚子里，把浅色身体全吃掉了。<strong>深色宠物没事</strong>，因为它们的轮廓是"硬边"，漫水跨不过去 —— 这也正是你说的「稍微画深色一点点就能正常抠」。</li>
+          <li><strong>还查出一个连带问题</strong> —— 本来有一道保险叫「画面不能被抠空」，但它<strong>只在整张图都没有深色颜色时才生效</strong>。浅色宠物身上有一双眼睛 → 这道保险被跳过 → 宠物被吃光都没人拦。</li>
+          <li><strong>改了两处</strong> —— ① 那道保险改成<strong>一直生效</strong>，宠物快被吃光时会自动回滚、改用保守参数重来；② 保守参数的力度又收了一点（原来还会啃掉色距很近的浅紫、浅灰蓝，现在<strong>12 种浅色深色宠物全部 100% 保住</strong>，背景也照样抠得干干净净）。</li>
+          <li><strong>容差本身没动</strong> —— 实测调小容差不是解法：浅色宠物照样被吃光，而背景会开始抠不干净（容差降到 12 时背景残留近两成，降到 8 时超过六成），就是以前你反馈过的"宠物旁边残留色块"。</li>
+        </ul>
+      </div>
+      <div class="section">
+        <div class="section-title note">几个说明</div>
+        <ul class="item-list">
+          <li><strong>翻页不会去烦 AI</strong> —— 每次翻页都问一次太慢也太费。翻页只是把「你在读哪一页」悄悄同步给主聊天那边的 AI，下次你直接问，它知道你读到哪了。</li>
+          <li><strong>以前导入的书会自动搬过来</strong> —— 而且是<strong>你第一次打开读书屋的时候</strong>才搬（不让你开机时卡一下）。</li>
+          <li><strong>备份和清数据里已经有读书屋了</strong> —— 换手机、备份恢复都算得进去。</li>
+          <li><strong>这次动过书库版本号</strong> —— 第一次打开会比平时慢一两秒（要把书库升一版），之后就正常了。</li>
+        </ul>
+      </div>
+    </div>
     <!-- 4.54 版本 -->
     <div class="version-card">
       <div class="version-header">
         <span class="version-number">v4.54</span>
-        <span class="version-date">最新版本</span>
+        <span class="version-date">2026-10-30</span>
       </div>
       <div class="section">
         <div class="section-title feat">宠物屋「初始形象」—— 换装不再越画越不像</div>

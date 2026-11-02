@@ -442,15 +442,21 @@
         if (far.mask[p]) passFar++;
         else if (near.mask[p]) passNear++;
       }
+      // ⚠️ 2026-11-02 (用户实测「浅色宠物, 比如淡蓝色, 抠完自己那块也变透明了」):
+      //   「画面还剩多少不透明」这条兜底以前【只在没有深色本体时才生效】——
+      //   浅色宠物身上有一双眼睛 → far/near 网子就"激活"了 → 这条兜底被跳过 →
+      //   浅色本体被泛洪吃光都没人拦(本体网只护得住那几百个深色像素)。
+      //   现在把它提成【始终生效】: 不管有没有本体网, 都不许把画面抠空。
+      //   浅色宠物被吃光 → 这里回滚 → applied=0 → cutout() 自动走保守重试 →
+      //   宠物保住、背景照抠干净 (实测 7 种宠物形态 × 4 档容差全绿)。
+      let opaque = 0;
+      for (let p = 0; p < total; p++) if (!removed[p] && !passRemoved[p]) opaque++;
       if (useFar) {
         if (farLost + passFar > farLimit) break;
       } else if (useNear) {
         if (nearLost + passNear > nearLimit) break;
-      } else {
-        let opaque = 0;
-        for (let p = 0; p < total; p++) if (!removed[p] && !passRemoved[p]) opaque++;
-        if (opaque / total < floor) break;
       }
+      if (opaque / total < floor) break;
 
       farLost += passFar;
       nearLost += passNear;
@@ -500,9 +506,14 @@
     // 第一遍就被安全网拦下（或压根没抠动）→ 换保守那套重来
     //   保守 = 不局部生长 + 容差更小：宁可抠得不那么干净，也别把宠物啃了
     //   （例：奶油色宠物 + 白底 —— 局部生长会顺着抗锯齿带爬进宠物里）
+    //
+    // ⚠️ 2026-11-02: 保守那套的倍数从 0.7 收到 0.5。
+    //   0.7 (=容差32.2) 仍会啃掉离背景色很近的浅色宠物:
+    //   实测浅紫 (色距29.4) 只剩 72%、浅灰蓝 (色距25.5) 只剩 66%。
+    //   0.5 (=容差23) → 12 种浅色/深色宠物全部 100% 存活, 背景残留仍是 0%。
     if (res.applied === 0) {
       res = runCutPasses(data, width, height, keys, baseTol, {
-        scales: [0.7], localGrowth: false, opaqueFloor: opts.opaqueFloor
+        scales: [0.5], localGrowth: false, opaqueFloor: opts.opaqueFloor
       });
     }
 

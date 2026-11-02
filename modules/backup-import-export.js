@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // backup-import-export.js — 备份导入导出 + 数据分布统计
 // 从 script.js 拆分（原始行范围：6093~6974 + 54517~55595）
 // ============================================================
@@ -614,6 +614,12 @@
         shoppingCategories,
         customAvatarFrames,
         readingLibrary,
+        // ⚠️ 2026-11-01: 读书屋 (旧版「一起读书」重做)。
+        //   老的 readingLibrary 表里每条记录都带整本书正文 → 备份会被撑成几十 MB。
+        //   现在拆成 readingBooks(元数据) + readingPages(一页一条正文),
+        //   两个都带走, 还原之后书架和正文都还在。
+        readingBooks,
+        readingPages,
         quickReplies,
         quickReplyCategories,
         npcGroups,
@@ -662,6 +668,8 @@
         db.shoppingCategories.toArray(),
         db.customAvatarFrames.toArray(),
         db.readingLibrary.toArray(),
+        db.readingBooks.toArray(),
+        db.readingPages.toArray(),
         db.quickReplies.toArray(),
         db.quickReplyCategories.toArray(),
         db.npcGroups.toArray(),
@@ -717,6 +725,8 @@
         shoppingCategories,
         customAvatarFrames,
         readingLibrary,
+        readingBooks,
+        readingPages,
         quickReplies,
         quickReplyCategories,
         npcGroups,
@@ -836,7 +846,9 @@
         stickerVisionCache: '表情识别缓存',
         shoppingCategories: '商品分类',
         customAvatarFrames: '自定义头像框',
-        readingLibrary: '阅读库',
+        readingLibrary: '阅读库(旧)',
+        readingBooks: '读书屋(书架)',
+        readingPages: '读书屋(正文页)',
         quickReplies: '快捷回复',
         quickReplyCategories: '快捷回复分类',
         npcGroups: 'NPC分组',
@@ -1133,7 +1145,9 @@
       'npcs': 'NPCs',
       'npcGroups': 'NPC分组',
       'stickerVisionCache': '表情缓存',
-      'readingLibrary': '阅读库',
+      'readingLibrary': '阅读库(旧)',
+      'readingBooks': '读书屋(书架)',
+      'readingPages': '读书屋(正文页)',
       'quickReplies': '快捷回复',
       'quickReplyCategories': '快捷回复分类',
       'naiPresets': 'NAI预设',
@@ -1308,7 +1322,9 @@
       'npcs': 'NPCs',
       'npcGroups': 'NPC分组',
       'stickerVisionCache': '表情缓存',
-      'readingLibrary': '阅读库',
+      'readingLibrary': '阅读库(旧)',
+      'readingBooks': '读书屋(书架)',
+      'readingPages': '读书屋(正文页)',
       'quickReplies': '快捷回复',
       'quickReplyCategories': '快捷回复分类',
       'naiPresets': 'NAI预设',
@@ -1558,6 +1574,17 @@ document.getElementById('confirm-merge-import-btn').onclick = () => {
         if (Array.isArray(backupData.shoppingCategories)) await db.shoppingCategories.bulkPut(backupData.shoppingCategories);
         if (Array.isArray(backupData.customAvatarFrames)) await db.customAvatarFrames.bulkPut(backupData.customAvatarFrames);
         if (Array.isArray(backupData.readingLibrary)) await db.readingLibrary.bulkPut(backupData.readingLibrary);
+        // ⚠️ 2026-11-01 读书屋: 正文页可能有三万多条 (二十四史 = 3.2 万页),
+        //   一次 bulkPut 几万条会把事务撑爆 → 分批写。
+        //   分批是在【同一个事务】里做的, 所以每批之间不能 await 非 IDB 的 Promise
+        //   (那会让 Dexie 事务提前提交, 后面几批全丢)。
+        if (Array.isArray(backupData.readingBooks)) await db.readingBooks.bulkPut(backupData.readingBooks);
+        if (Array.isArray(backupData.readingPages)) {
+          const CHUNK = 2000;
+          for (let i = 0; i < backupData.readingPages.length; i += CHUNK) {
+            await db.readingPages.bulkPut(backupData.readingPages.slice(i, i + CHUNK));
+          }
+        }
         if (Array.isArray(backupData.quickReplies)) await db.quickReplies.bulkPut(backupData.quickReplies);
         if (Array.isArray(backupData.quickReplyCategories)) await db.quickReplyCategories.bulkPut(backupData.quickReplyCategories);
         if (Array.isArray(backupData.npcGroups)) await db.npcGroups.bulkPut(backupData.npcGroups);

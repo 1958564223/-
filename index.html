@@ -138,7 +138,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <!-- 拆分后的模块（按依赖顺序加载） -->
   <!-- 第一层：全局工具函数（DOMContentLoaded 之前） -->
-  <script src="modules/utils.js?v=0.0.81" defer></script>
+  <script src="modules/utils.js?v=0.0.82" defer></script>
   <script src="modules/vision-image-service.js?v=0.0.37" defer></script>
   <script src="modules/asr-transcription.js?v=0.0.36" defer></script>
   <script src="modules/translations.js?v=0.0.36" defer></script>
@@ -185,11 +185,13 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 第六层：大型独立功能 -->
   <script src="modules/alipay.js?v=0.0.36" defer></script>
   <script src="modules/auction.js?v=0.0.37" defer></script>
-  <script src="modules/green-river.js?v=0.0.39" defer></script>
+  <script src="modules/green-river.js?v=0.0.40" defer></script>
   <script src="modules/cphone.js?v=0.0.36" defer></script>
   <script src="modules/myphone.js?v=0.0.36" defer></script>
   <script src="modules/werewolf.js?v=0.0.37" defer></script>
-  <script src="modules/reading-room.js?v=0.0.39" defer></script>
+  <!-- 读书屋 (2026-11-01): 存储层 + 宿主桥接。阅读室本体在 reading-sandbox/ 沙盒里。 -->
+  <script src="modules/reading-storage.js?v=0.1.1" defer></script>
+  <script src="modules/reading-room.js?v=0.1.1" defer></script>
 
   <!-- 第七层：其余功能 -->
   <script src="api-config.js?v=0.0.36" defer></script>
@@ -227,7 +229,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 第八层：初始化（必须在所有模块之后） -->
   <!-- 数据定义（无依赖） -->
   <script src="modules/init-avatar-frames.js?v=0.0.36" defer></script>
-  <script src="modules/init-db-schema.js?v=0.0.43" defer></script>
+  <script src="modules/init-db-schema.js?v=0.0.44" defer></script>
   <script src="modules/live2d-config.js?v=0.0.1" defer></script>
   <script src="modules/live2d-uploader.js?v=0.0.1" defer></script>
   <script src="modules/live2d-storage.js?v=0.0.1" defer></script>
@@ -250,7 +252,7 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
   <!-- 事件绑定和功能（依赖 state, db） -->
   <script src="modules/init-event-bindingsA.js?v=0.0.49" defer></script>
   <script src="modules/init-event-bindingsB.js?v=0.0.41" defer></script>
-  <script src="modules/init-features.js?v=0.0.45" defer></script>
+  <script src="modules/init-features.js?v=0.0.46" defer></script>
   <!-- Cinema Room (v0.1.0, 2026-10-04 第一阶段): 家庭影院模块。
        旧「一起看电影」已于 2026-10-07 整体删除(代码+入口), 只保留本模块。
        Gemini 协议层仍是 live-client.js (与旧观影共用过, 现为影院独占)。
@@ -309,14 +311,14 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
              没有参考图(首次生成) → 照旧写盲盒配色。羽化(终形态)例外，本就该换配色。
        index.html 的 ?v=：modules/pet-nest.js 0.0.25 → 0.0.26。
        ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。 -->
-  <script src="modules/pet-nest.js?v=0.0.34" defer></script>
+  <script src="modules/pet-nest.js?v=0.0.35" defer></script>
   <!-- 宠物屋的生图模块 (可选, 没有生图通道时宠物照样长大, 只是不换模样)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.getDb() 往同一个库存资产。 -->
-  <script src="modules/pet-image.js?v=0.0.8" defer></script>
+  <script src="modules/pet-image.js?v=0.0.9" defer></script>
   <!-- 宠物说话系统 (宠物自己开口)
        必须在 pet-nest.js 之后 —— 它要拿 PetNest.listPets() 和 rules.dimensionScores()。 -->
   <script src="modules/pet-speech.js?v=0.0.3" defer></script>
-  <link rel="stylesheet" href="css/pet-nest.css?v=0.0.18">
+  <link rel="stylesheet" href="css/pet-nest.css?v=0.0.19">
   <!-- 主入口（最后加载，调用 init） -->
   <script src="modules/init-and-state.js?v=0.0.84" defer></script>
   <!-- 第九层：DOMContentLoaded 外部的独立模块 -->
@@ -3634,43 +3636,15 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
       </div>
     </div> <input type="file" id="album-photo-input" accept="image/*" multiple hidden>
     <div id="chat-interface-screen" class="screen">
-      <div id="reading-overlay">
-        <div id="reading-restore-btn" style="display: none;">📖</div>
-        <div id="reading-window">
-          <div class="reading-header"> <span id="reading-title">未选择书籍</span>
-            <div class="reading-controls">
-              <button id="import-book-quick-btn" class="reading-import-btn" title="导入本地 .txt 或网络 URL" onclick="window.importBook && window.importBook()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                  <polyline points="7 10 12 15 17 10"></polyline>
-                  <line x1="12" y1="15" x2="12" y2="3"></line>
-                </svg>
-                <span class="reading-import-btn-label">导入</span>
-              </button>
-              <button id="toggle-reading-fullscreen-btn" title="切换全屏">
-        <svg class="icon-maximize" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
-        </svg>
-        <svg class="icon-minimize" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display: none;">
-            <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path>
-        </svg>
-    </button><button id="minimize-reading-btn" title="最小化" style="font-size: 20px; line-height: 1;"> <svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg> </button> <button id="open-reading-library-btn" title="打开书库" style="font-size: 22px; line-height: 1;"> <svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="3" y1="12" x2="21" y2="12"></line>
-                  <line x1="3" y1="6" x2="21" y2="6"></line>
-                  <line x1="3" y1="18" x2="21" y2="18"></line>
-                </svg></button> <button id="close-reading-btn" title="关闭"> <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg> </button></div>
-          </div>
-          <div id="reading-content">
-            <p>点击右上角“📥 导入”按钮，<br>支持 <b>本地 .txt 文件</b> 或 <b>网络 URL</b> 抓取。</p>
-          </div>
-          <div class="reading-footer"> <button id="prev-page-btn">上一页</button> <span id="page-indicator">0 / 0</span> <button id="next-page-btn">下一页</button> </div>
-        </div>
-      </div><input type="file" id="book-upload-input" accept=".txt, text/plain" hidden>
+      <!--
+        ⚠️ 2026-11-01: 旧版「一起读书」小浮窗 (#reading-overlay / #reading-window /
+           340px 宽 / 每页 15 行 / 整本书一条 IndexedDB 记录) 已整个下线。
+           实测 2000 万字的书 → 翻一页 96~126ms / 开书库 39ms / 常驻 heap 307MB
+           → 手机上卡 + 发烫。
+           现在走「读书屋」: 独立 iframe 沙盒 (reading-sandbox/index.html),
+           数据分页存储 (modules/reading-storage.js), 入口是下面那个 📖 按钮。
+           详见 _reports/reading-room-audit-2026-11-01.md
+      -->
       <div class="header">
         <div class="default-controls"> <span class="back-btn" id="back-to-list-btn">‹</span>
           <div id="global-lyrics-bar"></div>
@@ -7228,52 +7202,6 @@ a.hot-news-title:hover { color:#c1272d; text-decoration:underline; }
       <p id="werewolf-game-over-reason" style="font-size: 16px; margin: 20px 0;"></p>
       <div id="werewolf-role-reveal-list" style="max-height: 250px; overflow-y: auto; margin: 20px 0; border-top: 1px solid #444; padding-top: 10px;"> </div> <button id="werewolf-game-over-close-btn" class="form-button">返回大厅</button> <button id="manual-werewolf-summary-btn"
         class="form-button form-button-secondary" style="margin-top: 10px;">手动总结记忆</button>
-    </div>
-  </div>
-  <div id="import-book-modal" class="modal import-book-modal">
-    <div class="modal-content import-book-modal-content">
-      <div class="modal-header">
-        <span>📥 导入书籍</span>
-        <span class="action-btn" id="close-import-book-btn" title="关闭"> <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y1="18"></line>
-          <line x1="6" y1="6" x2="18" y1="18"></line>
-        </svg> </span>
-      </div>
-      <div class="import-book-tabs">
-        <button class="import-book-tab active" data-tab="local" onclick="window.switchImportTab && window.switchImportTab('local')">📁 本地文件</button>
-        <button class="import-book-tab" data-tab="url" onclick="window.switchImportTab && window.switchImportTab('url')">🌐 网络 URL</button>
-      </div>
-      <div class="modal-body import-book-body">
-        <div class="import-book-panel active" data-panel="local">
-          <p class="import-book-hint">从手机本地选一个 <code>.txt</code> 文件（支持 UTF-8 / UTF-16 / GBK 编码自动识别）。</p>
-          <button class="import-book-primary-btn" id="import-book-local-pick-btn" onclick="window.pickLocalFile && window.pickLocalFile()">📂 选择本地文件</button>
-        </div>
-        <div class="import-book-panel" data-panel="url">
-          <p class="import-book-hint">粘一个网页链接，AI 帮你"读"出来。适合：<br>· 文章 / 新闻 / 博客（知乎、公众号、新闻站）<br>· 单章节网络小说（笔趣阁系、起点免费章、刺猬猫等）<br>· 文档类（MDN、技术博客、GitHub README）<br><br>
-            <span class="import-book-warn">⚠️ 小红书 / 抖音 / B 站视频 / 需要登录的页面不支持（这些是 JS 动态渲染或反爬）。</span>
-          </p>
-          <input type="text" id="import-book-url-input" class="import-book-url-input" placeholder="https:// 例如：https://zh.wikipedia.org/wiki/三体" />
-          <div id="import-book-error" class="import-book-error" style="display: none;"></div>
-          <button class="import-book-primary-btn" id="import-book-url-submit" onclick="window.importBookFromUrl && window.importBookFromUrl()">开始抓取</button>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div id="reading-library-modal" class="modal">
-    <div class="modal-content" style="height: 70%;">
-      <div class="modal-header"> <span>我的书库</span>
-        <div class="header-actions"> <span class="action-btn" id="import-new-book-btn-header" title="导入新书"> <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19"></line>
-              <line x1="5" y1="12" x2="19" y2="12"></line>
-            </svg> </span> <span class="action-btn" id="close-reading-library-btn-header" title="关闭"> <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg> </span> </div>
-      </div>
-      <div id="reading-library-search-container"> <input type="search" id="reading-library-search-input" placeholder="搜索书名..."> </div>
-      <div class="modal-body" style="padding: 0; flex-grow: 1; overflow-y: auto;">
-        <div id="reading-library-list"> </div>
-      </div>
     </div>
   </div>
   <div id="product-category-manager-modal" class="modal">

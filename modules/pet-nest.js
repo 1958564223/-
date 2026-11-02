@@ -3397,6 +3397,29 @@
     return null;
   }
 
+  /**
+   * 把桌宠切成「left/top 定位」。
+   *
+   * ⚠️ 2026-11-02 (用户实测「桌宠下面有一长条看不见的区域, 把聊天框按钮都挡住了」):
+   *   桌宠默认是 CSS 的 right/bottom 定位 (右下角); 拖过之后 JS 写 left/top。
+   *   两套定位【同时生效】时, 绝对定位元素 top+bottom 都指定、height 是 auto
+   *   → 高度被撑满整段 (CSS2.1 §10.6.4), 容器变成一条从顶到底的透明长条:
+   *     · 右边整个聊天区都被这条透明长条盖住 → 表情面板之类点不到
+   *     · offsetHeight 变成几百 px → 拖动时 maxY 算出来几乎是 0 → 桌宠再也拖不下去
+   *   所以切到 left/top 模式时, 必须把 right/bottom 明确清成 auto。
+   *
+   * @param {HTMLElement} wrap 桌宠容器
+   * @param {number} left 左上角 x
+   * @param {number} top 左上角 y
+   */
+  function useLeftTopPosition(wrap, left, top) {
+    if (!wrap) return;
+    wrap.style.left = Math.round(left) + 'px';
+    wrap.style.top = Math.round(top) + 'px';
+    wrap.style.right = 'auto';
+    wrap.style.bottom = 'auto';
+  }
+
   let desktopPetFrame = 0;
   let desktopPetTimer = null;
 
@@ -3651,8 +3674,10 @@ function careActionForButton(btnId) {
 
     const saved = loadDesktopPetPos();
     if (saved) {
-      wrap.style.left = saved.x + 'px';
-      wrap.style.top = saved.y + 'px';
+      // 必须走 useLeftTopPosition: 它会把 right/bottom 清成 auto。
+      // 直接写 left/top 的话, CSS 的 right/bottom 还在 → 两套定位同时生效
+      // → 容器被拉成一条从顶到底的透明长条 (2026-11-02 用户实测的遮挡根因)
+      useLeftTopPosition(wrap, saved.x, saved.y);
     }
 
     // 待机动画：呼吸 + 偶尔换姿态
@@ -3686,14 +3711,30 @@ function careActionForButton(btnId) {
       const rect = wrap.getBoundingClientRect();
       originX = rect.left; originY = rect.top;
       wrap.classList.add('is-dragging');
-      try { wrap.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
+      try {
+        wrap.setPointerCapture(e.pointerId);
+      } catch (err) {
+        // 容器现在是 pointer-events:none, 万一浏览器不让它捕获, 退到宠物图片上
+        try { const sp = el('pn-desktop-pet-sprite'); if (sp) sp.setPointerCapture(e.pointerId); }
+        catch (e2) { /* 忽略 */ }
+      }
     });
 
     wrap.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
-      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+        if (!moved) {
+          moved = true;
+          // 🔴 2026-11-02: 真正开始拖的那一刻才切到 left/top 定位
+          //   (见 useLeftTopPosition 的注释)。
+          //   必须切在算 maxY 【之前】: 不切的话 offsetHeight 还是被撑大的高度,
+          //   maxY = innerHeight - offsetHeight ≈ 0 → 桌宠再也拖不到下面。
+          //   用 originX/originY 切 → 桌宠原地不动, 不会跳。
+          useLeftTopPosition(wrap, originX, originY);
+        }
+      }
       const maxX = Math.max(0, window.innerWidth - wrap.offsetWidth);
       const maxY = Math.max(0, window.innerHeight - wrap.offsetHeight);
       const nx = Math.min(maxX, Math.max(0, originX + dx));

@@ -685,6 +685,12 @@ dialog.pn-dialog {
      （原来 78px）。放大的倍数只在这一处调, 想再改改这里就行。 */
   --pn-desktop-pet-size: 98px;
   width: var(--pn-desktop-pet-size);
+  /* ⚠️ 2026-11-02 用户实测「桌宠下面有一长条看不见的区域, 把聊天框按钮都挡住了」:
+     拖过之后 JS 会写 left/top, 跟这里的 right/bottom 【同时生效】;
+     绝对定位元素在 top+bottom 都指定、height 是 auto 时, 高度会被撑满整段
+     (CSS2.1 §10.6.4) → 容器变成一条从顶到底的透明长条。
+     写死 height: fit-content → 高度只跟内容走, 永远不会被拉长。 */
+  height: fit-content;
   z-index: 900;
   display: flex;
   flex-direction: column;
@@ -694,6 +700,11 @@ dialog.pn-dialog {
   user-select: none;
   -webkit-user-select: none;
   cursor: grab;
+  /* ⚠️ 2026-11-02: 容器【自己】不接指针事件。
+     否则容器盒子有多大, 就有多大一片看不见的地方在替下层按钮挡鼠标 ——
+     用户点不到右下弹出来的表情包, 就是因为这个。
+     真正能点的只有下面三样: 宠物图片 / 名字 / 菜单。 */
+  pointer-events: none;
 }
 
 #pn-desktop-pet.is-dragging {
@@ -714,7 +725,8 @@ dialog.pn-dialog {
   background-position: 0 0;
   filter: drop-shadow(0 4px 6px rgba(80, 56, 26, .28));
   animation: pn-breathe 4s ease-in-out infinite;
-  pointer-events: none;
+  /* 容器不接事件了, 宠物图片自己接 → 能挡路的就只有宠物这一小块 */
+  pointer-events: auto;
 }
 
 #pn-desktop-pet-name {
@@ -727,7 +739,8 @@ dialog.pn-dialog {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  pointer-events: none;
+  /* 名字标签紧挨着宠物, 算宠物的一部分 → 可以点 (跟 2026-10-29 的命中判定一致) */
+  pointer-events: auto;
 }
 
 #pn-desktop-pet-bubble {
@@ -764,6 +777,9 @@ dialog.pn-dialog {
   padding: 6px;
   min-width: 132px;
   z-index: 901;
+  /* 容器 pointer-events:none 会【继承】给菜单 → 菜单按钮就点不动了,
+     这里必须显式打开, 不然「喂食/摸摸/陪玩/进入小屋」全部失灵 */
+  pointer-events: auto;
 }
 
 #pn-desktop-pet-menu[hidden] {

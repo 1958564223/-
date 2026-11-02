@@ -723,7 +723,137 @@
 //   index.html 的 ?v=：modules/pet-nest.js 0.0.33 → 0.0.34、
 //   modules/pet-image.js 0.0.7 → 0.0.8、css/pet-nest.css 0.0.17 → 0.0.18。
 //   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
-const CACHE_VERSION = 'v0.2.98.0';
+// ── v0.2.99.0 ─────────────────────────────────────────────────
+//   【本轮】读书屋 —— 旧版「一起读书」小浮窗整个重做（2026-11-01）
+//
+//   【用户原话】
+//     「这个功能非常简陋，一个是界面又小又丑，二是我加载了一个二十四史以后
+//       发现手机变得非常卡，发烫，说明不是懒加载的」
+//     「搞成一个独立沙盒页面，像影院，宠物屋那样的，进去一个全屏读书屋，
+//       有书架，点书架的书，打开全屏页面，背景上美化阅读图片，一次只加载一页，
+//       然后留一个聊天窗口供我和AI随时讨论」
+//
+//   【卡 + 发的真因（实测，不是猜）】
+//     旧版把【整本书】塞进 readingLibrary 的一条记录的 content 字段。
+//     真 IndexedDB + 真 Dexie 实测（2000 万字 / UTF-16 38.2MB）：
+//       db.books.update(id,{currentPage}) = 96~126 ms  ← 每翻一页搬一遍整本书
+//       db.books.orderBy().toArray()       =  39 ms    ← 开一次书库搬一遍全库
+//       同样一张表, 记录里【没有 content】时: update = 2 ms, toArray = 0 ms
+//       split 切行 31.4 万行 → 常驻 ≈44.8MB, 整页 JS heap 307 MB
+//     再加上「书库搜索框每敲一个字就重跑一次全库 toArray」（没有防抖）。
+//
+//   【改法】
+//     · DB 升 v72：readingBooks(只有元数据) + readingPages(一页一条, [bookId+pageNo] 复合索引)
+//     · modules/reading-storage.js：分页存储 + file.stream() 流式切页导入
+//       （峰值内存 = 一页，不是 38MB）+ 旧书迁移
+//     · reading-sandbox/：独立 iframe 沙盒（照抄影院那套），
+//       书架大厅 + 全屏阅读室 + 背景 + 一次只渲染一页 + 下半屏固定聊天窗
+//     · modules/reading-room.js 重写：宿主侧桥接 + AI 请求代打
+//       （沙盒里没有 ai-response.js / utils.js，谷歌原生地址自己拼必然 404）
+//     · 旧浮窗 DOM 全删（index.html 里 #reading-overlay / #reading-window /
+//       #reading-content / #import-book-modal / #reading-library-modal）
+//     · makeDraggable 从 reading-room.js 搬到 utils.js
+//       （视频/语音通话的悬浮球还在用它，搬走免得以后再被改一次弄挂）
+//
+//   index.html 的 ?v=：modules/reading-storage.js 新增 0.1.0、
+//   modules/reading-room.js 0.0.39 → 0.1.0、modules/init-db-schema.js 0.0.43 → 0.0.44。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+//
+// ── v0.2.100.0 ───────────────────────────────────────────────
+//   【本轮】读书屋第一批真机反馈修正 (2026-11-02)
+//
+//   【用户原话】
+//     「首先是书架大厅，没看见返回聊天框的返回键，需要加一个」
+//     「点开书页以后，那个返回书架的返回键位置不要放得太高，
+//       这软件要在手机PWA上用的，要腾出时间显示栏的位置出来」
+//     「兼容的小说文本格式不对，有的导入全是乱码」
+//     「书架上的书不想看了没有删除选择」
+//     「聊天默认提示框里写个史书看不懂的尽管问，又不是所有人都要看史书，
+//       这个提示不要写」
+//     「和AI讨论内容的时候，用的Minimax模型，连think思维链都全露出来了」
+//     「书房共读聊天用的API支持哪些线路接口，要和主聊天一样支持
+//       Openai兼容和谷歌直连哦」
+//
+//   【七处修正】
+//     ① 书架大厅顶栏加「‹ 返回聊天」（原来只有右上角一个 22px 的 ×，没人知道那是回聊天）
+//     ② 顶栏避让手机状态栏 —— env(safe-area-inset-top) 在【iframe 里】基本返回 0
+//        （安全区是顶层文档的概念），改由宿主量出真值 → --rr-safe-top 下发沙盒
+//     ③ 导入乱码 —— 原来用 new TextDecoder('gbk') 试，标签在部分浏览器直接抛异常
+//        → catch 之后回落 utf-8 → GBK 小说整本乱码。
+//        现在: BOM → 严格 utf-8 → 严格 gb18030 → 严格 gbk → 兜底 utf-8，
+//        而且【头尾各取 64KB】（只看头的话，小说开头的版权页/目录全是 ASCII，
+//        必然误判成 utf-8）
+//     ④ 删除按钮 —— CSS 是 display:none（只在 .show-del 时显示，而代码从没加过那个 class）
+//        → 按钮压根没渲染出来。现在常驻显示，34px + 🗑
+//     ⑤ 聊天框提示语去掉"史书里看不懂的" → 通用文案
+//     ⑥ MiniMax 思维链 —— 流式加状态机（<think> 标签会跨 chunk 断开），
+//        收尾再走主聊天那套 cleanMinimaxResponseText；
+//        prompt 里也写死"不要输出 <think> 和思考过程"
+//     ⑦ API 线路对齐主聊天 —— 补上【角色独立 API】(chat.apiOverride)，
+//        并且改成【每次实时解析】预设（原来缓存了一份，用户中途切预设不生效）
+//
+//   index.html 的 ?v=：modules/reading-storage.js 0.1.0 → 0.1.1、
+//   modules/reading-room.js 0.1.0 → 0.1.1；沙盒页 + css/js 也 0.1.0 → 0.1.1。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+//
+// ── v0.2.101.0 ────────────────────────────────────────────────
+//   【本轮】桌宠「下面一条看不见的长条, 把聊天框按钮都挡住了」（2026-11-02）
+//
+//   【用户原话】
+//     「聊天框的那个宠物桌宠虽然图片下方看不见东西，但是好像有很长一片区域在隐形
+//       遮挡聊天框的其他功能，如果桌宠放右上，我甚至点不到右下弹出来的匹配表情包，
+//       就是桌宠下方很长的遮挡区域在遮挡，挪开就能点了」
+//     「不是层级的问题……就不能把这个区域改得和桌宠范围一样？哪怕挡也只挡那一点啊」
+//
+//   【真因（真实页面实测, 不是猜）】
+//     #pn-desktop-pet 是 position:fixed, CSS 写死 right:14px + bottom:92px;
+//     拖拽之后 JS 又写 style.left / style.top —— 两套定位【同时生效】。
+//     绝对定位元素在 top+bottom 都指定、height 是 auto 时, 高度会被撑满整段
+//     (CSS2.1 §10.6.4) → 容器变成一条从顶到底的透明长条:
+//       实测 430x900 视口: 默认 98x106px  →  拖一次之后 98x673px
+//     连带两个副作用:
+//       · offsetHeight 变成几百 px → 拖动时 maxY = innerHeight - offsetHeight ≈ 0
+//         → 桌宠一旦被拉长就再也拖不到下面 (用户说"放右上"就下不来了)
+//       · 菜单/气泡是 bottom:100% 定位 → 长条一撑开, 菜单跑到屏幕外, 根本点不到
+//
+//   【改法】
+//     ① pet-nest.js 新增 useLeftTopPosition(): 切到 left/top 定位时
+//        把 right/bottom 明确清成 auto (拖拽前先切, 恢复上次位置也走这条)
+//     ② css/pet-nest.css 给容器写死 height:fit-content —— 兜底,
+//        即使 right/bottom 还在, 高度也只跟内容走, 永远不会被拉长
+//     ③ 容器 pointer-events:none —— 容器盒子有多大, 就有多大一片看不见的地方
+//        在替下层按钮挡鼠标; 现在只有【宠物图片 / 名字 / 菜单】能点
+//
+//   index.html 的 ?v=：modules/pet-nest.js 0.0.34 → 0.0.35、css/pet-nest.css 0.0.18 → 0.0.19。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+//
+// ── v0.2.102.0 ────────────────────────────────────────────────
+//   【本轮】宠物抠图：浅色宠物（淡蓝色那种）自己那块被抠成透明（2026-11-02）
+//
+//   【用户原话】
+//     「如果宠物画出来是比较浅的颜色，比如淡蓝色，就很容易在抠图处理以后
+//       出来的是透明的，就是宠物自身的浅色区域也被扣掉了」
+//     「现在只要稍微画深色一点点就能正常抠」
+//
+//   【真因（合成图 + 真实代码实测, 不是猜）】
+//     ① 泛洪的"局部参考生长"能跨过【平滑渐变】走进宠物内部。
+//        宠物椭圆顶部那条软边按归一化半径算，在像素上宽达 40px，每步只差 0.5~1
+//        → 任何容差都拦不住（实测容差 46→8、局部上限 26→6，浅蓝宠物每次都被吃光 99.5%）。
+//     ② 本体保护网(far/near)是按【离背景色的距离】算的 → 浅色宠物整个不在网里
+//        → 网子只护得住那几百个深色像素（眼睛）。
+//     ③ 兜底「画面还剩多少不透明」以前【只在没有深色本体时才生效】
+//        → 浅色宠物有眼睛 → 走另一条分支 → 这条兜底被跳过 → 宠物被吃光没人拦。
+//
+//   【改法（两处，都是最小改动, 没有重写算法）】
+//     ① runCutPasses 的安全网：把「不许把画面抠空」这条提成【始终生效】
+//        → 浅色宠物被吃光 → 整遍回滚 → cutout() 自动走保守重试 → 宠物保住。
+//     ② 保守重试的倍数 0.7 → 0.5：0.7(=容差32.2) 还会啃掉色距 25~30 的浅色宠物
+//        （实测浅紫只剩 72%、浅灰蓝只剩 66%）；0.5 → 12 种浅色/深色宠物全部 100% 存活。
+//     容差本身【不动】（实测调小会直接换来背景残留：容差 12 → 残留 19.6%，8 → 60.7%）。
+//
+//   index.html 的 ?v=：modules/pet-image.js 0.0.8 → 0.0.9。
+//   ⚠️ index.html 自己不带 ?v=，SW 对它是 cache-first → 必须 bump CACHE_VERSION。
+const CACHE_VERSION = 'v0.2.102.0';
 const CACHE_NAME = `ephone-cache-${CACHE_VERSION}`;
 
 const URLS_TO_CACHE = [
@@ -798,7 +928,21 @@ const URLS_TO_CACHE = [
   './assets/pet-nest/room-star.webp',
   './assets/pet-nest/cat-sprites-light.webp',
   './assets/pet-nest/dog-sprites-light.webp',
-  './assets/pet-nest/egg-sprites-light.webp'
+  './assets/pet-nest/egg-sprites-light.webp',
+  // v0.2.99.0 新增: 读书屋 (2026-11-01)。
+  // 沙盒页 + 两个模块必须预缓存 —— 沙盒页被 SW 的 '/index.html' 白名单命中,
+  // 不预缓存的话断网时点「一起读书」直接白屏。
+  './reading-sandbox/index.html',
+  './modules/reading-storage.js',
+  './modules/reading-room.js',
+  './modules/reading-sandbox.js',
+  './modules/reading-sandbox.css',
+  // 两张背景图 + 两张书架卡片缩略图, 共 254KB。
+  // 背景图是整页铺的, 不预缓存的话每次进读书屋都先闪一下白底。
+  './assets/reading-room/reading-hall-bg.webp',
+  './assets/reading-room/reading-page-bg.webp',
+  './assets/reading-room/reading-hall-bg-thumb.webp',
+  './assets/reading-room/reading-page-bg-thumb.webp'
 ];
 
 self.addEventListener('install', event => {
@@ -893,7 +1037,16 @@ self.addEventListener('fetch', event => {
      url.includes('/modules/pet-image.js') ||
      url.includes('/modules/pet-speech.js') ||
      url.includes('/css/pet-nest.css') ||
-     url.includes('/assets/pet-nest/'));
+     url.includes('/assets/pet-nest/') ||
+     // v0.2.99.0: 读书屋 (2026-11-01)。
+     // ⚠️ reading-sandbox/index.html 会被上面那条 '/index.html' 命中 → 走 cache-first。
+     //   它自己带 ?v= (见 modules/reading-room.js 的 iframe src) → 实际是 network-first,
+     //   改了立刻生效, 断网回落到预缓存那份。
+     url.includes('/modules/reading-storage.js') ||
+     url.includes('/modules/reading-room.js') ||
+     url.includes('/modules/reading-sandbox.js') ||
+     url.includes('/modules/reading-sandbox.css') ||
+     url.includes('/assets/reading-room/'));
 
   const isKnownCDN =
     url.includes('unpkg.com/dexie') ||
